@@ -1,0 +1,11 @@
+{
+  "server": "",
+  "deviceId": "",
+  "deviceKey": "",
+  "enabled": false,
+  "allowShell": false,
+  "allowedReadRoots": ["/etc/cinemo", "/etc/oap", "/var/log", "/usr/lib"],
+  "leaseFile": "/run/mgu-uplink/lease.json",
+  "appControlDir": "",
+  "dataDir": "/var/opt/mgu-chatgpt-bridge/data"
+}
