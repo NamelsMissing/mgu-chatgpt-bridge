@@ -1,0 +1,11 @@
+{
+  "id": "mgu_chatgpt_bridge",
+  "title": "MGU Analysis Bridge",
+  "description": "User-approved ChatGPT diagnostics and file transfer",
+  "version": "0.1.0",
+  "vendor": "Jürgen",
+  "loggingId": "OGPT",
+  "iconGlyph": "AI",
+  "mguInternet": true,
+  "screens": [{"name":"MAIN","kind":"canvas","title":"MGU Analysis Bridge","buttons":[["BTN_RESUME","Enable bridge"],["BTN_PAUSE","Stop / pause"],["BTN_REFRESH","Refresh"]]}]
+}
