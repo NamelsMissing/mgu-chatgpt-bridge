@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+BASE=/var/opt/mgu-chatgpt-bridge
+mkdir -p "$BASE/data"
+chmod 700 "$BASE/data"
+if [ ! -f "$BASE/config.json" ]; then
+    umask 077
+    cp "$BASE/current/config.example.json" "$BASE/config.json"
+fi
+exec /usr/bin/node /var/opt/mgu-chatgpt-bridge/current/agent/agent.js

@@ -1,0 +1,17 @@
+{
+  "id":"mgu-chatgpt-bridge","kind":"tool","version":"0.1.0",
+  "title":"MGU Analysis Bridge Service",
+  "description":"Background agent for explicitly approved diagnostics",
+  "mguHmi":["ID7"],
+  "files":[
+    {"path":"mgu-chatgpt-bridge","mode":"0755"},
+    {"path":"agent/agent.js","mode":"0644"},
+    {"path":"agent/executor.js","mode":"0644"},
+    {"path":"agent/network-worker.js","mode":"0644"},
+    {"path":"shared/protocol.js","mode":"0644"},
+    {"path":"config.example.json","mode":"0644"}
+  ],
+  "units":[{"name":"mgu-chatgpt-bridge.service","from":"mgu-chatgpt-bridge.service"}],
+  "enable":[{"unit":"mgu-chatgpt-bridge.service","target":"multi-user.target"}],
+  "recmgr":["mgu-chatgpt-bridge"],"restart":["mgu-chatgpt-bridge.service"]
+}

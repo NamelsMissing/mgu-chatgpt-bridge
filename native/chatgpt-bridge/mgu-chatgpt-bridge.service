@@ -1,0 +1,18 @@
+[Unit]
+Description=MGU user-approved ChatGPT analysis bridge
+After=oapcontroller.service mgu-uplink.service
+RequiresMountsFor=/var/opt
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/var/opt/mgu-chatgpt-bridge/current/mgu-chatgpt-bridge
+User=root
+Restart=on-failure
+RestartSec=8
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
