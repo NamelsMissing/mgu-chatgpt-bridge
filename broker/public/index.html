@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MGU Analysebrücke</title><link rel="stylesheet" href="/style.css"><script src="/client.js" defer></script></head>
+<body><main><header><span class="badge">MGU · ID7</span><h1>Dein Auto. Deine Freigabe.</h1><p>Prüfe genau, welche Befehle ausgeführt und welche Daten an ChatGPT übertragen werden.</p></header>
+<section id="login"><label>Persönlicher Eigentümerschlüssel<input id="key" type="password" autocomplete="off" placeholder="Schlüssel vom eigenen Server"></label><button id="connect">Anmelden</button><p>Der Schlüssel bleibt nur für diese geöffnete Seite im Arbeitsspeicher.</p></section>
+<section id="dashboard" hidden><div class="toolbar"><button id="refresh">Aktualisieren</button><button id="logout">Abmelden</button></div><h2>Fahrzeuge</h2><div id="devices"></div>
+<details><summary>Neues Fahrzeug verbinden</summary><label>Name<input id="label" value="Mein BMW"></label><button id="pair">Kopplungscode erstellen</button><pre id="pairing"></pre></details>
+<details><summary>Verbindung selbst testen</summary><p>Erstellt einen Systemtest zur anschließenden Freigabe.</p><select id="deviceSelect"></select><button id="test">Testauftrag erstellen</button></details>
+<h2>Aufträge</h2><p>Freigaben gelten einmalig für höchstens 90 Sekunden. Ausgaben werden nach 24 Stunden entfernt.</p><div id="jobs"></div></section><p id="message" role="status"></p></main></body></html>
