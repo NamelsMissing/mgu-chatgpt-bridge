@@ -1,0 +1,8 @@
+{
+  "name": "mgu-chatgpt-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "User-approved MGU diagnostics bridge and private MCP server",
+  "scripts": {"test": "node tests/integration.js && node tests/failure-paths.js && node tests/app-smoke.js", "start": "node broker/server.js"},
+  "engines": {"node": ">=18"}
+}

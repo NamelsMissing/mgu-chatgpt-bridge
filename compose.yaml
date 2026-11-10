@@ -1,0 +1,38 @@
+services:
+  broker:
+    build: .
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: https://${BRIDGE_DOMAIN:?Set BRIDGE_DOMAIN in .env}
+      BRIDGE_DATA: /app/data
+    volumes:
+      - bridge_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - bridge
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      BRIDGE_DOMAIN: ${BRIDGE_DOMAIN:?Set BRIDGE_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - bridge
+volumes:
+  bridge_data:
+  caddy_data:
+  caddy_config:
+networks:
+  bridge:
