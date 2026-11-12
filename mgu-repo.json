@@ -37,7 +37,7 @@
       "id": "mgu-ai-agent",
       "kind": "tool",
       "title": "BMW AI Companion Agent",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "path": "native/mgu-ai-agent",
       "mguHmi": [
         "ID7"
