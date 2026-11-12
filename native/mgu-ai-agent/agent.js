@@ -2,6 +2,7 @@
 // BMW MGU ID7 Companion Agent. Compatible with Node 8.7 syntax.
 // Strictly read-only diagnostics/files; actual vehicle control requires verified adapter and is disabled.
 var http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto'),cp=require('child_process');
+var readOnlyConsole=require('./console-readonly');
 var ROOT='/var/opt/mgu-ai-agent',CONFIG=process.env.MGU_AI_CONFIG||ROOT+'/config.json';
 var DATA=process.env.MGU_AI_DATA||ROOT+'/data';
 var PORT=Number(process.env.MGU_AI_PORT||18766);
@@ -126,6 +127,7 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
    return json(res,200,{token:deviceToken});
  }
  if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;emitUI();return json(res,200,{online:true,at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:false,vehicle:{status:'unavailable',reason:'No verified vehicle-signal adapter'},capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
+ if(req.method==='POST'&&url==='/v1/console')return json(res,200,readOnlyConsole.run(b.command));
  if(req.method==='POST'&&url==='/v1/diagnostics'){var d=diag(b.preset);latest.lastDiagnostic={preset:d.preset,at:d.at,preview:JSON.stringify(d.values).slice(0,350)};emitUI();return json(res,200,d);}
  if(req.method==='POST'&&url==='/v1/files/list')return json(res,200,listFiles(b.path));
  if(req.method==='POST'&&url==='/v1/files/read'){var data=fileContents(b.path);res.writeHead(200,{'content-type':'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff'});return res.end(data);}
