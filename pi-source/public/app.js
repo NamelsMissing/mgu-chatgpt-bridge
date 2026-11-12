@@ -1,15 +1,18 @@
 'use strict';
 let token=sessionStorage.getItem('bmw-ai-token')||'',conversationId='',currentTab='chat';
+function authHeaders(){return token==='cookie'?{'x-bmw-ai-client':'1'}:{authorization:'Bearer '+token,'x-bmw-ai-client':'1'};}
 const $=s=>document.getElementById(s);const txt=(tag,value,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=String(value);return e;};
 function notice(s){$('notice').textContent=s;}
-async function api(endpoint,method='GET',data,raw){const headers={authorization:'Bearer '+token};if(data&&!raw)headers['content-type']='application/json';const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined});const result=await res.json().catch(()=>({error:'Invalid response'}));if(!res.ok)throw Error(result.error||'HTTP '+res.status);return result;}
+async function api(endpoint,method='GET',data,raw){const headers=authHeaders();if(data&&!raw)headers['content-type']='application/json';const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined});const result=await res.json().catch(()=>({error:'Invalid response'}));if(!res.ok)throw Error(result.error||'HTTP '+res.status);return result;}
 const pairParams=new URLSearchParams(location.search);
 const pendingPair=(location.pathname==='/pair'&&/^[0-9a-f]{32}$/.test(pairParams.get('code')||'')&&/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(?:\d{1,3}\.)\d{1,3}$/.test(pairParams.get('ip')||''))?{ip:pairParams.get('ip'),code:pairParams.get('code')}:null;
 if(location.pathname==='/pair')history.replaceState(null,'','/');
 function renderPair(){const panel=$('pairPanel');panel.hidden=!pendingPair;if(pendingPair){$('pairDescription').textContent='Neue BMW-MGU mit Tailscale-Adresse '+pendingPair.ip+' koppeln? Die Kopplung erfolgt nur nach deiner ausdruecklichen Bestaetigung.';}}
 $('pairButton').onclick=async()=>{if(!pendingPair||!token)return;const btn=$('pairButton');btn.disabled=true;try{const d=await api('/pair','POST',pendingPair);$('pairDescription').textContent='Erfolgreich gekoppelt: '+d.host;$('pairError').textContent='';btn.hidden=true;await refreshStatus();}catch(e){$('pairError').textContent=e.message;btn.disabled=false;}};
 function show(){ $('login').hidden=!!token;$('shell').hidden=!token;if(token){refreshConvos();refreshJobs();refreshPlanStatus();if(pendingPair){document.querySelector('[data-tab="status"]').click();renderPair();}}}
-$('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:$('password').value})});const d=await r.json();if(!r.ok)throw Error(d.error);token=d.token;sessionStorage.setItem('bmw-ai-token',token);$('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
+$('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-bmw-ai-client':'1'},body:JSON.stringify({password:$('password').value,remember:$('rememberMe').checked})});const d=await r.json();if(!r.ok)throw Error(d.error);
+ token=d.remembered?'cookie':d.token;if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
+ $('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
 $('logout').onclick=async()=>{try{await api('/logout','POST');}catch(e){}token='';sessionStorage.removeItem('bmw-ai-token');show();};
 $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs}[currentTab]||(()=>{}))();});
 let pendingConsoleId=null;
@@ -37,8 +40,8 @@ $('refreshStatus').onclick=refreshStatus;
 $('createDiag').onclick=async()=>{try{await api('/jobs','POST',{type:'diagnostic',payload:{preset:$('preset').value},reason:'Manuelle Diagnose '+$('preset').value});notice('Auftrag erstellt; jetzt unter Freigaben bestätigen.');}catch(e){notice(e.message);}};
 async function refreshJobs(){if(!token)return;try{const d=await api('/jobs'),root=$('jobList');root.replaceChildren();d.jobs.slice(0,60).forEach(j=>{const panel=txt('div','','panel');panel.appendChild(txt('strong',j.type+' • '+j.status));panel.appendChild(txt('p',j.reason));panel.appendChild(txt('pre',JSON.stringify(j.payload)));if(j.status==='pending'){const actions=txt('div','','actions');for(const choice of ['approve','reject']){const b=txt('button',choice==='approve'?'Einmalig freigeben':'Ablehnen',choice==='reject'?'danger':'');b.onclick=async()=>{b.disabled=true;try{await api('/jobs/'+j.id+'/'+choice,'POST');notice('Auftrag '+choice+' abgeschlossen.');await refreshJobs();if(choice==='approve'){refreshReports();refreshFiles();loadMessages().catch(()=>{});}}catch(e){notice(e.message);b.disabled=false;}};actions.appendChild(b);}panel.appendChild(actions);}if(j.status==='done'||j.status==='failed')panel.appendChild(txt('pre',JSON.stringify(j.result||j.error,null,2).slice(0,10000)));root.appendChild(panel);});}catch(e){notice(e.message);}}
 $('refreshJobs').onclick=refreshJobs;
-async function refreshFiles(){try{const d=await api('/files'),root=$('fileList');root.replaceChildren();const select=$('chatFile');const previous=select.value;select.replaceChildren(new Option('Ohne Datei',''));d.files.filter(f=>/\.(txt|json|log|xml|csv|md|ini|conf)$/i.test(f.name)&&f.bytes<=131072).forEach(f=>select.appendChild(new Option('Datei analysieren: '+f.name,f.id)));select.value=previous;d.files.forEach(f=>{const panel=txt('div','','panel');panel.appendChild(txt('strong',f.name));panel.appendChild(txt('p',f.bytes+' Bytes • '+f.source));const b=txt('button','Herunterladen');b.onclick=async()=>{const r=await fetch('/api/v1/files/'+f.id+'/download',{headers:{authorization:'Bearer '+token}});if(!r.ok)return notice('Download: HTTP '+r.status);const blob=await r.blob(),link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download=f.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};panel.appendChild(b);root.appendChild(panel);});}catch(e){notice(e.message);}}
-$('uploadBtn').onclick=async()=>{const f=$('upload').files[0];if(!f)return notice('Datei auswählen');if(f.size>8*1024*1024)return notice('Maximal 8 MiB');try{const r=await fetch('/api/v1/files?name='+encodeURIComponent(f.name),{method:'POST',headers:{authorization:'Bearer '+token},body:f});if(!r.ok)throw Error('Upload HTTP '+r.status);notice('Datei hochgeladen');refreshFiles();}catch(e){notice(e.message);}};
+async function refreshFiles(){try{const d=await api('/files'),root=$('fileList');root.replaceChildren();const select=$('chatFile');const previous=select.value;select.replaceChildren(new Option('Ohne Datei',''));d.files.filter(f=>/\.(txt|json|log|xml|csv|md|ini|conf)$/i.test(f.name)&&f.bytes<=131072).forEach(f=>select.appendChild(new Option('Datei analysieren: '+f.name,f.id)));select.value=previous;d.files.forEach(f=>{const panel=txt('div','','panel');panel.appendChild(txt('strong',f.name));panel.appendChild(txt('p',f.bytes+' Bytes • '+f.source));const b=txt('button','Herunterladen');b.onclick=async()=>{const r=await fetch('/api/v1/files/'+f.id+'/download',{headers:authHeaders()});if(!r.ok)return notice('Download: HTTP '+r.status);const blob=await r.blob(),link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download=f.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};panel.appendChild(b);root.appendChild(panel);});}catch(e){notice(e.message);}}
+$('uploadBtn').onclick=async()=>{const f=$('upload').files[0];if(!f)return notice('Datei auswählen');if(f.size>8*1024*1024)return notice('Maximal 8 MiB');try{const r=await fetch('/api/v1/files?name='+encodeURIComponent(f.name),{method:'POST',headers:authHeaders(),body:f});if(!r.ok)throw Error('Upload HTTP '+r.status);notice('Datei hochgeladen');refreshFiles();}catch(e){notice(e.message);}};
 $('fetchFile').onclick=()=>requestFile('download',$('mguFilePath').value);
 $('listFolder').onclick=()=>requestFile('list',$('mguFolderPath').value);
 async function requestFile(type,p){try{await api('/jobs','POST',{type,payload:{path:p},reason:type+': '+p});notice('Datei-Auftrag erzeugt. Unter Freigaben bestätigen.');}catch(e){notice(e.message);}}
@@ -47,8 +50,13 @@ $('refreshReports').onclick=refreshReports;
 async function refreshLogs(){try{$('logsResult').textContent=JSON.stringify((await api('/logs')).logs,null,2);}catch(e){notice(e.message);}}
 $('refreshLogs').onclick=refreshLogs;
 $('downloadLogs').onclick=()=>authenticatedDownload('/logs/download','bmw-ai-logs.json');
-async function authenticatedDownload(path,name){try{const r=await fetch('/api/v1'+path,{headers:{authorization:'Bearer '+token}});if(!r.ok)throw Error('HTTP '+r.status);const u=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}catch(e){notice(e.message);}}
-show();
+async function authenticatedDownload(path,name){try{const r=await fetch('/api/v1'+path,{headers:authHeaders()});if(!r.ok)throw Error('HTTP '+r.status);const u=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}catch(e){notice(e.message);}}
+async function restoreSession(){
+ if(token){try{await api('/session');show();return;}catch(e){token='';sessionStorage.removeItem('bmw-ai-token');}}
+ try{const r=await fetch('/api/v1/session',{credentials:'same-origin',headers:{'x-bmw-ai-client':'1'}});if(r.ok){token='cookie';show();return;}}catch(e){}
+ show();
+}
+restoreSession();
 // Native iPhone/iPad shell may inject a confirmed speech transcript here.
 window.bmwAIInjectTranscript=function(text){$('chatInput').value=String(text||'').slice(0,8000);$('chatInput').focus();};
 
@@ -114,12 +122,21 @@ async function refreshUpdates(){
     $('autoUpdate').checked=d.auto===true;
   }catch(e){$('updateStatus').textContent='Updater: '+e.message;}
 }
-$('refreshUpdates').onclick=refreshUpdates;
+$('refreshUpdates').onclick=async()=>{
+ const btn=$('refreshUpdates');btn.disabled=true;
+ $('updateCheckResult').textContent='GitHub wird jetzt geprüft ...';
+ try{const result=await api('/updates/check','POST');
+   $('updateCheckResult').textContent=result.message||JSON.stringify(result,null,2);
+   await refreshUpdates();
+   if(result.state==='queued')setTimeout(refreshUpdates,7000);
+ }catch(e){$('updateCheckResult').textContent='Updateprüfung fehlgeschlagen: '+e.message;}
+ finally{btn.disabled=false;}
+};
 $('uploadUpdate').onclick=async()=>{
   const file=$('updateZip').files[0];if(!file)return notice('Bitte ein Update-ZIP auswählen.');
   if(file.size>3*1024*1024)return notice('Update-ZIP darf maximal 3 MiB groß sein.');
   const btn=$('uploadUpdate');btn.disabled=true;
-  try{const response=await fetch('/api/v1/updates/upload',{method:'POST',headers:{authorization:'Bearer '+token},body:file});
+  try{const response=await fetch('/api/v1/updates/upload',{method:'POST',headers:authHeaders(),body:file});
     const data=await response.json();if(!response.ok)throw Error(data.error||'Upload fehlgeschlagen');
     pendingUpdate=data;$('updateDetails').textContent=file.name+'\nGröße: '+data.bytes+' Bytes\nSHA-256: '+data.sha256+'\nNur nach Signaturprüfung installierbar.';
     $('updateConfirm').hidden=false;notice('ZIP hochgeladen, noch nicht installiert.');
