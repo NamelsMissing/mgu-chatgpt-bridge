@@ -34,6 +34,28 @@ jobs:
           chmod 0600 "$RUNNER_TEMP/bmw-ai-private.pem"
           openssl pkey -in "$RUNNER_TEMP/bmw-ai-private.pem" -pubout -out "$RUNNER_TEMP/bmw-ai-public.pem"
           cmp "$RUNNER_TEMP/bmw-ai-public.pem" pi-source/release-public.pem
+      - name: Materialize one-time BMW AI v0.4.0 source archive
+        run: |
+          set -eu
+          if [ ! -f pi-source/server.js ]; then
+            test -f pi-source/BMW_AI_GitHub_Quellcode_Ersteinrichtung_v0.4.0.zip
+            echo 'e202a8dcb13afc8bc66d4e5b1e26a0bcb57d1e9ab4d67825aed7c94420719b9c  pi-source/BMW_AI_GitHub_Quellcode_Ersteinrichtung_v0.4.0.zip' | sha256sum -c -
+            python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          root=Path('pi-source')
+          zfile=root/'BMW_AI_GitHub_Quellcode_Ersteinrichtung_v0.4.0.zip'
+          expected={'server.js','siwc.js','public/app.js','public/index.html','public/style.css'}
+          with ZipFile(zfile) as z:
+              assert set(z.namelist())==expected, 'Unexpected file(s) in bootstrap archive'
+              for name in sorted(expected):
+                  output=root/name
+                  output.parent.mkdir(parents=True,exist_ok=True)
+                  output.write_bytes(z.read(name))
+          zfile.unlink()
+          print('Five public BMW AI Pi sources prepared')
+          PY
+          fi
       - name: Validate sources and build signed ZIP
         env:
           RELEASE_KEY: ${{ runner.temp }}/bmw-ai-private.pem
@@ -47,6 +69,7 @@ jobs:
           root=pathlib.Path('pi-source')
           version=(root/'VERSION').read_text().strip()
           assert re.fullmatch(r'\d+\.\d+\.\d+',version),'Invalid release version'
+          assert ("version:'"+version+"'") in (root/'server.js').read_text(), 'Health version mismatch'
           paths=['server.js','siwc.js','public/app.js','public/index.html','public/style.css']
           contents={x:(root/x).read_bytes() for x in paths}
           manifest={'schema':1,'package':'bmw-ai-pi','version':version,
@@ -70,7 +93,7 @@ jobs:
           set -eu
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add pi-updates/
+          git add -A pi-source/ pi-updates/
           if git diff --cached --quiet; then
             echo 'No changes to release'
             exit 0
