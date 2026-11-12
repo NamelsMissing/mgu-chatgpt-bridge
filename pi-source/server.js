@@ -27,6 +27,10 @@ const UPDATE_QUEUE=path.join(UPDATE_ROOT,'queue');
 const UPDATE_STATUS=path.join(UPDATE_ROOT,'status.json');
 const UPDATE_PREFS=path.join(UPDATE_ROOT,'prefs.json');
 const VALID_UPDATE_ID=/^[0-9a-f-]{36}$/;
+const SESSION_COOKIE='__Host-bmw_ai_session';
+const GITHUB_UPDATE_BASE='https://raw.githubusercontent.com/NamelsMissing/mgu-chatgpt-bridge/main/pi-updates/';
+let lastManualUpdateCheck=0;
+
 
 const uid=()=>crypto.randomUUID();
 const now=()=>new Date().toISOString();
@@ -41,8 +45,15 @@ function send(res,code,data){res.writeHead(code,{'content-type':'application/jso
 function fail(res,code,msg){send(res,code,{error:msg});}
 function readRaw(req,max=1024*1024){return new Promise((resolve,reject)=>{let a=[],n=0,done=false;req.on('data',b=>{n+=b.length;if(n>max){if(!done){done=true;reject(Error('Request too large'));}req.destroy();}else a.push(b);});req.on('end',()=>{if(!done)resolve(Buffer.concat(a));});req.on('error',reject);});}
 async function body(req,max){const data=await readRaw(req,max);if(!data.length)return{};try{return JSON.parse(data.toString('utf8'));}catch(e){throw Error('Invalid JSON');}}
-function token(req){const m=/^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization||'');return m?m[1]:'';}
-function auth(req){const tok=token(req);if(!tok)return false;const s=st.sessions[hash(tok)];if(!s||Date.parse(s.expires)<Date.now())return false;return true;}
+function bearerToken(req){const m=/^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization||'');return m?m[1]:'';}
+function cookieToken(req){const raw=req.headers.cookie||'';const m=raw.match(new RegExp('(?:^|;\\s*)'+SESSION_COOKIE+'=([A-Za-z0-9_-]+)(?:;|$)'));return m?m[1]:'';}
+function token(req){return bearerToken(req)||cookieToken(req);}
+function auth(req){const tok=token(req);if(!tok)return false;
+ const s=st.sessions[hash(tok)];if(!s||Date.parse(s.expires)<Date.now())return false;
+ // Cookies cannot be used by cross-origin form submissions to trigger state changes.
+ if(!bearerToken(req)&&!['GET','HEAD'].includes(req.method)&&req.headers['x-bmw-ai-client']!=='1')return false;
+ return true;}
+
 const loginBuckets=new Map();
 function limited(req){const ip=req.socket.remoteAddress||'';let x=loginBuckets.get(ip)||{until:Date.now()+60000,n:0};if(x.until<Date.now())x={until:Date.now()+60000,n:0};x.n++;loginBuckets.set(ip,x);return x.n>8;}
 function timingPassword(candidate){const a=crypto.scryptSync(String(candidate||''),'bmw-ai-password-v1',32);const b=crypto.scryptSync(PASS,'bmw-ai-password-v1',32);return crypto.timingSafeEqual(a,b);}
@@ -92,10 +103,18 @@ async function runJob(j){if(j.status!=='pending')throw Error('Job already review
 }
 function listing(obj){return Object.values(obj).sort((a,b)=>String(b.createdAt||b.at||'').localeCompare(String(a.createdAt||a.at||'')));}
 function route(req,res){const url=new URL(req.url,'http://localhost');const p=url.pathname;return (async()=>{
- if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.4.0'});
- if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');const t=crypto.randomBytes(32).toString('base64url');st.sessions[hash(t)]={expires:new Date(Date.now()+14*86400000).toISOString()};save();audit('login','owner');return send(res,200,{token:t,expiresInDays:14});}
+ if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.4.1'});
+ if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');
+  const remember=d.remember===true,days=remember?30:14;
+  const t=crypto.randomBytes(32).toString('base64url');
+  st.sessions[hash(t)]={expires:new Date(Date.now()+days*86400000).toISOString()};save();audit('login',remember?'remembered 30 days':'session');
+  if(remember){res.setHeader('Set-Cookie',SESSION_COOKIE+'='+t+'; Path=/; Max-Age='+(30*86400)+'; Secure; HttpOnly; SameSite=Strict');
+    return send(res,200,{remembered:true,expiresInDays:30});}
+  return send(res,200,{token:t,expiresInDays:14,remembered:false});
+ }
  if(p.startsWith('/api/')){
   if(!auth(req))return fail(res,401,'Login required');
+  if(req.method==='GET'&&p==='/api/v1/session')return send(res,200,{authenticated:true});
   if(req.method==='POST'&&p==='/api/v1/pair'){
    if(limited(req))return fail(res,429,'Too many pairing attempts');
    const d=await body(req,1024),ip=String(d.ip||''),code=String(d.code||'');
@@ -113,7 +132,9 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
    st.mguConnection={url:origin,token:pair.token,pairedAt:now()};save();audit('mgu_paired',ip);
    return send(res,200,{ok:true,host:device.host||ip,pairedAt:st.mguConnection.pairedAt});
   }
-  if(req.method==='POST'&&p==='/api/v1/logout'){delete st.sessions[hash(token(req))];save();return send(res,200,{ok:true});}
+  if(req.method==='POST'&&p==='/api/v1/logout'){delete st.sessions[hash(token(req))];save();
+   res.setHeader('Set-Cookie',SESSION_COOKIE+'=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict');
+   audit('logout','owner');return send(res,200,{ok:true});}
   if(req.method==='GET'&&p==='/api/v1/config')return send(res,200,{model:MODEL,chatgptPlan:siwc.status(),openaiConfigured:siwc.status().permission||!!APIKEY,mguConfigured:!!st.mguConnection||(!!MGU&&!!DEVICE_TOKEN),features:{chat:true,voice:'iOS Speech framework',diagnostics:true,downloads:true,vehicleActions:'locked pending verified ECU adapters'}});
   if(req.method==='GET'&&p==='/api/v1/status'){let mgu=null,error=null;try{mgu=await(await mguRequest('GET','/v1/status')).json();}catch(e){error=e.message;}return send(res,200,{server:{online:true,at:now()},mgu,error});}
   if(req.method==='GET'&&p==='/api/v1/conversations')return send(res,200,{conversations:listing(st.conversations)});
@@ -172,7 +193,34 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     let status={status:'not_configured'},prefs={auto:false};
     try{status=JSON.parse(fs.readFileSync(UPDATE_STATUS,'utf8'));}catch(e){}
     try{prefs=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8'));}catch(e){}
-    return send(res,200,{installedVersion:'0.4.0',status,auto:prefs.auto===true,channel:'NamelsMissing/mgu-chatgpt-bridge / pi-updates/stable.json',signedOnly:true});
+    return send(res,200,{installedVersion:'0.4.1',status,auto:prefs.auto===true,channel:'NamelsMissing/mgu-chatgpt-bridge / pi-updates/stable.json',signedOnly:true});
+  }
+  if(req.method==='POST'&&p==='/api/v1/updates/check'){
+    if(Date.now()-lastManualUpdateCheck<12000)return fail(res,429,'Bitte kurz warten, bevor du erneut nach Updates suchst.');
+    lastManualUpdateCheck=Date.now();
+    const latest=await fetch(GITHUB_UPDATE_BASE+'stable.json',{redirect:'error',signal:AbortSignal.timeout(12000),headers:{'cache-control':'no-cache'}});
+    if(!latest.ok)return fail(res,502,'GitHub-Status HTTP '+latest.status);
+    const channelText=await latest.text();
+    if(channelText.length>4096)throw Error('GitHub-Kanal zu groß');
+    const channel=JSON.parse(channelText),version=channel.version,file=channel.file,digest=channel.sha256;
+    if(typeof version!=='string'||!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version)||file!=='BMW_AI_Pi_Update_v'+version+'.zip'||!(/^[a-f0-9]{64}$/).test(digest||''))throw Error('GitHub Updatekanal ungültig');
+    const parts=v=>v.split('.').map(Number),compare=(a,b)=>{const x=parts(a),y=parts(b);for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]-y[i];return 0;};
+    let installedVersion='0.4.1';
+    try{const marker=JSON.parse(fs.readFileSync(path.join(__dirname,'update-version.json'),'utf8'));if(/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(marker.version))installedVersion=marker.version;}catch(e){}
+    if(compare(version,installedVersion)<=0)return send(res,200,{state:'current',version:installedVersion,message:'Keine neue Version. Installiert: '+installedVersion});
+    let prefs={auto:false};try{prefs=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8'));}catch(e){}
+    if(prefs.auto!==true)return send(res,200,{state:'available',version,installedVersion,message:'Neue Version '+version+' verfügbar. Automatische Installation ist deaktiviert.'});
+    if(!fs.existsSync(UPDATE_QUEUE)||!fs.existsSync(UPDATE_INBOX))return fail(res,503,'Signierter Update-Dienst nicht eingerichtet');
+    const response=await fetch(GITHUB_UPDATE_BASE+file,{redirect:'error',signal:AbortSignal.timeout(18000)});
+    if(!response.ok)return fail(res,502,'Update Download HTTP '+response.status);
+    const raw=Buffer.from(await response.arrayBuffer());
+    if(raw.length<200||raw.length>3*1024*1024||hash(raw)!==digest)throw Error('GitHub ZIP Prüfsumme oder Größe ungültig');
+    // The separate root updater re-verifies publisher signature and file hashes.
+    const id=uid();
+    fs.writeFileSync(path.join(UPDATE_INBOX,id+'.zip'),raw,{flag:'wx',mode:0o600});
+    fs.writeFileSync(path.join(UPDATE_QUEUE,id+'.json'),JSON.stringify({id,sha256:digest,requestedAt:now(),kind:'manual-github'}),{flag:'wx',mode:0o600});
+    audit('manual_github_update_queued',version);
+    return send(res,202,{state:'queued',version,installedVersion,message:'Signierte Version '+version+' zur Prüfung und Installation vorgemerkt.'});
   }
   if(req.method==='POST'&&p==='/api/v1/updates/upload'){
     if(!fs.existsSync(UPDATE_INBOX))return fail(res,503,'Update-Dienst nicht installiert. Installationsskript zuerst ausführen.');
