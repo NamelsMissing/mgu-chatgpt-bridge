@@ -1,15 +1,19 @@
 {
   "id": "mgu-ai-agent",
   "kind": "tool",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "title": "BMW AI Companion Agent",
-  "description": "Read-only BMW AI agent with integrated Tailscale QR sign-in and automatic Pi discovery; the Tailscale background tool must be installed separately (no separate UI app needed).",
+  "description": "Private BMW AI companion with read-only, owner-approved MGU command console; no unrestricted shell.",
   "mguHmi": [
     "ID7"
   ],
   "files": [
     {
       "path": "agent.js",
+      "mode": "0644"
+    },
+    {
+      "path": "console-readonly.js",
       "mode": "0644"
     }
   ],
