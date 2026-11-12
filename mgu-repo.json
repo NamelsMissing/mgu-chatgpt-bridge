@@ -1,7 +1,48 @@
 {
-  "schema":1,
-  "components":[
-    {"id":"mgu_chatgpt_bridge","kind":"app","title":"MGU Analysis Bridge","version":"0.1.0","path":"apps/mgu_chatgpt_bridge","mguHmi":["ID7"],"requires":{"mgu-chatgpt-bridge":"0.1.0"},"build":{"python":"kit/tools/build.py","args":["{id}"],"sdk":"oap-sdk","output":"dist/{id}@{version}.tgz"}},
-    {"id":"mgu-chatgpt-bridge","kind":"tool","title":"MGU Analysis Bridge Service","version":"0.1.0","path":"native/chatgpt-bridge","mguHmi":["ID7"],"uninstallable":true}
+  "schema": 1,
+  "components": [
+    {
+      "id": "mgu_chatgpt_bridge",
+      "kind": "app",
+      "title": "MGU Analysis Bridge / BMW AI",
+      "version": "0.2.0",
+      "path": "apps/mgu_chatgpt_bridge",
+      "mguHmi": [
+        "ID7"
+      ],
+      "requires": {
+        "mgu-ai-agent": "0.2.0"
+      },
+      "build": {
+        "python": "kit/tools/build.py",
+        "args": [
+          "{id}"
+        ],
+        "sdk": "oap-sdk",
+        "output": "dist/{id}@{version}.tgz"
+      }
+    },
+    {
+      "id": "mgu-chatgpt-bridge",
+      "kind": "tool",
+      "title": "MGU Analysis Bridge Service",
+      "version": "0.1.0",
+      "path": "native/chatgpt-bridge",
+      "mguHmi": [
+        "ID7"
+      ],
+      "uninstallable": true
+    },
+    {
+      "id": "mgu-ai-agent",
+      "kind": "tool",
+      "title": "BMW AI Companion Agent",
+      "version": "0.2.0",
+      "path": "native/mgu-ai-agent",
+      "mguHmi": [
+        "ID7"
+      ],
+      "uninstallable": true
+    }
   ]
 }
