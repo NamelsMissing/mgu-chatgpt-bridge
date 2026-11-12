@@ -1,0 +1,79 @@
+name: Publish signed BMW AI Pi update
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'pi-source/**'
+      - '.github/workflows/bmw-ai-pi-release.yml'
+permissions:
+  contents: write
+concurrency:
+  group: bmw-ai-pi-signed-release
+  cancel-in-progress: false
+jobs:
+  sign-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Require private signing key
+        env:
+          SIGNING_KEY_B64: ${{ secrets.BMW_AI_UPDATE_SIGNING_KEY_B64 }}
+        run: |
+          set -eu
+          if [ -z "$SIGNING_KEY_B64" ]; then
+            echo 'Missing GitHub Actions secret BMW_AI_UPDATE_SIGNING_KEY_B64.' >&2
+            exit 1
+          fi
+          printf '%s' "$SIGNING_KEY_B64" | base64 -d > "$RUNNER_TEMP/bmw-ai-private.pem"
+          chmod 0600 "$RUNNER_TEMP/bmw-ai-private.pem"
+          openssl pkey -in "$RUNNER_TEMP/bmw-ai-private.pem" -pubout -out "$RUNNER_TEMP/bmw-ai-public.pem"
+          cmp "$RUNNER_TEMP/bmw-ai-public.pem" pi-source/release-public.pem
+      - name: Validate sources and build signed ZIP
+        env:
+          RELEASE_KEY: ${{ runner.temp }}/bmw-ai-private.pem
+        run: |
+          set -eu
+          node --check pi-source/server.js
+          node --check pi-source/siwc.js
+          node --check pi-source/public/app.js
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,re,subprocess,tempfile,zipfile
+          root=pathlib.Path('pi-source')
+          version=(root/'VERSION').read_text().strip()
+          assert re.fullmatch(r'\d+\.\d+\.\d+',version),'Invalid release version'
+          paths=['server.js','siwc.js','public/app.js','public/index.html','public/style.css']
+          contents={x:(root/x).read_bytes() for x in paths}
+          manifest={'schema':1,'package':'bmw-ai-pi','version':version,
+            'files':[{'path':n,'sha256':hashlib.sha256(c).hexdigest()} for n,c in contents.items()]}
+          mb=(json.dumps(manifest,sort_keys=True,separators=(',',':'))+'\n').encode()
+          with tempfile.TemporaryDirectory() as d:
+            d=pathlib.Path(d);(d/'manifest.json').write_bytes(mb)
+            subprocess.run(['openssl','pkeyutl','-sign','-inkey',os.environ['RELEASE_KEY'],'-rawin',
+              '-in',str(d/'manifest.json'),'-out',str(d/'manifest.sig')],check=True)
+            outdir=pathlib.Path('pi-updates');outdir.mkdir(exist_ok=True)
+            filename='BMW_AI_Pi_Update_v'+version+'.zip';out=outdir/filename
+            with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=8) as z:
+              z.writestr('manifest.json',mb);z.writestr('manifest.sig',(d/'manifest.sig').read_bytes())
+              for name,raw in contents.items():z.writestr(name,raw)
+          channel={'schema':1,'version':version,'file':filename,'sha256':hashlib.sha256(out.read_bytes()).hexdigest()}
+          (outdir/'stable.json').write_text(json.dumps(channel,sort_keys=True,indent=2)+'\n')
+          print('Signed release',filename,channel['sha256'])
+          PY
+      - name: Publish verified signed archive
+        run: |
+          set -eu
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add pi-updates/
+          if git diff --cached --quiet; then
+            echo 'No changes to release'
+            exit 0
+          fi
+          git commit -m "Publish signed BMW AI Pi update"
+          git push origin HEAD:main
