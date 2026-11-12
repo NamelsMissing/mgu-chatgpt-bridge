@@ -1,0 +1,19 @@
+[Unit]
+Description=BMW AI MGU read-only companion service
+After=oapcontroller.service iteriodev-tailscale.service
+Wants=iteriodev-tailscale.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /var/opt/mgu-ai-agent/current/agent.js
+User=root
+WorkingDirectory=/var/opt/mgu-ai-agent
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+UMask=0077
+Environment=MGU_AI_CONFIG=/var/opt/mgu-ai-agent/config.json
+Environment=MGU_AI_DATA=/var/opt/mgu-ai-agent/data
+
+[Install]
+WantedBy=multi-user.target
