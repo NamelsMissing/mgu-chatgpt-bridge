@@ -1,0 +1,14 @@
+{
+  "id":"mgu-ai-agent",
+  "kind":"tool",
+  "version":"0.2.0",
+  "title":"BMW AI Companion Agent",
+  "description":"Private read-only diagnostic API for the Raspberry Pi through IterioDev Tailscale; local ID7 UI status",
+  "mguHmi":["ID7"],
+  "files":[{"path":"agent.js","mode":"0644"}],
+  "units":[{"name":"mgu-ai-agent.service","from":"mgu-ai-agent.service"}],
+  "enable":[{"unit":"mgu-ai-agent.service","target":"multi-user.target"}],
+  "recmgr":["mgu-ai-agent"],
+  "restart":["mgu-ai-agent.service"],
+  "uninstallable":true
+}
