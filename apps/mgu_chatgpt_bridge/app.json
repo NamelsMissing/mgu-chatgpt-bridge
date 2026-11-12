@@ -1,11 +1,35 @@
 {
- "id":"mgu_chatgpt_bridge",
- "title":"MGU Analysis Bridge / BMW AI",
- "description":"Secure QR pairing with your Raspberry Pi BMW AI server, read-only MGU diagnostics",
- "version":"0.2.0",
- "vendor":"Private MGU ID7 project",
- "loggingId":"OGPT",
- "iconGlyph":"AI",
- "mguInternet":true,
- "screens":[{"name":"MAIN","kind":"canvas","title":"BMW AI Bridge","buttons":[["BTN_PAIR","Pair with Raspberry Pi"],["BTN_REFRESH","Refresh"],["BTN_SYSTEM","System"],["BTN_NETWORK","Network"]]}]
+  "id": "mgu_chatgpt_bridge",
+  "title": "MGU Analysis Bridge / BMW AI",
+  "description": "BMW AI Assistant: Tailscale login and Raspberry Pi QR pairing inside one MGU app",
+  "version": "0.2.1",
+  "vendor": "Private MGU ID7 project",
+  "loggingId": "OGPT",
+  "iconGlyph": "AI",
+  "mguInternet": true,
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "canvas",
+      "title": "BMW AI Bridge",
+      "buttons": [
+        [
+          "BTN_TS",
+          "Netzwerk verbinden"
+        ],
+        [
+          "BTN_PAIR",
+          "Mit Raspberry Pi koppeln"
+        ],
+        [
+          "BTN_REFRESH",
+          "Aktualisieren"
+        ],
+        [
+          "BTN_SYSTEM",
+          "Systemtest"
+        ]
+      ]
+    }
+  ]
 }
