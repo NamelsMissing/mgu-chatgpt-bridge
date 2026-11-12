@@ -35,20 +35,77 @@ function listFiles(p){var real=pathAllowed(p),s=fs.statSync(real);if(!s.isDirect
 function fileContents(p){var real=pathAllowed(p),fd=fs.openSync(real,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{var s=fs.fstatSync(fd);if(!s.isFile()||s.size>8*1024*1024)throw Error('Only regular files up to 8 MiB');var b=Buffer.alloc(s.size),got=0;while(got<b.length){var n=fs.readSync(fd,b,got,b.length-got,got);if(!n)break;got+=n;}return b.slice(0,got);}finally{fs.closeSync(fd);}}
 var latest={at:null,message:'Bereit zur sicheren Kopplung',lastDiagnostic:null,paired:false};
 var pair=null;
+var tsLogin={url:'',started:0,child:null,error:''};
+// Tailscale's independently installed native tool provides the encrypted transport.
+// All user-facing login and pairing are controlled from this BMW AI app.
+function tsBin(){return process.env.MGU_AI_TS_BIN||'/var/opt/iteriodev-tailscale/current/ts';}
+function tsAvailable(){return fs.existsSync(tsBin());}
 function tailIP(){
- var bin=process.env.MGU_AI_TS_BIN||'/var/opt/iteriodev-tailscale/current/ts';
- if(!fs.existsSync(bin))return '';
- try{var out=cp.execFileSync(bin,['ip','-4'],{timeout:3500,encoding:'utf8'}).trim();
+ if(!tsAvailable())return '';
+ try{var out=cp.execFileSync(tsBin(),['ip','-4'],{timeout:2500,encoding:'utf8'}).trim();
    var ip=out.split(/\s+/)[0];var oct=ip.split('.').map(Number);
    if(oct.length===4&&oct[0]===100&&oct[1]>=64&&oct[1]<=127&&oct.slice(2).every(function(x){return x>=0&&x<=255;}))return ip;
  }catch(e){}return '';
 }
+function safeTailscaleLoginUrl(text){
+ var m=String(text).match(/https:\/\/login\.tailscale\.com\/a\/[A-Za-z0-9_-]{6,256}/);
+ return m?m[0]:'';
+}
+function connectTailscale(){
+ if(!tsAvailable()){latest.message='Tailscale-Hintergrundtool fehlt. Im MGU Store unter Tools installieren (keine separate App).';return;}
+ if(tailIP()){tsLogin.url='';latest.message='Tailscale bereits verbunden. Jetzt Raspberry Pi koppeln.';return;}
+ if(tsLogin.child){latest.message='Tailscale-Anmeldung laeuft. QR-Code scannen.';return;}
+ tsLogin.url='';tsLogin.started=Date.now();tsLogin.error='';
+ latest.message='Tailscale wird gestartet. QR-Code folgt.';
+ try{
+  var child=cp.spawn(tsBin(),['up','--hostname=bmw-mgu'],{stdio:['ignore','pipe','pipe']});
+  tsLogin.child=child;
+  var outputBuffer='';
+  function onOutput(chunk){
+    outputBuffer=(outputBuffer+chunk.toString('utf8')).slice(-8192);
+    var found=safeTailscaleLoginUrl(outputBuffer);
+    if(found){tsLogin.url=found;latest.message='Tailscale-QR-Code scannen und Geraet freigeben.';emitUI();}
+  }
+  child.stdout.on('data',onOutput);child.stderr.on('data',onOutput);
+  child.on('error',function(e){tsLogin.child=null;tsLogin.error=e.message;latest.message='Tailscale-Start fehlgeschlagen: '+String(e.message).slice(0,90);emitUI();});
+  child.on('exit',function(code){if(tsLogin.child===child)tsLogin.child=null;
+    if(tailIP()){tsLogin.url='';latest.message='Tailscale verbunden. Jetzt Raspberry Pi koppeln.';}
+    else if(!tsLogin.url){latest.message='Tailscale-Anmeldung fehlgeschlagen (Exit '+code+'). Bitte mgu-uplink pruefen.';}
+    emitUI();
+  });
+  setTimeout(function(){if(tsLogin.child===child){child.kill('SIGTERM');tsLogin.child=null;}tsLogin.url='';emitUI();},300000);
+ }catch(e){tsLogin.child=null;latest.message='Tailscale-Start fehlgeschlagen: '+String(e.message).slice(0,90);}
+}
+function tsNetworkStatus(){
+ var ip=tailIP();
+ if(ip)tsLogin.url='';
+ if(tsLogin.url&&Date.now()-tsLogin.started>300000)tsLogin.url='';
+ return {installed:tsAvailable(),connected:!!ip,tailIP:ip,loginUrl:ip?'':tsLogin.url,
+   error:tsLogin.error,loginRunning:!!tsLogin.child};
+}
+function autoPiOrigin(){
+ if(!tsAvailable())return '';
+ try{
+  var value=JSON.parse(cp.execFileSync(tsBin(),['status','--json'],{timeout:4500,encoding:'utf8',maxBuffer:220000}));
+  var peers=value.Peer||{};
+  var keys=Object.keys(peers);
+  for(var i=0;i<keys.length;i++){
+   var peer=peers[keys[i]],host=String(peer.HostName||'').toLowerCase(),dns=String(peer.DNSName||'').replace(/\.$/,'').toLowerCase();
+   if((host==='bmw-ai-pi'||dns.indexOf('bmw-ai-pi.')===0)&&/^bmw-ai-pi\.[a-z0-9.-]+\.ts\.net$/.test(dns))return 'https://'+dns;
+  }
+ }catch(e){}
+ return '';
+}
 function beginPair(){
- var c=cfg(),ip=tailIP(),origin=String(c.piOrigin||'').replace(/\/+$/,'');
- if(!/^https:\/\/[A-Za-z0-9.-]+\.ts\.net$/.test(origin)){latest.message='Pi-Adresse nicht konfiguriert: piOrigin in config.json';pair=null;return;}
- if(!ip){latest.message='Tailscale auf MGU noch nicht verbunden';pair=null;return;}
+ var c=cfg(),ip=tailIP();
+ if(!ip){connectTailscale();latest.message=tsLogin.url?'Zuerst den Tailscale-QR-Code scannen.':'Zuerst Netzwerk verbinden und Tailscale freigeben.';pair=null;return;}
+ var origin=String(c.piOrigin||'').replace(/\/+$/,'');
+ if(!origin)origin=autoPiOrigin();
+ if(!/^https:\/\/[A-Za-z0-9.-]+\.ts\.net$/.test(origin)){
+  latest.message='Raspberry Pi nicht im Tailnet gefunden (Geraetename bmw-ai-pi).';pair=null;return;
+ }
  pair={code:crypto.randomBytes(16).toString('hex'),expires:Date.now()+120000,ip:ip,origin:origin};
- latest.message='QR-Code am iPhone scannen und im Pi-Portal bestaetigen';
+ latest.message='BMW-AI-QR-Code scannen und Kopplung auf dem Pi bestaetigen.';
 }
 function pairingInfo(){if(pair&&Date.now()>=pair.expires)pair=null;
  if(!pair)return {pairUrl:'',pairExpiresAt:null,tailIP:tailIP()};
@@ -59,8 +116,8 @@ function claimPair(code){
  pair=null;latest.paired=true;latest.message='MGU mit dem Pi gekoppelt';emitUI();return cfg().token;
 }
 function appDataDirs(){var root='/var/opt/public/oap',result=[];try{fs.readdirSync(root).forEach(function(d){if(!/^oap_\d+$/.test(d))return;var dir=path.join(root,d);try{var pkg=JSON.parse(fs.readFileSync(path.join(dir,'source/package.json'),'utf8'));if(pkg.name==='mgu_ai_assistant'||pkg.name==='mgu_chatgpt_bridge')result.push(path.join(dir,'data'));}catch(e){}});}catch(e){}return result;}
-function emitUI(){var value={version:'0.2.0',paired:!!latest.paired,pairing:pairingInfo(),at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,remoteAccess:'Tailscale only; service listens on loopback',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:bridgeInfo()};appDataDirs().forEach(function(dir){try{var f=path.join(dir,'bmw-ai-status.json'),tmp=f+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),{mode:0o644});fs.renameSync(tmp,f);}catch(e){}});}
-function localRequests(){appDataDirs().forEach(function(dir){var f=path.join(dir,'bmw-ai-request.json');try{if(!fs.existsSync(f))return;var b=fs.readFileSync(f,'utf8');fs.unlinkSync(f);if(b.length>1000)return;var d=JSON.parse(b);if(d.action==='diagnostic'&&['system','network','audio','bridge'].indexOf(d.preset)>=0){var result=diag(d.preset);latest.lastDiagnostic={preset:d.preset,at:result.at,preview:JSON.stringify(result.values).slice(0,350)};fs.writeFileSync(path.join(DATA,'last-local-diagnostic.json'),JSON.stringify(result),{mode:0o600});}if(d.action==='refresh'){latest.message='Status aktualisiert';}if(d.action==='pair')beginPair();}catch(e){}});emitUI();}
+function emitUI(){var value={version:'0.2.1',paired:!!latest.paired,tailscale:tsNetworkStatus(),pairing:pairingInfo(),at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:bridgeInfo()};appDataDirs().forEach(function(dir){try{var f=path.join(dir,'bmw-ai-status.json'),tmp=f+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),{mode:0o644});fs.renameSync(tmp,f);}catch(e){}});}
+function localRequests(){appDataDirs().forEach(function(dir){var f=path.join(dir,'bmw-ai-request.json');try{if(!fs.existsSync(f))return;var b=fs.readFileSync(f,'utf8');fs.unlinkSync(f);if(b.length>1000)return;var d=JSON.parse(b);if(d.action==='diagnostic'&&['system','network','audio','bridge'].indexOf(d.preset)>=0){var result=diag(d.preset);latest.lastDiagnostic={preset:d.preset,at:result.at,preview:JSON.stringify(result.values).slice(0,350)};fs.writeFileSync(path.join(DATA,'last-local-diagnostic.json'),JSON.stringify(result),{mode:0o600});}if(d.action==='network-connect')connectTailscale();if(d.action==='refresh'){latest.message='Status aktualisiert';}if(d.action==='pair')beginPair();}catch(e){}});emitUI();}
 function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorization||'').replace(/^Bearer /,'');if(req.url.split('?')[0]!=='/v1/pair/claim'&&!constantEq(raw,c.token))return json(res,401,{error:'Unauthorized'});
  var url=req.url.split('?')[0],b={};if(req.method==='POST')b=await read(req);
  if(req.method==='POST'&&url==='/v1/pair/claim'){
@@ -77,4 +134,4 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
  return json(res,404,{error:'Not found'});
  })().catch(function(e){json(res,400,{error:String(e.message).slice(0,200)});});}
 if(require.main===module){if(process.argv[2]==='init'){init(false);process.exit(0);}if(!fs.existsSync(CONFIG))init(true);cfg();if(!Number.isInteger(PORT)||PORT<1024||PORT>65535)throw Error('Invalid port');http.createServer(app).listen(PORT,'127.0.0.1',function(){console.log('BMW MGU companion agent listening on local loopback port '+PORT);});setInterval(localRequests,3000);localRequests();}
-module.exports={diag:diag,pathAllowed:pathAllowed,app:app,beginPair:beginPair,claimPair:claimPair,pairingInfo:pairingInfo};
+module.exports={diag:diag,pathAllowed:pathAllowed,app:app,beginPair:beginPair,claimPair:claimPair,pairingInfo:pairingInfo,connectTailscale:connectTailscale,autoPiOrigin:autoPiOrigin,tsNetworkStatus:tsNetworkStatus,safeTailscaleLoginUrl:safeTailscaleLoginUrl};
