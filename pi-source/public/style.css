@@ -23,3 +23,71 @@
 .new-version-notice{margin:8px auto;max-width:1100px;padding:12px 16px;border:1px solid #4c7896;border-radius:12px;background:#163450;color:#e9f3fc;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .new-version-notice[hidden]{display:none}
 .new-version-notice button{margin-left:auto}
+
+/* Full-width mobile MGU terminal — only style the console, not the other tabs. */
+#console{min-height:0}
+.console-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.console-heading h2{margin:0 0 6px}
+.console-heading .hint{margin:0}
+.console-connection{display:flex;align-items:center;gap:8px;border:1px solid #36516b;padding:6px 9px 6px 12px;border-radius:100px;background:#182b40;font-size:.8rem;white-space:nowrap}
+.console-dot{width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:#a5aab7}
+.console-dot.is-online{background:#47d392;box-shadow:0 0 0 3px #47d39220}
+.console-dot.is-offline{background:#ef9a75}
+.console-terminal{background:#07111f;border:1px solid #304b63;border-radius:16px;overflow:hidden;box-shadow:0 10px 32px #0004}
+.console-terminal-bar{min-height:43px;padding:10px 14px;background:#1a2d40;display:flex;align-items:center;gap:12px;border-bottom:1px solid #31455b;font-size:.83rem}
+.console-terminal-bar strong{font-weight:650}
+.console-terminal-lights{display:flex;align-items:center;gap:5px}
+.console-terminal-lights i{display:block;width:9px;height:9px;border-radius:50%;background:#b05f65}
+.console-terminal-lights i:nth-child(2){background:#c9a75b}
+.console-terminal-lights i:nth-child(3){background:#4aa780}
+.console-mode{margin-left:auto;border:1px solid #506c82;color:#b9cee4;border-radius:100px;padding:3px 8px;font-size:.68rem;letter-spacing:.08em}
+#consoleOutput.terminal-output{margin:0;min-height:240px;height:min(43vh,460px);overflow-y:auto;overscroll-behavior:contain;background:#091624;padding:15px 17px;color:#dbe8ee;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;border:0;border-radius:0}
+.console-line{margin-bottom:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+.console-line-cmd{color:#83e0bb;font-weight:600;margin-top:14px}
+.console-line-info{color:#96b4c8}
+.console-line-error{color:#ffaeaa}
+.console-line-success{color:#8fdca9}
+.console-line-output{color:#e0edf7}
+.console-command-form{border-top:1px solid #294259;padding:13px 15px 15px;background:#0d1e30}
+.console-input-label{display:block;font-size:.68rem;letter-spacing:.10em;font-weight:700;color:#9ab9d1;margin-bottom:8px}
+.console-command-row{display:flex;align-items:stretch;gap:9px}
+.console-prompt{font:600 14px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace;color:#79d7ae;padding-top:12px;white-space:nowrap}
+#consoleInput{flex:1;width:100%;min-width:0;background:#142d42;border:1px solid #476781;color:#f4faff;font:14px/1.3 ui-monospace,SFMono-Regular,Consolas,monospace;border-radius:9px}
+#consoleInput:focus{outline:2px solid #5aa0d9;outline-offset:1px}
+#consoleSend{white-space:nowrap;padding:10px 18px;font-weight:650}
+.console-command-help{font-size:.73rem;color:#8eacc2;margin-top:9px}
+.console-approval{border-top:1px solid #5b7180;background:#1a3448;padding:16px}
+.console-approval[hidden]{display:none}
+.console-approval-top{display:flex;gap:9px;justify-content:space-between;align-items:center;flex-wrap:wrap}
+.console-approval-top span{font-size:.75rem;color:#a9c2d5}
+.console-approval-command{font:13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;color:#a6edd0;background:#071725;padding:12px;margin:12px 0;border-radius:9px;white-space:pre-wrap;overflow-wrap:anywhere}
+.console-approval p{margin:10px 0;color:#bbd0df;font-size:.82rem}
+.console-approval-actions{display:flex;gap:9px;flex-wrap:wrap}
+.console-result{margin:10px 0 16px;min-height:1em}
+.console-result.is-error{color:#ffb2a6}
+.console-shortcuts{margin-top:18px}
+.console-shortcut-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.console-shortcut-header span{color:#99b5c9;font-size:.75rem}
+.console-shortcut-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+#console .console-chip{background:#192e41;border:1px solid #345874;font-size:.82rem;padding:9px 12px;border-radius:20px}
+#console .console-chip:hover{background:#244761}
+.console-help{margin:15px 0;padding:12px 14px;border-radius:12px;border:1px solid #334e65;background:#162639}
+.console-help summary{cursor:pointer;font-weight:600;color:#c9e1f7}
+.console-help p{font-size:.86rem;color:#b0cbe0}
+.console-help code{color:#bbf2d5;font-size:.84em;overflow-wrap:anywhere}
+.console-toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:18px 0}
+#console .console-toolbar button{background:#203b54;border-color:#385b77;font-size:.84rem}
+#console .console-utility{background:transparent;border:1px solid #456179;color:#c7d8e8;font-size:.8rem}
+@media(max-width:600px){
+ .console-heading{gap:10px;margin-bottom:12px}
+ .console-terminal-bar{padding:9px 11px}
+ #consoleOutput.terminal-output{height:38vh;min-height:220px;padding:12px;font-size:12.5px}
+ .console-command-form{padding:12px}
+ .console-command-row{gap:6px}
+ #consoleInput{font-size:16px;padding:9px}
+ #consoleSend{padding:9px 12px}
+ .console-prompt{font-size:12px;padding-top:13px}
+ .console-command-help{font-size:.7rem}
+ .console-approval-actions button{flex:1}
+ .console-connection{font-size:.75rem}
+}
