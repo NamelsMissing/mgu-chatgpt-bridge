@@ -115,6 +115,95 @@ $('importSelectedChats').onclick=async()=>{
   }finally{btn.disabled=false;}
 };
 
+// ----- Owner-controlled return export to ChatGPT project conversations -----
+let chatExportCandidates=[],chosenChatExports=new Set();
+function exportChoices(){
+ const filter=$('chatExportSearch').value.trim().toLowerCase(),root=$('chatExportList');
+ root.replaceChildren();
+ const visible=chatExportCandidates.filter(c=>String(c.title||'').toLowerCase().includes(filter)).slice(0,150);
+ for(const c of visible){
+   const row=document.createElement('label');row.className='import-choice';
+   const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=chosenChatExports.has(c.id);
+   checkbox.onchange=()=>{if(checkbox.checked)chosenChatExports.add(c.id);else chosenChatExports.delete(c.id);};
+   row.appendChild(checkbox);
+   row.appendChild(txt('span',(c.importSource==='ChatGPT'?'[ChatGPT-Import] ':'')+(c.title||'Ohne Titel')));
+   root.appendChild(row);
+ }
+ $('chatExportResult').textContent=chosenChatExports.size+' Chat(s) ausgewählt. Ein Export darf höchstens 25 Chats enthalten.';
+}
+async function refreshChatExportOptions(){
+ try{
+   const p=await api('/conversations/export/automatic');
+   $('autoChatExport').checked=p.enabled===true;
+   $('chatExportInfo').textContent=p.available?'Lokale Kopie zuletzt erstellt: '+p.updatedAt:'Noch keine lokale Exportkopie vorhanden.';
+ }catch(e){$('chatExportInfo').textContent='Auto-Export: '+e.message;}
+}
+$('openChatExport').onclick=async()=>{
+ $('chatExportPanel').hidden=false;
+ try{
+   const d=await api('/conversations');chatExportCandidates=d.conversations;
+   if(!chosenChatExports.size&&conversationId)chosenChatExports.add(conversationId);
+   exportChoices();await refreshChatExportOptions();
+ }catch(e){$('chatExportResult').textContent='Chats konnten nicht geladen werden: '+e.message;}
+};
+$('closeChatExport').onclick=()=>{$('chatExportPanel').hidden=true;};
+$('chatExportSearch').oninput=exportChoices;
+$('markAllExportChats').onclick=()=>{
+ const filter=$('chatExportSearch').value.trim().toLowerCase();
+ chosenChatExports=new Set(chatExportCandidates.filter(c=>String(c.title||'').toLowerCase().includes(filter)).slice(0,25).map(c=>c.id));
+ exportChoices();
+};
+$('markNoExportChats').onclick=()=>{chosenChatExports.clear();exportChoices();};
+function chatExportRequest(){
+ const ids=Array.from(chosenChatExports);
+ if(!ids.length||ids.length>25)throw Error('Bitte 1 bis 25 Chats markieren.');
+ return {ids,scope:$('chatExportNewOnly').checked?'new':'full',format:$('chatExportFormat').value};
+}
+function triggerFileDownload(blob,filename){
+ const u=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(u),30000);
+}
+async function generateChatExport(share){
+ const data=chatExportRequest(),button=$(share?'shareExportChats':'exportSelectedChats');
+ button.disabled=true;
+ try{
+   $('chatExportResult').textContent='Export wird zusammengestellt ...';
+   const r=await fetch('/api/v1/conversations/export',{method:'POST',
+     headers:{...authHeaders(),'content-type':'application/json'},body:JSON.stringify(data),cache:'no-store'});
+   if(!r.ok){const e=await r.json().catch(()=>({}));throw Error(e.error||'HTTP '+r.status);}
+   const bytes=await r.blob(),extension=data.format==='json'?'json':'md';
+   const name='bmw-ai-chats-'+new Date().toISOString().slice(0,10)+'.'+extension;
+   if(share&&navigator.share){
+     const file=new File([bytes],name,{type:data.format==='json'?'application/json':'text/markdown'});
+     if(!navigator.canShare||navigator.canShare({files:[file]})){
+       try{await navigator.share({files:[file],title:'BMW AI Chats für ChatGPT'});$('chatExportResult').textContent='Datei geteilt. Du kannst sie im gewünschten ChatGPT-Projekt als Kontext hochladen.';return;}
+       catch(e){if(e.name==='AbortError'){$('chatExportResult').textContent='Teilen abgebrochen. Keine Daten an ChatGPT übermittelt.';return;}}
+     }
+   }
+   triggerFileDownload(bytes,name);
+   $('chatExportResult').textContent='Datei heruntergeladen. Öffne dein ChatGPT-Projekt und füge sie dem gewünschten Chat als Anhang hinzu.';
+ }catch(e){$('chatExportResult').textContent='Export fehlgeschlagen: '+e.message;}
+ finally{button.disabled=false;}
+}
+$('exportSelectedChats').onclick=()=>generateChatExport(false);
+$('shareExportChats').onclick=()=>generateChatExport(true);
+$('autoChatExport').onchange=async()=>{
+ const el=$('autoChatExport');el.disabled=true;
+ try{const d=await api('/conversations/export/automatic','POST',{enabled:el.checked});
+   $('chatExportResult').textContent=d.enabled?'Lokale automatische Exportkopie aktiviert (keine Cloud-Übertragung).':'Lokale Exportkopie wird nicht mehr automatisch aktualisiert.';
+ }catch(e){el.checked=!el.checked;$('chatExportResult').textContent=e.message;}
+ finally{el.disabled=false;setTimeout(refreshChatExportOptions,3200);}
+};
+$('downloadChatSnapshot').onclick=async()=>{
+ try{
+  const r=await fetch('/api/v1/conversations/export/latest',{headers:authHeaders(),cache:'no-store'});
+  if(!r.ok){const e=await r.json().catch(()=>({}));throw Error(e.error||'HTTP '+r.status);}
+  triggerFileDownload(await r.blob(),'bmw-ai-chat-snapshot.md');
+  $('chatExportResult').textContent='Lokalen Chat-Snapshot heruntergeladen.';
+ }catch(e){$('chatExportResult').textContent='Snapshot: '+e.message;}
+};
+
 // ----- Browser-initiated, separately signed Raspberry Pi updates -----
 async function refreshUpdates(){
   if(!token)return;
