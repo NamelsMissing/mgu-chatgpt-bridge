@@ -25,7 +25,47 @@
 </div><div class="messages" id="messages"></div><div class="composer"><select id="chatFile"><option value="">Ohne Datei</option></select><textarea id="chatInput" placeholder="Frage zu deinem BMW oder zu den Diagnoseergebnissen ..."></textarea><button id="sendChat">Senden</button></div><p class="hint">KI-Antworten sind keine Bestätigung, dass das Fahrzeug einen Befehl ausgeführt hat.</p></section>
 <section id="status" class="tab" hidden><h2>MGU koppeln</h2><div id="pairPanel" class="panel" hidden><p id="pairDescription">QR-Verbindung erkannt</p><button id="pairButton">MGU einmalig koppeln</button><p id="pairError" class="error"></p></div><h2>Fahrzeugstatus</h2><button id="refreshStatus">Aktualisieren</button><pre id="statusResult">Noch keine Abfrage</pre><p class="hint">Nicht verfügbare Live-Daten bleiben ausdrücklich als nicht verfügbar markiert.</p></section>
 <section id="diag" class="tab" hidden><h2>Systemdiagnose</h2><p>Eine Abfrage benötigt die Freigabe im Reiter Freigaben.</p><select id="preset"><option value="system">System</option><option value="network">Netzwerk</option><option value="audio">Audio</option><option value="services">Dienste</option><option value="storage">Speicher</option><option value="bridge">Bisherige Bridge</option><option value="recent_logs">MGU-Dienstlogs</option><option value="vehicle">Fahrzeugdaten (nur bei geprüftem Adapter)</option></select><button id="createDiag">Freigabe anfordern</button></section>
-<section id="console" class="tab" hidden><h2>MGU-Konsole (SSH-ähnlich)</h2><p class="hint">Nur lesende, geprüfte Befehle. Jeder Befehl benötigt deine ausdrückliche Freigabe. Kein uneingeschränkter Root-Shell-Zugriff. Dateien und Ergebnisse können im Chat analysiert werden.</p><div class="panel"><p><strong>Beispiele:</strong> <code>ls /etc/cinemo</code> · <code>grep -niE "audio|CarPlay" /etc/cinemo/cinemo_options.xml</code> · <code>find /usr/lib/oap-mainapp dsp</code></p></div><pre id="consoleOutput" class="terminal-output" aria-label="MGU-Konsolenausgabe">BMW AI MGU read-only console. Type help.</pre><div class="toolbar"><input id="consoleInput" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="mgu $ ls /etc/cinemo"><button id="consoleSend">Befehl anfragen</button></div><div id="consoleApproval" class="panel" hidden><strong>Freigabe erforderlich</strong><pre id="consoleExact"></pre><div class="toolbar"><button id="consoleApprove">Genau diesen Befehl freigeben</button><button id="consoleReject" class="danger">Ablehnen</button></div></div><div class="toolbar"><button id="consoleCopy">Ausgabe kopieren</button><button id="consoleClear">Konsole leeren</button><button id="consoleExport">TXT speichern</button></div></section>
+<section id="console" class="tab" hidden>
+  <div class="console-heading">
+    <div><h2>MGU-Terminal</h2><p class="hint">Befehle auf der Headunit ausführen – im geschützten Lesemodus.</p></div>
+    <div class="console-connection"><span id="consoleDot" class="console-dot"></span><span id="consoleConnectionText">MGU prüfen ...</span><button type="button" id="consoleRefreshConnection" class="console-utility" title="Verbindung erneut prüfen">↻</button></div>
+  </div>
+  <div class="console-terminal">
+    <div class="console-terminal-bar"><span class="console-terminal-lights" aria-hidden="true"><i></i><i></i><i></i></span><strong>mgu · Terminal</strong><span class="console-mode">READ ONLY</span></div>
+    <div id="consoleOutput" class="terminal-output" role="log" aria-label="MGU-Terminalausgabe" aria-live="polite" aria-relevant="additions text"></div>
+    <div id="consoleApproval" class="console-approval" hidden>
+      <div class="console-approval-top"><strong>Ausführung bestätigen</strong><span>Einmalige Freigabe</span></div>
+      <div class="console-approval-command" id="consoleExact"></div>
+      <p>Nur dieser Befehl wird ausgeführt. Die Freigabe gilt nicht für weitere Eingaben.</p>
+      <div class="console-approval-actions"><button type="button" id="consoleApprove">Ausführen</button><button type="button" id="consoleReject" class="danger">Abbrechen</button></div>
+    </div>
+    <form id="consoleCommandForm" class="console-command-form" autocomplete="off">
+      <label class="console-input-label" for="consoleInput">BEFEHL EINGEBEN</label>
+      <div class="console-command-row"><span class="console-prompt" aria-hidden="true">mgu $</span><input id="consoleInput" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="z. B. ls /etc/cinemo" aria-label="MGU-Befehl eingeben"><button id="consoleSend" type="submit">Ausführen</button></div>
+      <div class="console-command-help">Enter = anfragen · ↑ / ↓ = Verlauf · Jede Ausführung braucht deine Freigabe</div>
+    </form>
+  </div>
+  <p id="consoleResult" class="console-result hint" role="status"></p>
+  <div class="console-shortcuts">
+    <div class="console-shortcut-header"><strong>Schnellbefehle</strong><span>Antippen füllt das Eingabefeld</span></div>
+    <div class="console-shortcut-list">
+      <button type="button" class="console-chip" data-console-command="help">help</button>
+      <button type="button" class="console-chip" data-console-command="ls /etc/cinemo">Dateien anzeigen</button>
+      <button type="button" class="console-chip" data-console-command="find /usr/lib/oap-mainapp dsp">DSP suchen</button>
+      <button type="button" class="console-chip" data-console-command="ip -4 addr">Netzwerk</button>
+      <button type="button" class="console-chip" data-console-command="uname -a">System</button>
+    </div>
+  </div>
+  <details class="console-help"><summary>Welche Befehle funktionieren?</summary>
+    <p>Die aktuelle Verbindung ist <strong>keine freie SSH-Shell</strong>. Unterstützt werden einzelne Lesebefehle, etwa <code>ls /etc/cinemo</code>, <code>cat /etc/cinemo/cinemo_options.xml</code>, <code>grep -niE "audio|CarPlay" /etc/cinemo/cinemo_options.xml</code> und <code>find /usr/lib/oap-mainapp dsp</code>.</p>
+    <p>Schleifen, Pipes, Umleitungen und Schreibbefehle werden absichtlich nicht ausgeführt. Ein <code>|</code> innerhalb eines in Anführungszeichen stehenden Suchbegriffs ist erlaubt. Für vollständiges Root-SSH benötigst du weiterhin deine separate MGU-SSH-App.</p>
+  </details>
+  <div class="console-toolbar">
+    <button type="button" id="consoleCopy">Kopieren</button>
+    <button type="button" id="consoleExport">TXT speichern</button>
+    <button type="button" id="consoleClear" class="console-utility">Verlauf leeren</button>
+  </div>
+</section>
 <section id="actions" class="tab" hidden><h2>Fahrzeugfunktionen</h2><p>Vorbereitete Schnittstellen: Lenkradheizung, Fahrersitzheizung und Ambient-Rücksetzung.</p><div class="panel"><strong>Noch gesperrt</strong><p>Ohne verifizierte BMW-ID7-Diagnoseadapter und sichere Rückmeldung werden keine physischen Befehle übertragen. Die Server-API antwortet derzeit absichtlich mit „nicht implementiert“.</p></div></section>
 <section id="jobs" class="tab" hidden><h2>Freigaben</h2><button id="refreshJobs">Aktualisieren</button><div id="jobList"></div></section>
 <section id="files" class="tab" hidden><h2>Dateien</h2><div class="toolbar"><input type="file" id="upload"><button id="uploadBtn">Datei hochladen</button></div><div class="toolbar"><input type="text" id="mguFilePath" placeholder="MGU-Dateipfad, z. B. /etc/cinemo/... "><button id="fetchFile">Abruf anfragen</button></div><div class="toolbar"><input type="text" id="mguFolderPath" placeholder="Verzeichnis, z. B. /var/log"><button id="listFolder">Verzeichnis auflisten</button></div><div id="fileList"></div></section>
