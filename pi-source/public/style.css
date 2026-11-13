@@ -18,3 +18,8 @@
 #chatExportPanel .toolbar select{max-width:100%;min-width:180px}
 #chatExportPanel .panel{margin-top:18px}
 #chatExportInfo,#chatExportResult{white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* Reload only after an update, never while a message is being composed. */
+.new-version-notice{margin:8px auto;max-width:1100px;padding:12px 16px;border:1px solid #4c7896;border-radius:12px;background:#163450;color:#e9f3fc;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.new-version-notice[hidden]{display:none}
+.new-version-notice button{margin-left:auto}
