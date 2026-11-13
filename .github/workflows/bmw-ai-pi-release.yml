@@ -66,12 +66,14 @@ jobs:
           node --check pi-source/public/app.js
           node pi-source/tests/test-chat-export.js
           node pi-source/tests/test-auto-update-prefs.js
+          node pi-source/tests/test-auto-web-refresh.js
           python3 - <<'PY'
           import hashlib,json,os,pathlib,re,subprocess,tempfile,zipfile
           root=pathlib.Path('pi-source')
           version=(root/'VERSION').read_text().strip()
           assert re.fullmatch(r'\d+\.\d+\.\d+',version),'Invalid release version'
           assert ("version:'"+version+"'") in (root/'server.js').read_text(), 'Health version mismatch'
+          assert ("const SERVER_VERSION='"+version+"'") in (root/'server.js').read_text(), 'HTML version mismatch'
           paths=['server.js','siwc.js','public/app.js','public/index.html','public/style.css']
           contents={x:(root/x).read_bytes() for x in paths}
           manifest={'schema':1,'package':'bmw-ai-pi','version':version,
