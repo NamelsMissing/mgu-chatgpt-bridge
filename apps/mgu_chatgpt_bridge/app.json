@@ -1,8 +1,8 @@
 {
   "id": "mgu_chatgpt_bridge",
   "title": "MGU Analysis Bridge / BMW AI",
-  "description": "BMW AI Assistant: Tailscale login and Raspberry Pi QR pairing inside one MGU app",
-  "version": "0.2.1",
+  "description": "BMW AI: Tailscale pairing and QR launch of a login-protected mobile MGU terminal",
+  "version": "0.2.2",
   "vendor": "Private MGU ID7 project",
   "loggingId": "OGPT",
   "iconGlyph": "AI",
@@ -28,6 +28,10 @@
         [
           "BTN_SYSTEM",
           "Systemtest"
+        ],
+        [
+          "BTN_CONSOLE",
+          "Handy-Terminal QR"
         ]
       ]
     }
