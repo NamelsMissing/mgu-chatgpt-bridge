@@ -169,7 +169,7 @@ function scheduleLocalChatExport(){
 }
 function listing(obj){return Object.values(obj).sort((a,b)=>String(b.createdAt||b.at||'').localeCompare(String(a.createdAt||a.at||'')));}
 function route(req,res){const url=new URL(req.url,'http://localhost');const p=url.pathname;return (async()=>{
- if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.4.2'});
+ if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.4.3'});
  if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');
   const remember=d.remember===true,days=remember?30:14;
   const t=crypto.randomBytes(32).toString('base64url');
@@ -293,10 +293,20 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
   // Update ZIP files and requests are processed ONLY by the separate root-owned
   // systemd updater, which verifies the pinned Ed25519 publisher signature and hashes.
   if(req.method==='GET'&&p==='/api/v1/updates'){
-    let status={status:'not_configured'},prefs={auto:false};
+    let status={status:'not_configured'},prefs={auto:false},autoSettingsError=false;
     try{status=JSON.parse(fs.readFileSync(UPDATE_STATUS,'utf8'));}catch(e){}
-    try{prefs=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8'));}catch(e){}
-    return send(res,200,{installedVersion:'0.4.2',status,auto:prefs.auto===true,channel:'NamelsMissing/mgu-chatgpt-bridge / pi-updates/stable.json',signedOnly:true});
+    try{
+      const raw=fs.readFileSync(UPDATE_PREFS,'utf8');
+      const parsed=JSON.parse(raw);
+      if(!parsed||typeof parsed.auto!=='boolean')throw Error('Ungültige Einstellungen');
+      prefs=parsed;
+    }catch(e){
+      // A missing file means "not configured"; unreadable/corrupt settings must NOT
+      // silently appear as an intentionally disabled auto-update checkbox.
+      if(e.code!=='ENOENT')autoSettingsError=true;
+    }
+    return send(res,200,{installedVersion:'0.4.3',status,auto:prefs.auto===true,autoSettingsError,
+      channel:'NamelsMissing/mgu-chatgpt-bridge / pi-updates/stable.json',signedOnly:true});
   }
   if(req.method==='POST'&&p==='/api/v1/updates/check'){
     if(Date.now()-lastManualUpdateCheck<12000)return fail(res,429,'Bitte kurz warten, bevor du erneut nach Updates suchst.');
@@ -308,7 +318,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     const channel=JSON.parse(channelText),version=channel.version,file=channel.file,digest=channel.sha256;
     if(typeof version!=='string'||!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version)||file!=='BMW_AI_Pi_Update_v'+version+'.zip'||!(/^[a-f0-9]{64}$/).test(digest||''))throw Error('GitHub Updatekanal ungültig');
     const parts=v=>v.split('.').map(Number),compare=(a,b)=>{const x=parts(a),y=parts(b);for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]-y[i];return 0;};
-    let installedVersion='0.4.2';
+    let installedVersion='0.4.3';
     try{const marker=JSON.parse(fs.readFileSync(path.join(__dirname,'update-version.json'),'utf8'));if(/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(marker.version))installedVersion=marker.version;}catch(e){}
     if(compare(version,installedVersion)<=0)return send(res,200,{state:'current',version:installedVersion,message:'Keine neue Version. Installiert: '+installedVersion});
     let prefs={auto:false};try{prefs=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8'));}catch(e){}
