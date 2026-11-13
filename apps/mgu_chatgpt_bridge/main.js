@@ -9,16 +9,22 @@ mgu.run({async start(ctx){
  ctx.ui.onClick('BTN_PAIR',()=>request('pair'));
  ctx.ui.onClick('BTN_REFRESH',reload);
  ctx.ui.onClick('BTN_SYSTEM',()=>request('diagnostic','system'));
+ let consoleQr=false;
+ ctx.ui.onClick('BTN_CONSOLE',()=>{consoleQr=true;request('console-link');});
  ctx.loop('MAIN',1,async()=>{
   reload();const cv=ctx.canvas(1600,520);cv.clear('#081320');cv.roundRect(24,20,1552,480,24,'#13253b');
   cv.text('BMW AI ASSISTANT',58,91,42,'#ecf7ff',{font:'bold'});
-  cv.text('ID7 / Version 0.2.1  |  Netzwerk + Pi-Kopplung',60,131,21,'#a8c6e5');
+  cv.text('ID7 / Version 0.2.2  |  Netzwerk + Pi + Handy-Terminal',60,131,21,'#a8c6e5');
   const ts=info&&info.tailscale||{},p=info&&info.pairing||{};
   let qrLink='',phase='',instruction='';
   if(!info){phase='DIENST NICHT ERREICHBAR';instruction='BMW AI Companion Agent aus deinem MGU Store installieren.';}
   else if(!ts.installed){phase='NETZWERKTOOL FEHLT';instruction='Nur das Tailscale-Tool unter Tools installieren, keine zweite App.';}
   else if(!ts.connected){phase='SCHRITT 1: TAILSCALE';qrLink=ts.loginUrl||'';instruction=qrLink?'Tailscale-QR-Code scannen und MGU freigeben.':'Unten NETZWERK VERBINDEN waehlen.';}
   else if(!info.paired){phase='SCHRITT 2: RASPBERRY PI';qrLink=p.pairUrl||'';instruction=qrLink?'BMW AI QR scannen und auf dem Pi bestaetigen.':'Unten MIT RASPBERRY PI KOPPELN waehlen.';}
+  else if(consoleQr){
+   phase='HANDY-KONSOLE';qrLink=info.webConsoleUrl||'';
+   instruction=qrLink?'QR mit iPhone scannen. Nach Pi-Login wird die Konsole geoeffnet.':'Handy-Link wird ueber Tailscale ermittelt. Bitte aktualisieren.';
+  }
   else {phase='BMW AI VERBUNDEN';instruction='MGU im Tailnet. Diagnose und Dateiabruf am Pi verwenden.';}
   cv.text(phase,62,190,32,info&&ts.connected?'#69e2ac':'#ffd18f',{font:'bold'});
   cv.text(('Tailscale: '+(ts.connected?'Verbunden: '+ts.tailIP:ts.installed?'Nicht verbunden':'Tool fehlt')).slice(0,85),62,241,23,'#d3e6f7');
