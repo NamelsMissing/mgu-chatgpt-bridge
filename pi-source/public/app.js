@@ -25,19 +25,143 @@ $('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{meth
  token=d.remembered?'cookie':d.token;if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
  $('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
 $('logout').onclick=async()=>{try{await api('/logout','POST');}catch(e){}token='';sessionStorage.removeItem('bmw-ai-token');show();};
-$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs,updates:refreshUpdates}[currentTab]||(()=>{}))();});
-let pendingConsoleId=null;
-function consolePrint(text){const p=$('consoleOutput');p.textContent+=(p.textContent?'\n':'')+String(text);p.scrollTop=p.scrollHeight;}
-$('consoleSend').onclick=async()=>{const command=$('consoleInput').value.trim();if(!command)return;const btn=$('consoleSend');btn.disabled=true;
- try{const r=await api('/jobs','POST',{type:'console',payload:{command},reason:'MGU-Konsole (lesend): '+command});pendingConsoleId=r.job.id;$('consoleExact').textContent=command;$('consoleApproval').hidden=false;consolePrint('mgu $ '+command+'\n[Wartet auf deine einmalige Freigabe]');$('consoleInput').value='';notice('Prüfe den exakten Befehl und bestätige ihn.');}
- catch(e){notice(e.message);}finally{btn.disabled=false;}};
-$('consoleInput').onkeydown=e=>{if(e.key==='Enter'){$('consoleSend').click();}};
-$('consoleApprove').onclick=async()=>{if(!pendingConsoleId)return;const id=pendingConsoleId;$('consoleApprove').disabled=true;
- try{const r=await api('/jobs/'+id+'/approve','POST');const out=r.job.result||{};consolePrint(out.stdout||JSON.stringify(out,null,2));consolePrint('[exit '+String(out.exitCode===undefined?'?':out.exitCode)+']');$('consoleApproval').hidden=true;pendingConsoleId=null;refreshJobs();}catch(e){consolePrint('ERROR: '+e.message);notice(e.message);$('consoleApproval').hidden=true;pendingConsoleId=null;refreshJobs();}finally{$('consoleApprove').disabled=false;}};
-$('consoleReject').onclick=async()=>{if(!pendingConsoleId)return;try{await api('/jobs/'+pendingConsoleId+'/reject','POST');consolePrint('[Abgelehnt]');$('consoleApproval').hidden=true;pendingConsoleId=null;refreshJobs();}catch(e){notice(e.message);}};
-$('consoleClear').onclick=()=>{$('consoleOutput').textContent='';};
-$('consoleCopy').onclick=async()=>{const t=$('consoleOutput').textContent;try{await navigator.clipboard.writeText(t);notice('Konsolenausgabe kopiert.');}catch(e){notice('Kopieren nicht möglich: '+e.message);}};
-$('consoleExport').onclick=()=>{const blob=new Blob([$('consoleOutput').textContent],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='bmw-ai-mgu-console-'+new Date().toISOString().slice(0,10)+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1200);};
+$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs,updates:refreshUpdates,console:refreshConsoleConnection}[currentTab]||(()=>{}))();});
+// ----- MGU mobile terminal: read-only, individually approved commands -----
+let pendingConsoleId=null,consoleHistory=[],consoleHistoryIndex=0;
+const CONSOLE_TRANSCRIPT_KEY='bmw-ai-mgu-terminal-session-v1';
+let consoleTranscript=[];
+function consoleAddLine(content,kind){
+ const root=$('consoleOutput'),line=document.createElement('div');
+ line.className='console-line console-line-'+(['cmd','output','info','error','success'].includes(kind)?kind:'output');
+ line.textContent=content;root.appendChild(line);root.scrollTop=root.scrollHeight;
+}
+function consolePrint(content,kind='output'){
+ const text=String(content);
+ consoleAddLine(text,kind);
+ consoleTranscript.push({kind,text:text.slice(0,40000)});
+ consoleTranscript=consoleTranscript.slice(-90);
+ try{sessionStorage.setItem(CONSOLE_TRANSCRIPT_KEY,JSON.stringify(consoleTranscript));}catch(e){}
+}
+function consoleRestore(){
+ try{
+  const saved=JSON.parse(sessionStorage.getItem(CONSOLE_TRANSCRIPT_KEY)||'[]');
+  if(Array.isArray(saved))consoleTranscript=saved.filter(x=>x&&typeof x.text==='string'&&typeof x.kind==='string').slice(-90);
+ }catch(e){consoleTranscript=[];}
+ $('consoleOutput').replaceChildren();
+ if(!consoleTranscript.length)consolePrint('BMW AI MGU · Lesemodus\nTippe „help“ ein oder wähle unten einen Schnellbefehl.','info');
+ else for(const entry of consoleTranscript)consoleAddLine(entry.text,entry.kind);
+}
+function consoleSetResult(message,error=false){
+ const el=$('consoleResult');el.textContent=message;el.classList.toggle('is-error',error);
+}
+function consoleCommandSafetyProblem(command){
+ if(command.length>450)return 'Der Befehl ist zu lang (maximal 450 Zeichen).';
+ const first=command.trim().split(/\s+/)[0].toLowerCase();
+ const allowed=['help','pwd','uname','uptime','ip','ps','systemctl','ls','cat','head','tail','grep','find','strings','stat','sha256sum'];
+ if(!allowed.includes(first))return 'Der Befehl „'+first+'“ wird hier nicht unterstützt. Nutze „help“ für erlaubte Lesebefehle.';
+ let quote='';
+ for(const ch of command){
+  if(quote){if(ch===quote)quote='';continue;}
+  if(ch==='"'||ch==="'"){quote=ch;continue;}
+  if(/[;&|<>$\\]/.test(ch)||ch.charCodeAt(0)===96)
+   return 'Shell-Schleifen, Pipes (|), Umleitungen (>) und Variablen sind nicht erlaubt. Gib einen einzelnen Lesebefehl ein. Für vollständige SSH-Befehle verwende die separate MGU-SSH-App.';
+ }
+ if(quote)return 'Anführungszeichen nicht geschlossen.';
+ return '';
+}
+function consoleHumanError(err){
+ const raw=String(err&&err.message||err||'Unbekannter Fehler');
+ if(raw.includes('Shell operators not allowed'))return 'Shell-Operatoren sind hier gesperrt. Bitte keine Schleifen, Pipes oder Umleitungen verwenden.';
+ if(raw.includes('Command not permitted'))return 'Befehl nicht freigegeben. Nutze „help“.';
+ if(raw.includes('Path outside read-only allowlist'))return 'Pfad außerhalb der erlaubten Lesebereiche (/etc/cinemo, /etc/oap, /usr/lib, /var/log).';
+ if(raw.includes('MGU HTTP 400')){
+  const at=raw.indexOf('{');
+  if(at>=0){try{const parsed=JSON.parse(raw.slice(at));if(parsed.error)return String(parsed.error);}catch(e){}}
+ }
+ if(raw.includes('MGU HTTP 401'))return 'MGU-Kopplung ungültig. Bitte erneut verbinden.';
+ if(raw.includes('MGU HTTP')||raw.includes('not configured')||raw.includes('fetch failed'))return 'MGU nicht erreichbar oder Anfrage abgelehnt: '+raw.slice(0,250);
+ return raw.slice(0,300);
+}
+function consoleLock(locked){$('consoleSend').disabled=locked;$('consoleInput').disabled=locked;}
+async function refreshConsoleConnection(){
+ const label=$('consoleConnectionText'),dot=$('consoleDot');
+ label.textContent='Prüfen ...';dot.className='console-dot';
+ try{
+  const d=await api('/status');
+  if(d.mgu&&d.mgu.online===true){label.textContent='MGU verbunden';dot.className='console-dot is-online';}
+  else{label.textContent='MGU nicht erreichbar';dot.className='console-dot is-offline';if(d.error)consoleSetResult('Verbindung: '+consoleHumanError(d.error),true);}
+ }catch(err){label.textContent='Verbindung unklar';dot.className='console-dot is-offline';consoleSetResult(consoleHumanError(err),true);}
+}
+$('consoleRefreshConnection').onclick=refreshConsoleConnection;
+$('consoleCommandForm').onsubmit=async event=>{
+ event.preventDefault();
+ if(pendingConsoleId)return consoleSetResult('Zuerst die offene Freigabe bestätigen oder abbrechen.',true);
+ const command=$('consoleInput').value.trim();
+ if(!command)return consoleSetResult('Gib zuerst einen Befehl ein.',true);
+ const problem=consoleCommandSafetyProblem(command);
+ consolePrint('mgu $ '+command,'cmd');
+ if(problem){consolePrint('Nicht ausgeführt: '+problem,'error');consoleSetResult(problem,true);return;}
+ consoleLock(true);consoleSetResult('Befehl wird zur Freigabe vorbereitet ...');
+ try{
+  const r=await api('/jobs','POST',{type:'console',payload:{command},reason:'MGU-Terminal (lesend): '+command});
+  pendingConsoleId=r.job.id;
+  $('consoleExact').textContent=command;$('consoleApproval').hidden=false;
+  $('consoleInput').value='';
+  consoleHistory.push(command);consoleHistory=consoleHistory.slice(-40);consoleHistoryIndex=consoleHistory.length;
+  consolePrint('Wartet auf deine einmalige Freigabe.','info');
+  consoleSetResult('Freigabe erforderlich – bitte Befehl prüfen.');
+  $('consoleApprove').focus();
+ }catch(err){const msg=consoleHumanError(err);consolePrint('FEHLER: '+msg,'error');consoleSetResult(msg,true);consoleLock(false);}
+};
+$('consoleInput').onkeydown=event=>{
+ if(event.key==='ArrowUp'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.max(0,consoleHistoryIndex-1);$('consoleInput').value=consoleHistory[consoleHistoryIndex];}
+ else if(event.key==='ArrowDown'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.min(consoleHistory.length,consoleHistoryIndex+1);$('consoleInput').value=consoleHistoryIndex===consoleHistory.length?'':consoleHistory[consoleHistoryIndex];}
+};
+$('consoleApprove').onclick=async()=>{
+ if(!pendingConsoleId)return;
+ const id=pendingConsoleId,button=$('consoleApprove');button.disabled=true;
+ consoleSetResult('MGU führt den freigegebenen Lesebefehl aus ...');
+ try{
+  const d=await api('/jobs/'+id+'/approve','POST'),out=d.job.result||{};
+  const content=typeof out.stdout==='string'?out.stdout:JSON.stringify(out,null,2);
+  consolePrint(content||'(keine Ausgabe)',content.startsWith('[unavailable]')?'error':'output');
+  consolePrint('Beendet · Exit-Code '+(out.exitCode===undefined?'unbekannt':out.exitCode),out.exitCode===0?'success':'error');
+  consoleSetResult('Befehl abgeschlossen.');refreshJobs();
+ }catch(err){const msg=consoleHumanError(err);consolePrint('FEHLER: '+msg,'error');consoleSetResult(msg,true);}
+ finally{pendingConsoleId=null;$('consoleApproval').hidden=true;consoleLock(false);button.disabled=false;$('consoleInput').focus();}
+};
+$('consoleReject').onclick=async()=>{
+ if(!pendingConsoleId)return;
+ const id=pendingConsoleId;$('consoleReject').disabled=true;
+ try{await api('/jobs/'+id+'/reject','POST');consolePrint('Abgebrochen – nichts ausgeführt.','info');consoleSetResult('Befehl nicht ausgeführt.');}
+ catch(err){const msg=consoleHumanError(err);consolePrint('Freigabe: '+msg,'error');consoleSetResult(msg,true);}
+ finally{pendingConsoleId=null;$('consoleApproval').hidden=true;$('consoleReject').disabled=false;consoleLock(false);$('consoleInput').focus();}
+};
+document.querySelectorAll('[data-console-command]').forEach(button=>{
+ button.onclick=()=>{
+  const input=$('consoleInput');if(input.disabled)return;
+  input.value=button.dataset.consoleCommand||'';input.focus();
+  consoleSetResult('Befehl eingetragen. Mit „Ausführen“ anfragen.');
+ };
+});
+$('consoleClear').onclick=()=>{
+ consoleTranscript=[];$('consoleOutput').replaceChildren();
+ try{sessionStorage.removeItem(CONSOLE_TRANSCRIPT_KEY);}catch(e){}
+ consolePrint('Terminalverlauf geleert.','info');
+};
+$('consoleCopy').onclick=async()=>{
+ try{await navigator.clipboard.writeText(consoleTranscript.map(e=>e.text).join('\n'));consoleSetResult('Konsolenausgabe kopiert.');}
+ catch(err){consoleSetResult('Kopieren fehlgeschlagen: '+err.message,true);}
+};
+$('consoleExport').onclick=()=>{
+ const blob=new Blob([consoleTranscript.map(e=>e.text).join('\n')+'\n'],{type:'text/plain;charset=utf-8'});
+ const url=URL.createObjectURL(blob),link=document.createElement('a');
+ link.href=url;link.download='bmw-ai-mgu-terminal-'+new Date().toISOString().slice(0,10)+'.txt';
+ document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+ consoleSetResult('Terminalverlauf als TXT gespeichert.');
+};
+consoleRestore();
+
 async function refreshConvos(){try{const data=await api('/conversations'),sel=$('convos');sel.replaceChildren();sel.appendChild(new Option('Neuer Chat',''));data.conversations.forEach(c=>sel.appendChild(new Option((c.importSource==='ChatGPT'?'[ChatGPT-Import] ':'')+c.title,c.id)));sel.value=conversationId;if(conversationId)await loadMessages();}catch(e){notice(e.message);}}
 function addMessage(m){const node=txt('div',m.content,'message '+m.role);node.prepend(txt('span',m.role==='user'?'Du':'Assistent','meta'));$('messages').appendChild(node);$('messages').scrollTop=$('messages').scrollHeight;}
 async function loadMessages(){$('messages').replaceChildren();if(!conversationId)return;const d=await api('/conversations/'+conversationId+'/messages');d.messages.forEach(addMessage);}
