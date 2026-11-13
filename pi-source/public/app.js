@@ -271,3 +271,77 @@ $('autoUpdate').onchange=async()=>{
  }
  await refreshUpdates();
 };
+
+
+// ----- Automatically refresh this already-open webpage after a successful Pi update -----
+// The server embeds its running version into HTML on each page load. Re-check via
+// uncached /health, so an updater restart or a temporary network outage cannot
+// trick the UI into an infinite reload loop.
+const BMAI_PAGE_VERSION=document.querySelector('meta[name="bmw-ai-version"]')?.content||'';
+const BMAI_AUTO_RELOADED_KEY='bmw-ai-last-auto-reload-version';
+let bmaiVersionCheckBusy=false,bmaiPendingVersion='';
+function bmaiHasUnsavedWork(){
+  const textIds=['chatInput','consoleInput','password'];
+  if(textIds.some(id=>{const e=$(id);return e&&typeof e.value==='string'&&e.value.trim().length>0;}))return true;
+  for(const id of ['chatExport','updateZip']){
+    const e=$(id);if(e&&e.files&&e.files.length)return true;
+  }
+  if($('sendChat')?.disabled||$('loginButton')?.disabled||$('uploadUpdate')?.disabled)return true;
+  if(typeof pendingConsoleId!=='undefined'&&pendingConsoleId)return true;
+  if(typeof pendingUpdate!=='undefined'&&pendingUpdate)return true;
+  if($('consoleApproval')&&!$('consoleApproval').hidden)return true;
+  if($('updateConfirm')&&!$('updateConfirm').hidden)return true;
+  if($('chatImportPanel')&&!$('chatImportPanel').hidden)return true;
+  if($('chatExportPanel')&&!$('chatExportPanel').hidden)return true;
+  return false;
+}
+function bmaiShowReloadPrompt(){
+  const panel=$('newVersionNotice'),message=$('newVersionMessage');
+  if(!panel||!message)return;
+  panel.hidden=false;
+  message.textContent='BMW AI '+bmaiPendingVersion+' installiert. Neue Webseite verfügbar.';
+}
+function bmaiReloadIfSafe(){
+  if(!bmaiPendingVersion)return;
+  if(sessionStorage.getItem(BMAI_AUTO_RELOADED_KEY)===bmaiPendingVersion){
+    bmaiShowReloadPrompt();return;
+  }
+  if(bmaiHasUnsavedWork()){bmaiShowReloadPrompt();return;}
+  sessionStorage.setItem(BMAI_AUTO_RELOADED_KEY,bmaiPendingVersion);
+  const url=new URL(window.location.href);
+  url.searchParams.set('uiVersion',bmaiPendingVersion);
+  window.location.replace(url.href);
+}
+async function bmaiCheckServerBuild(){
+  if(bmaiVersionCheckBusy||!BMAI_PAGE_VERSION)return;
+  bmaiVersionCheckBusy=true;
+  try{
+    const r=await fetch('/health',{method:'GET',cache:'no-store',credentials:'same-origin',headers:{'cache-control':'no-cache'}});
+    if(!r.ok)return;
+    const d=await r.json();
+    if(d.ok!==true||typeof d.version!=='string'||! /^\d+\.\d+\.\d+$/.test(d.version))return;
+    if(d.version===BMAI_PAGE_VERSION){
+      bmaiPendingVersion='';
+      sessionStorage.removeItem(BMAI_AUTO_RELOADED_KEY);
+      const panel=$('newVersionNotice');if(panel)panel.hidden=true;
+      return;
+    }
+    bmaiPendingVersion=d.version;
+    bmaiReloadIfSafe();
+  }catch(e){
+    // A restart can briefly make /health unreachable: do nothing until it returns.
+  }finally{bmaiVersionCheckBusy=false;}
+}
+$('reloadNewVersion').onclick=()=>{
+  if(!bmaiPendingVersion)return;
+  if(bmaiHasUnsavedWork()&&!window.confirm('Es gibt noch ungespeicherte Eingaben. Jetzt trotzdem neu laden?'))return;
+  sessionStorage.setItem(BMAI_AUTO_RELOADED_KEY,bmaiPendingVersion);
+  const url=new URL(window.location.href);url.searchParams.set('uiVersion',bmaiPendingVersion);
+  window.location.replace(url.href);
+};
+setInterval(bmaiCheckServerBuild,15000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)bmaiCheckServerBuild();});
+window.addEventListener('pageshow',()=>bmaiCheckServerBuild());
+document.addEventListener('input',()=>{if(bmaiPendingVersion)setTimeout(bmaiReloadIfSafe,500);});
+document.addEventListener('change',()=>{if(bmaiPendingVersion)setTimeout(bmaiReloadIfSafe,500);});
+bmaiCheckServerBuild();
