@@ -11,7 +11,7 @@ function renderPair(){const panel=$('pairPanel');panel.hidden=!pendingPair;if(pe
 $('pairButton').onclick=async()=>{if(!pendingPair||!token)return;const btn=$('pairButton');btn.disabled=true;try{const d=await api('/pair','POST',pendingPair);$('pairDescription').textContent='Erfolgreich gekoppelt: '+d.host;$('pairError').textContent='';btn.hidden=true;await refreshStatus();}catch(e){$('pairError').textContent=e.message;btn.disabled=false;}};
 function show(){ $('login').hidden=!!token;$('shell').hidden=!token;if(token){
  const resumeConvo=sessionStorage.getItem('bmw-ai-resume-conversation');
- const resumeTab=sessionStorage.getItem('bmw-ai-resume-tab');
+ const resumeTab=sessionStorage.getItem('bmw-ai-resume-tab')||(/^#[a-z-]+$/.test(location.hash)?location.hash.slice(1):'');
  if(resumeConvo)conversationId=resumeConvo;
  refreshConvos();refreshJobs();refreshPlanStatus();
  if(resumeTab&&document.querySelector('[data-tab="'+resumeTab+'"]')){
@@ -25,7 +25,7 @@ $('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{meth
  token=d.remembered?'cookie':d.token;if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
  $('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
 $('logout').onclick=async()=>{try{await api('/logout','POST');}catch(e){}token='';sessionStorage.removeItem('bmw-ai-token');show();};
-$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs,updates:refreshUpdates,console:refreshConsoleConnection}[currentTab]||(()=>{}))();});
+$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;if(currentTab==='console')history.replaceState(null,'',location.pathname+location.search+'#console');document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs,updates:refreshUpdates,console:refreshConsoleConnection}[currentTab]||(()=>{}))();});
 // ----- MGU mobile terminal: read-only, individually approved commands -----
 let pendingConsoleId=null,consoleHistory=[],consoleHistoryIndex=0;
 const CONSOLE_TRANSCRIPT_KEY='bmw-ai-mgu-terminal-session-v1';
