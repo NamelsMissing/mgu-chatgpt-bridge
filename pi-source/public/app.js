@@ -14,7 +14,7 @@ $('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{meth
  token=d.remembered?'cookie':d.token;if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
  $('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
 $('logout').onclick=async()=>{try{await api('/logout','POST');}catch(e){}token='';sessionStorage.removeItem('bmw-ai-token');show();};
-$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs}[currentTab]||(()=>{}))();});
+$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs,updates:refreshUpdates}[currentTab]||(()=>{}))();});
 let pendingConsoleId=null;
 function consolePrint(text){const p=$('consoleOutput');p.textContent+=(p.textContent?'\n':'')+String(text);p.scrollTop=p.scrollHeight;}
 $('consoleSend').onclick=async()=>{const command=$('consoleInput').value.trim();if(!command)return;const btn=$('consoleSend');btn.disabled=true;
@@ -207,9 +207,26 @@ $('downloadChatSnapshot').onclick=async()=>{
 // ----- Browser-initiated, separately signed Raspberry Pi updates -----
 async function refreshUpdates(){
   if(!token)return;
-  try{const d=await api('/updates');$('updateStatus').textContent=JSON.stringify(d,null,2);
-    $('autoUpdate').checked=d.auto===true;
-  }catch(e){$('updateStatus').textContent='Updater: '+e.message;}
+  const check=$('autoUpdate'),label=$('autoUpdateInfo');
+  check.disabled=true;
+  label.textContent='Gespeicherte Auto-Update-Einstellung wird geladen ...';
+  try{
+    const d=await api('/updates');
+    $('updateStatus').textContent=JSON.stringify(d,null,2);
+    if(d.autoSettingsError){
+      label.textContent='Einstellung konnte nicht gelesen werden. Bitte Dateirechte auf dem Pi prüfen.';
+      return;
+    }
+    check.checked=d.auto===true;
+    check.disabled=false;
+    label.textContent=d.auto===true
+      ?'Automatische Updates sind auf dem Pi gespeichert und aktiviert.'
+      :'Automatische Updates sind auf dem Pi gespeichert und deaktiviert.';
+  }catch(e){
+    label.textContent='Automatische Updates: Zustand konnte nicht geladen werden ('+e.message+').';
+    $('updateStatus').textContent='Updater: '+e.message;
+    // Keep the control disabled. An API failure is not proof that auto updates are off.
+  }
 }
 $('refreshUpdates').onclick=async()=>{
  const btn=$('refreshUpdates');btn.disabled=true;
@@ -241,8 +258,16 @@ $('confirmUpdate').onclick=async()=>{
 };
 $('cancelUpdate').onclick=()=>{pendingUpdate=null;$('updateConfirm').hidden=true;notice('Update nicht beauftragt.');};
 $('autoUpdate').onchange=async()=>{
- const el=$('autoUpdate');el.disabled=true;
- try{const r=await api('/updates/automatic','POST',{enabled:el.checked});notice(r.auto?'Automatische signierte Updates aktiviert.':'Automatische Updates deaktiviert.');}
- catch(e){notice('Automatische Updates: '+e.message);el.checked=!el.checked;}
- finally{el.disabled=false;refreshUpdates();}
+ const el=$('autoUpdate'),desired=el.checked;
+ el.disabled=true;
+ $('autoUpdateInfo').textContent='Einstellung wird dauerhaft auf dem Pi gespeichert ...';
+ try{
+   const r=await api('/updates/automatic','POST',{enabled:desired});
+   $('autoUpdateInfo').textContent=r.auto?'Automatische Updates dauerhaft aktiviert.':'Automatische Updates dauerhaft deaktiviert.';
+   notice(r.auto?'Automatische signierte Updates aktiviert.':'Automatische Updates deaktiviert.');
+ }catch(e){
+   notice('Automatische Updates: '+e.message);
+   $('autoUpdateInfo').textContent='Speichern fehlgeschlagen. Der bisherige Zustand wird erneut abgefragt.';
+ }
+ await refreshUpdates();
 };
