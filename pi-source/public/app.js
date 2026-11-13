@@ -9,7 +9,18 @@ const pendingPair=(location.pathname==='/pair'&&/^[0-9a-f]{32}$/.test(pairParams
 if(location.pathname==='/pair')history.replaceState(null,'','/');
 function renderPair(){const panel=$('pairPanel');panel.hidden=!pendingPair;if(pendingPair){$('pairDescription').textContent='Neue BMW-MGU mit Tailscale-Adresse '+pendingPair.ip+' koppeln? Die Kopplung erfolgt nur nach deiner ausdruecklichen Bestaetigung.';}}
 $('pairButton').onclick=async()=>{if(!pendingPair||!token)return;const btn=$('pairButton');btn.disabled=true;try{const d=await api('/pair','POST',pendingPair);$('pairDescription').textContent='Erfolgreich gekoppelt: '+d.host;$('pairError').textContent='';btn.hidden=true;await refreshStatus();}catch(e){$('pairError').textContent=e.message;btn.disabled=false;}};
-function show(){ $('login').hidden=!!token;$('shell').hidden=!token;if(token){refreshConvos();refreshJobs();refreshPlanStatus();if(pendingPair){document.querySelector('[data-tab="status"]').click();renderPair();}}}
+function show(){ $('login').hidden=!!token;$('shell').hidden=!token;if(token){
+ const resumeConvo=sessionStorage.getItem('bmw-ai-resume-conversation');
+ const resumeTab=sessionStorage.getItem('bmw-ai-resume-tab');
+ if(resumeConvo)conversationId=resumeConvo;
+ refreshConvos();refreshJobs();refreshPlanStatus();
+ if(resumeTab&&document.querySelector('[data-tab="'+resumeTab+'"]')){
+  document.querySelector('[data-tab="'+resumeTab+'"]').click();
+  sessionStorage.removeItem('bmw-ai-resume-tab');
+  sessionStorage.removeItem('bmw-ai-resume-conversation');
+ }
+ if(pendingPair){document.querySelector('[data-tab="status"]').click();renderPair();}
+}}
 $('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-bmw-ai-client':'1'},body:JSON.stringify({password:$('password').value,remember:$('rememberMe').checked})});const d=await r.json();if(!r.ok)throw Error(d.error);
  token=d.remembered?'cookie':d.token;if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
  $('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
@@ -301,12 +312,18 @@ function bmaiShowReloadPrompt(){
   panel.hidden=false;
   message.textContent='BMW AI '+bmaiPendingVersion+' installiert. Neue Webseite verfügbar.';
 }
+function bmaiCaptureView(){
+  sessionStorage.setItem('bmw-ai-resume-tab',currentTab);
+  if(conversationId)sessionStorage.setItem('bmw-ai-resume-conversation',conversationId);
+  else sessionStorage.removeItem('bmw-ai-resume-conversation');
+}
 function bmaiReloadIfSafe(){
   if(!bmaiPendingVersion)return;
   if(sessionStorage.getItem(BMAI_AUTO_RELOADED_KEY)===bmaiPendingVersion){
     bmaiShowReloadPrompt();return;
   }
   if(bmaiHasUnsavedWork()){bmaiShowReloadPrompt();return;}
+  bmaiCaptureView();
   sessionStorage.setItem(BMAI_AUTO_RELOADED_KEY,bmaiPendingVersion);
   const url=new URL(window.location.href);
   url.searchParams.set('uiVersion',bmaiPendingVersion);
@@ -335,6 +352,7 @@ async function bmaiCheckServerBuild(){
 $('reloadNewVersion').onclick=()=>{
   if(!bmaiPendingVersion)return;
   if(bmaiHasUnsavedWork()&&!window.confirm('Es gibt noch ungespeicherte Eingaben. Jetzt trotzdem neu laden?'))return;
+  bmaiCaptureView();
   sessionStorage.setItem(BMAI_AUTO_RELOADED_KEY,bmaiPendingVersion);
   const url=new URL(window.location.href);url.searchParams.set('uiVersion',bmaiPendingVersion);
   window.location.replace(url.href);
