@@ -7,7 +7,7 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.4.4'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.4.5'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -170,7 +170,7 @@ function scheduleLocalChatExport(){
 }
 function listing(obj){return Object.values(obj).sort((a,b)=>String(b.createdAt||b.at||'').localeCompare(String(a.createdAt||a.at||'')));}
 function route(req,res){const url=new URL(req.url,'http://localhost');const p=url.pathname;return (async()=>{
- if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.4.4'});
+ if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.4.5'});
  if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');
   const remember=d.remember===true,days=remember?30:14;
   const t=crypto.randomBytes(32).toString('base64url');
@@ -306,7 +306,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
       // silently appear as an intentionally disabled auto-update checkbox.
       if(e.code!=='ENOENT')autoSettingsError=true;
     }
-    return send(res,200,{installedVersion:'0.4.4',status,auto:prefs.auto===true,autoSettingsError,
+    return send(res,200,{installedVersion:'0.4.5',status,auto:prefs.auto===true,autoSettingsError,
       channel:'NamelsMissing/mgu-chatgpt-bridge / pi-updates/stable.json',signedOnly:true});
   }
   if(req.method==='POST'&&p==='/api/v1/updates/check'){
@@ -319,7 +319,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     const channel=JSON.parse(channelText),version=channel.version,file=channel.file,digest=channel.sha256;
     if(typeof version!=='string'||!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version)||file!=='BMW_AI_Pi_Update_v'+version+'.zip'||!(/^[a-f0-9]{64}$/).test(digest||''))throw Error('GitHub Updatekanal ungültig');
     const parts=v=>v.split('.').map(Number),compare=(a,b)=>{const x=parts(a),y=parts(b);for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]-y[i];return 0;};
-    let installedVersion='0.4.4';
+    let installedVersion='0.4.5';
     try{const marker=JSON.parse(fs.readFileSync(path.join(__dirname,'update-version.json'),'utf8'));if(/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(marker.version))installedVersion=marker.version;}catch(e){}
     if(compare(version,installedVersion)<=0)return send(res,200,{state:'current',version:installedVersion,message:'Keine neue Version. Installiert: '+installedVersion});
     let prefs={auto:false};try{prefs=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8'));}catch(e){}
