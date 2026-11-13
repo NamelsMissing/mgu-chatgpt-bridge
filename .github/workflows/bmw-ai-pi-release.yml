@@ -64,6 +64,7 @@ jobs:
           node --check pi-source/server.js
           node --check pi-source/siwc.js
           node --check pi-source/public/app.js
+          node pi-source/tests/test-chat-export.js
           python3 - <<'PY'
           import hashlib,json,os,pathlib,re,subprocess,tempfile,zipfile
           root=pathlib.Path('pi-source')
