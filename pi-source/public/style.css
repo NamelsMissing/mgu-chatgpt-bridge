@@ -9,3 +9,12 @@
 #updates input[type=file]{max-width:100%;display:block;margin:12px 0}
 #updates input[type=checkbox]{width:18px;height:18px;vertical-align:middle}
 #updateDetails{font-size:.82rem}
+
+/* BMW AI chat return export – mobile-friendly selection and controls */
+#chatExportSearch{width:100%;max-width:640px;margin-top:8px}
+#chatExportPanel .toolbar{margin-top:12px;flex-wrap:wrap;align-items:center}
+#chatExportPanel .toolbar label{display:flex;align-items:center;gap:8px;line-height:1.5}
+#chatExportPanel .toolbar input[type=checkbox],#autoChatExport{width:18px;height:18px;flex-shrink:0}
+#chatExportPanel .toolbar select{max-width:100%;min-width:180px}
+#chatExportPanel .panel{margin-top:18px}
+#chatExportInfo,#chatExportResult{white-space:pre-wrap;overflow-wrap:anywhere}
