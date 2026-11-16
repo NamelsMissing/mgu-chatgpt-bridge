@@ -10,7 +10,7 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.5.1'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.5.2'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -40,6 +40,10 @@ const CHAT_EXPORT_LATEST=path.join(DATA,'chat-export-latest.md');
 let chatExportTimer=null;
 
 const SESSION_COOKIE='__Host-bmw_ai_session';
+// Zweites Cookie für den privaten Zugang über http://<Tailnet-IP>:<Port>: dort nimmt der Browser
+// kein Secure-Cookie an. Nur für Tailnet-IP oder Loopback; der Transport ist Tailscale.
+const SESSION_COOKIE_HTTP='bmw_ai_session_http';
+const TAILNET_HTTP_HOST=/^(?:100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|127\.0\.0\.1|localhost)(?::\d{1,5})?$/;
 const GITHUB_UPDATE_BASE='https://raw.githubusercontent.com/NamelsMissing/mgu-chatgpt-bridge/main/pi-updates/';
 let lastManualUpdateCheck=0;
 
@@ -61,7 +65,7 @@ function fail(res,code,msg){send(res,code,{error:msg});}
 function readRaw(req,max=1024*1024){return new Promise((resolve,reject)=>{let a=[],n=0,done=false;req.on('data',b=>{n+=b.length;if(n>max){if(!done){done=true;reject(Error('Request too large'));}req.destroy();}else a.push(b);});req.on('end',()=>{if(!done)resolve(Buffer.concat(a));});req.on('error',reject);});}
 async function body(req,max){const data=await readRaw(req,max);if(!data.length)return{};try{return JSON.parse(data.toString('utf8'));}catch(e){throw Error('Invalid JSON');}}
 function bearerToken(req){const m=/^Bearer ([A-Za-z0-9_-]+)$/.exec(req.headers.authorization||'');return m?m[1]:'';}
-function cookieToken(req){const raw=req.headers.cookie||'';const m=raw.match(new RegExp('(?:^|;\\s*)'+SESSION_COOKIE+'=([A-Za-z0-9_-]+)(?:;|$)'));return m?m[1]:'';}
+function cookieToken(req){const raw=req.headers.cookie||'';for(const name of [SESSION_COOKIE,SESSION_COOKIE_HTTP]){const m=raw.match(new RegExp('(?:^|;\\s*)'+name+'=([A-Za-z0-9_-]+)(?:;|$)'));if(m)return m[1];}return '';}
 function token(req){return bearerToken(req)||cookieToken(req);}
 function auth(req){const tok=token(req);if(!tok)return false;
  const s=st.sessions[hash(tok)];if(!s||Date.parse(s.expires)<Date.now())return false;
@@ -558,12 +562,15 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
  // Alles andere, das über Tailscale Funnel (öffentliches Internet) ankommt, existiert nicht.
  if(req.headers['tailscale-funnel-request']!==undefined)return fail(res,404,'Not found');
  return (async()=>{
- if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.5.1'});
+ if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.5.2'});
  if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');
   const remember=d.remember===true,days=remember?30:14;
   const t=crypto.randomBytes(32).toString('base64url');
   st.sessions[hash(t)]={expires:new Date(Date.now()+days*86400000).toISOString()};save();audit('login',remember?'remembered 30 days':'session');
-  if(remember){res.setHeader('Set-Cookie',SESSION_COOKIE+'='+t+'; Path=/; Max-Age='+(30*86400)+'; Secure; HttpOnly; SameSite=Strict');
+  if(remember){
+    const plain=d.plainHttp===true&&TAILNET_HTTP_HOST.test(String(req.headers.host||''));
+    res.setHeader('Set-Cookie',plain?SESSION_COOKIE_HTTP+'='+t+'; Path=/; Max-Age='+(30*86400)+'; HttpOnly; SameSite=Strict'
+      :SESSION_COOKIE+'='+t+'; Path=/; Max-Age='+(30*86400)+'; Secure; HttpOnly; SameSite=Strict');
     return send(res,200,{remembered:true,expiresInDays:30});}
   return send(res,200,{token:t,expiresInDays:14,remembered:false});
  }
@@ -588,7 +595,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
    return send(res,200,{ok:true,host:device.host||ip,pairedAt:st.mguConnection.pairedAt});
   }
   if(req.method==='POST'&&p==='/api/v1/logout'){delete st.sessions[hash(token(req))];save();
-   res.setHeader('Set-Cookie',SESSION_COOKIE+'=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict');
+   res.setHeader('Set-Cookie',[SESSION_COOKIE+'=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict',SESSION_COOKIE_HTTP+'=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict']);
    audit('logout','owner');return send(res,200,{ok:true});}
   if(req.method==='GET'&&p==='/api/v1/config')return send(res,200,{model:MODEL,chatgptPlan:siwc.status(),openaiConfigured:siwc.status().permission||!!APIKEY,mguConfigured:!!st.mguConnection||(!!MGU&&!!DEVICE_TOKEN),features:{chat:true,voice:'iOS Speech framework',diagnostics:true,downloads:true,claudeMcp:true,vehicleActions:'locked pending verified ECU adapters'}});
   if(req.method==='GET'&&p==='/api/v1/status'){let mgu=null,error=null;try{mgu=await(await mguRequest('GET','/v1/status')).json();}catch(e){error=e.message;}return send(res,200,{server:{online:true,at:now()},mgu,error});}

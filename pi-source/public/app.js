@@ -58,7 +58,7 @@ function show(){
  if(pendingPair){openTab('diag');renderPair();}
 }
 async function postLogin(remember){
- const r=await fetch('/api/v1/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-bmw-ai-client':'1'},body:JSON.stringify({password:$('password').value,remember})});
+ const r=await fetch('/api/v1/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-bmw-ai-client':'1'},body:JSON.stringify({password:$('password').value,remember,plainHttp:location.protocol==='http:'})});
  const d=await r.json();if(!r.ok)throw Error(d.error);return d;
 }
 $('loginButton').onclick=async()=>{
@@ -66,10 +66,10 @@ $('loginButton').onclick=async()=>{
  try{
   let d=await postLogin($('rememberMe').checked),hint='';
   if(d.remembered){
-   // Das dauerhafte Login ist ein Secure-Cookie. Über http (z. B. die Tailnet-IP) nimmt der
-   // Browser es nicht an: prüfen und sonst normal für diesen Tab anmelden.
+   // Das dauerhafte Login ist ein Cookie (über http://<Tailnet-IP> eine eigene Variante ohne
+   // Secure). Prüfen, ob der Browser es angenommen hat; sonst normal für diesen Tab anmelden.
    const kept=await fetch('/api/v1/session',{credentials:'same-origin',headers:{'x-bmw-ai-client':'1'}}).then(r=>r.ok).catch(()=>false);
-   if(!kept){d=await postLogin(false);hint='Dauerhaftes Login geht nur über https. Du bist für diesen Tab angemeldet.';}
+   if(!kept){d=await postLogin(false);hint='Dein Browser hat das dauerhafte Login nicht angenommen. Du bist für diesen Tab angemeldet.';}
   }
   token=d.remembered?'cookie':d.token;
   if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);

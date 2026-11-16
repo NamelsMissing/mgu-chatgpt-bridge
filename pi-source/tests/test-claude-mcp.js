@@ -65,6 +65,20 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   assert.equal((await pub('/api/v1/jobs',{headers:owner})).status,404,'even a valid session is useless through Funnel');
   assert.equal((await fetch(base+'/')).status,200,'tailnet access to the website keeps working');
 
+  // 1b. 30-Tage-Login über http://<Tailnet-IP>: eigenes Cookie ohne Secure, sonst wie bisher.
+  const login=(host,plainHttp)=>new Promise((resolve,reject)=>{
+   const q=http.request(base+'/api/v1/login',{method:'POST',headers:{host,'content-type':'application/json'}},s=>{s.resume();s.on('end',()=>resolve(String(s.headers['set-cookie']||'')));});
+   q.on('error',reject);q.end(JSON.stringify({password:process.env.LOGIN_PASSWORD,remember:true,plainHttp}));});
+  let jar=await login('100.65.28.85:8790',true);
+  assert.match(jar,/^bmw_ai_session_http=[A-Za-z0-9_-]+; Path=\/; Max-Age=2592000; HttpOnly; SameSite=Strict$/);
+  const cookie=jar.split(';')[0];
+  assert.equal((await fetch(base+'/api/v1/session',{headers:{cookie}})).status,200);
+  assert.equal((await fetch(base+'/api/v1/diag-mode',{method:'POST',headers:{cookie,'content-type':'application/json'},body:'{"enabled":false}'})).status,401,'cookie alone cannot change state (CSRF guard)');
+  assert.equal((await pub('/api/v1/session',{headers:{cookie}})).status,404,'http cookie is useless through Funnel');
+  assert.match(await login('100.65.28.85:8790',false),/^__Host-bmw_ai_session=.*; Secure;/);
+  assert.match(await login('bmw-ai-pi.example-tailnet.ts.net',true),/^__Host-bmw_ai_session=.*; Secure;/,'never a non-Secure cookie for the public name');
+  assert.match(await login('evil.example:8790',true),/; Secure;/);
+
   // 2. Einschalten geht nur mit Login und nur mit einer erlaubten Dauer.
   assert.equal((await site('POST','/api/v1/diag-mode',{enabled:true,minutes:30},{'content-type':'application/json'})).status,401);
   assert.equal((await site('POST','/api/v1/diag-mode',{enabled:true,minutes:9999})).status,400);
