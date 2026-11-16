@@ -1,30 +1,214 @@
-<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BMW AI Assistant</title><link rel="stylesheet" href="/style.css"></head><body><header><div class="brand">◈ BMW AI Assistant</div><span id="connection">Privater Raspberry-Pi-Server</span></header>
-<div id="newVersionNotice" hidden role="status" class="new-version-notice"><span id="newVersionMessage">Neue BMW-AI-Version verfügbar.</span><button type="button" id="reloadNewVersion">Jetzt aktualisieren</button></div>
-<div id="login" class="login"><h2>Privater Zugang</h2><p>Diese Oberfläche ist nur in deinem Tailscale-Netz erreichbar.</p><input type="password" id="password" placeholder="Serverpasswort" autocomplete="current-password"><label class="remember-control"><input type="checkbox" id="rememberMe"> 30 Tage angemeldet bleiben (nur auf eigenen Geräten)</label><button id="loginButton">Anmelden</button><p id="loginError" class="error"></p></div>
-<div id="shell" hidden><nav id="tabs"><button data-tab="chat" class="active">Chat</button><button data-tab="status">Fahrzeug</button><button data-tab="diag">Diagnose</button><button data-tab="console">MGU-Konsole</button><button data-tab="actions">Funktionen</button><button data-tab="jobs">Freigaben</button><button data-tab="files">Dateien</button><button data-tab="reports">Berichte</button><button data-tab="logs">Logs</button><button data-tab="updates">Updates</button></nav><main>
-<section id="chat" class="tab"><h2>Assistent</h2><p id="chatgptPlanStatus" class="hint">ChatGPT-Planstatus wird geladen ...</p><div class="toolbar"><button id="newChat">Neuer Chat</button><button id="openChatImport">ChatGPT-Chats importieren</button><button id="openChatExport">BMW-AI-Chats exportieren</button><select id="convos"><option value="">Neuer Chat</option></select></div><div id="chatImportPanel" class="panel" hidden><h3>ChatGPT-Projektchats importieren</h3><p>ChatGPT → Einstellungen → Datenkontrollen → Daten exportieren. ZIP in der Dateien-App entpacken und <code>conversations.json</code> auswählen. Die Datei wird <strong>nur lokal im Browser</strong> ausgewertet. Nur die angehakten Textnachrichten werden an deinen Raspberry Pi übertragen. Originalchats werden nicht synchronisiert.</p><input type="file" id="chatExport" accept=".json,application/json"><input type="search" id="chatImportSearch" placeholder="Chat-Titel suchen, z. B. MGU, DSP, Ambient"><div id="chatImportList" class="import-list"></div><div class="toolbar"><button id="importSelectedChats">Ausgewählte Chats importieren</button><button id="closeChatImport">Schließen</button></div><p id="chatImportStatus" class="hint"></p></div><div id="chatExportPanel" class="panel" hidden>
-<h3>BMW-AI-Chats nach ChatGPT übertragen</h3>
-<p>Wähle die gewünschten Chats. Exportiere sie als Markdown-Datei (für ChatGPT) oder JSON-Datei (zur Archivierung). Dateien werden nur auf dein Gerät heruntergeladen; es erfolgt keine automatische Übertragung an ChatGPT.</p>
-<input type="search" id="chatExportSearch" placeholder="Chats durchsuchen"><div class="import-list" id="chatExportList"></div>
-<div class="toolbar"><button id="markAllExportChats" type="button">Alle markieren (max. 25)</button><button id="markNoExportChats" type="button">Auswahl aufheben</button></div>
-<div class="toolbar">
-<label><input type="checkbox" id="chatExportNewOnly" checked> Nur neue BMW-AI-Nachrichten seit dem ChatGPT-Import</label>
-<label>Format: <select id="chatExportFormat"><option value="markdown">Markdown (.md) – für ChatGPT</option><option value="json">JSON (.json) – Archiv</option></select></label>
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BMW AI Assistant</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">◈ BMW AI Assistant</div>
+  <div class="header-status">
+    <span id="diagPill" class="pill pill-live" hidden>Diagnosemodus aktiv</span>
+    <span id="connection">Privater Raspberry-Pi-Server</span>
+    <button type="button" id="logout" class="textbutton" hidden>Abmelden</button>
+  </div>
+</header>
+
+<div id="newVersionNotice" hidden role="status" class="new-version-notice">
+  <span id="newVersionMessage">Neue BMW-AI-Version verfügbar.</span>
+  <button type="button" id="reloadNewVersion">Jetzt aktualisieren</button>
 </div>
-<div class="toolbar"><button id="exportSelectedChats" type="button">Ausgewählte Chats herunterladen</button><button id="shareExportChats" type="button">Auf iPhone/iPad teilen</button><button id="closeChatExport" type="button">Schließen</button></div>
-<p class="hint">Du kannst die exportierte Datei anschließend im gewünschten ChatGPT-Projektchat anhängen. Das ergänzt Kontext, aber schreibt keine Nachrichten automatisch in die ursprüngliche Chat-Historie.</p>
-<a href="https://chatgpt.com/" rel="noopener noreferrer" target="_blank">ChatGPT öffnen</a>
-<div class="panel">
-<h4>Automatischen lokalen Export vorbereiten</h4>
-<label><input type="checkbox" id="autoChatExport"> Eine aktuelle Exportkopie automatisch auf meinem Raspberry Pi bereithalten</label>
-<p class="hint">Lokaler Export aus den bis zu 25 neuesten Chats. Keine Cloud-Synchronisierung. Die Datei bleibt im privaten Datenverzeichnis des Pi gespeichert.</p>
-<button id="downloadChatSnapshot" type="button">Letzten lokalen Export herunterladen</button>
-<p class="hint" id="chatExportInfo"></p>
+
+<!-- Anmeldung -->
+<div id="login" class="login">
+  <h2>Privater Zugang</h2>
+  <p>Diese Oberfläche ist nur in deinem Tailscale-Netz erreichbar.</p>
+  <input type="password" id="password" placeholder="Serverpasswort" autocomplete="current-password">
+  <label class="check"><input type="checkbox" id="rememberMe"> 30 Tage angemeldet bleiben (nur auf eigenen Geräten)</label>
+  <button id="loginButton">Anmelden</button>
+  <p id="loginError" class="error"></p>
 </div>
-<p id="chatExportResult" class="hint" role="status"></p>
-</div><div class="messages" id="messages"></div><div class="composer"><select id="chatFile"><option value="">Ohne Datei</option></select><textarea id="chatInput" placeholder="Frage zu deinem BMW oder zu den Diagnoseergebnissen ..."></textarea><button id="sendChat">Senden</button></div><p class="hint">KI-Antworten sind keine Bestätigung, dass das Fahrzeug einen Befehl ausgeführt hat.</p></section>
-<section id="status" class="tab" hidden><h2>MGU koppeln</h2><div id="pairPanel" class="panel" hidden><p id="pairDescription">QR-Verbindung erkannt</p><button id="pairButton">MGU einmalig koppeln</button><p id="pairError" class="error"></p></div><h2>Fahrzeugstatus</h2><button id="refreshStatus">Aktualisieren</button><pre id="statusResult">Noch keine Abfrage</pre><p class="hint">Nicht verfügbare Live-Daten bleiben ausdrücklich als nicht verfügbar markiert.</p></section>
-<section id="diag" class="tab" hidden><h2>Systemdiagnose</h2><p>Eine Abfrage benötigt die Freigabe im Reiter Freigaben.</p><select id="preset"><option value="system">System</option><option value="network">Netzwerk</option><option value="audio">Audio</option><option value="services">Dienste</option><option value="storage">Speicher</option><option value="bridge">Bisherige Bridge</option><option value="recent_logs">MGU-Dienstlogs</option><option value="vehicle">Fahrzeugdaten (nur bei geprüftem Adapter)</option></select><button id="createDiag">Freigabe anfordern</button></section>
+
+<div id="shell" hidden>
+<nav id="tabs">
+  <button data-tab="chat" class="active">Chat</button>
+  <button data-tab="jobs">Freigaben <span id="jobBadge" class="badge" hidden>0</span></button>
+  <button data-tab="diag">Diagnose</button>
+  <button data-tab="console">Konsole</button>
+  <button data-tab="files">Dateien</button>
+  <button data-tab="system">System</button>
+</nav>
+
+<main>
+
+<!-- ===== Chat ===== -->
+<section id="chat" class="tab">
+  <div class="toolbar">
+    <select id="convos" aria-label="Unterhaltung wählen"><option value="">Neuer Chat</option></select>
+    <button id="newChat">Neuer Chat</button>
+  </div>
+  <div class="messages" id="messages"></div>
+  <div class="composer">
+    <select id="chatFile" aria-label="Datei anhängen"><option value="">Ohne Datei</option></select>
+    <textarea id="chatInput" placeholder="Frage zu deinem BMW oder zu den Diagnoseergebnissen ..."></textarea>
+    <button id="sendChat">Senden</button>
+  </div>
+  <p class="hint">KI-Antworten sind keine Bestätigung, dass das Fahrzeug einen Befehl ausgeführt hat.</p>
+  <p id="chatgptPlanStatus" class="hint">ChatGPT-Planstatus wird geladen ...</p>
+  <div class="toolbar">
+    <button id="openChatImport" class="secondary">ChatGPT-Chats importieren</button>
+    <button id="openChatExport" class="secondary">Chats exportieren</button>
+  </div>
+
+  <div id="chatImportPanel" class="panel" hidden>
+    <h3>ChatGPT-Projektchats importieren</h3>
+    <p>ChatGPT → Einstellungen → Datenkontrollen → Daten exportieren. ZIP in der Dateien-App entpacken und <code>conversations.json</code> auswählen. Die Datei wird <strong>nur lokal im Browser</strong> ausgewertet. Nur die angehakten Textnachrichten werden an deinen Raspberry Pi übertragen. Originalchats werden nicht synchronisiert.</p>
+    <input type="file" id="chatExport" accept=".json,application/json">
+    <input type="search" id="chatImportSearch" placeholder="Chat-Titel suchen, z. B. MGU, DSP, Ambient">
+    <div id="chatImportList" class="import-list"></div>
+    <div class="toolbar">
+      <button id="importSelectedChats">Ausgewählte Chats importieren</button>
+      <button id="closeChatImport" class="secondary">Schließen</button>
+    </div>
+    <p id="chatImportStatus" class="hint"></p>
+  </div>
+
+  <div id="chatExportPanel" class="panel" hidden>
+    <h3>BMW-AI-Chats exportieren</h3>
+    <p>Wähle die gewünschten Chats und exportiere sie als Markdown-Datei (z. B. als Kontext für ChatGPT oder Claude) oder als JSON-Datei (Archiv). Dateien werden nur auf dein Gerät heruntergeladen; es erfolgt keine automatische Übertragung.</p>
+    <input type="search" id="chatExportSearch" placeholder="Chats durchsuchen">
+    <div class="import-list" id="chatExportList"></div>
+    <div class="toolbar">
+      <button id="markAllExportChats" type="button" class="secondary">Alle markieren (max. 25)</button>
+      <button id="markNoExportChats" type="button" class="secondary">Auswahl aufheben</button>
+    </div>
+    <div class="toolbar">
+      <label class="check"><input type="checkbox" id="chatExportNewOnly" checked> Nur neue BMW-AI-Nachrichten seit dem ChatGPT-Import</label>
+      <label>Format: <select id="chatExportFormat"><option value="markdown">Markdown (.md)</option><option value="json">JSON (.json) – Archiv</option></select></label>
+    </div>
+    <div class="toolbar">
+      <button id="exportSelectedChats" type="button">Ausgewählte Chats herunterladen</button>
+      <button id="shareExportChats" type="button">Auf iPhone/iPad teilen</button>
+      <button id="closeChatExport" type="button" class="secondary">Schließen</button>
+    </div>
+    <p id="chatExportResult" class="hint" role="status"></p>
+    <p class="hint">Die Markdown-Datei kannst du im gewünschten ChatGPT-Projektchat als Kontext anhängen. <a href="https://chatgpt.com/" rel="noopener noreferrer" target="_blank">ChatGPT öffnen</a></p>
+    <details>
+      <summary>Automatische lokale Exportkopie</summary>
+      <label class="check"><input type="checkbox" id="autoChatExport"> Eine aktuelle Exportkopie automatisch auf meinem Raspberry Pi bereithalten</label>
+      <p class="hint">Lokaler Export aus den bis zu 25 neuesten Chats. Keine Cloud-Synchronisierung. Die Datei bleibt im privaten Datenverzeichnis des Pi gespeichert.</p>
+      <button id="downloadChatSnapshot" type="button" class="secondary">Letzten lokalen Export herunterladen</button>
+      <p class="hint" id="chatExportInfo"></p>
+    </details>
+  </div>
+</section>
+
+<!-- ===== Freigaben ===== -->
+<section id="jobs" class="tab" hidden>
+  <div class="section-head">
+    <h2>Freigaben</h2>
+    <button id="refreshJobs" class="secondary">Aktualisieren</button>
+  </div>
+  <p class="hint">Nichts wird am Fahrzeug ausgeführt, bevor du den genauen Auftrag hier einmalig freigibst. Das gilt für den Chat, für diese Website und für Claude.</p>
+  <div id="jobList"></div>
+  <details id="jobHistoryBox">
+    <summary>Verlauf <span id="jobHistoryCount"></span></summary>
+    <div id="jobHistory"></div>
+  </details>
+</section>
+
+<!-- ===== Diagnose ===== -->
+<section id="diag" class="tab" hidden>
+
+  <div class="panel" id="diagModePanel">
+    <div class="section-head">
+      <h2>Diagnosemodus für Claude</h2>
+      <span id="diagModeState" class="pill pill-off">Aus</span>
+    </div>
+    <p>Öffnet für eine begrenzte Zeit den MCP-Zugang, über den Claude Diagnoseaufträge <strong>vorschlagen</strong> kann. Jeder Auftrag muss weiterhin von dir unter „Freigaben“ bestätigt werden. Außerhalb des Diagnosemodus ist der Zugang geschlossen.</p>
+    <div class="toolbar">
+      <label>Dauer: <select id="diagModeMinutes"><option value="30">30 Minuten</option><option value="120" selected>2 Stunden</option><option value="480">8 Stunden</option></select></label>
+      <button id="diagModeToggle">Diagnosemodus starten</button>
+    </div>
+
+    <div id="diagModeActive" hidden>
+      <h3>Adresse für Claude</h3>
+      <div class="toolbar">
+        <input type="text" id="diagMcpUrl" readonly aria-label="MCP-Adresse">
+        <button id="diagCopyUrl" type="button" class="secondary">Kopieren</button>
+      </div>
+      <h3>Verbindungsanfragen</h3>
+      <p class="hint">Claude zeigt beim Verbinden einen sechsstelligen Code. Erlaube nur die Anfrage, deren Code mit deiner Claude-Seite übereinstimmt.</p>
+      <div id="diagRequests"></div>
+    </div>
+
+    <h3>Verbundene Clients</h3>
+    <div id="diagClients"></div>
+
+    <h3>Öffentlicher Zugang (Tailscale Funnel)</h3>
+    <label class="check"><input type="checkbox" id="diagAutoFunnel" disabled> Port 443 automatisch mit dem Diagnosemodus öffnen und danach wieder schließen</label>
+    <p class="hint" id="diagFunnelInfo" role="status">Einstellung wird geladen ...</p>
+
+    <details>
+      <summary>So verbindest du Claude</summary>
+      <ol>
+        <li>Diagnosemodus starten und die Adresse oben kopieren.</li>
+        <li>In Claude unter „Connectors“ einen benutzerdefinierten Connector mit dieser Adresse hinzufügen (Anmeldung: OAuth, Client automatisch registrieren).</li>
+        <li>Claude öffnet eine Seite mit einem Code. Hier unter „Verbindungsanfragen“ denselben Code erlauben.</li>
+        <li>Claude schlägt Aufträge vor. Jeden einzelnen unter „Freigaben“ prüfen und bestätigen.</li>
+      </ol>
+      <p class="hint">Die Claude-App und claude.ai erreichen den Pi nur über das öffentliche Internet; dafür muss Port 443 per Tailscale Funnel offen sein (Schalter oben oder von Hand). Claude Code auf einem Gerät in deinem Tailnet funktioniert ohne Funnel. Website, Login und Freigaben sind über Funnel nie erreichbar.</p>
+    </details>
+  </div>
+
+  <div class="panel">
+    <div class="section-head">
+      <h2>MGU</h2>
+      <button id="refreshStatus" class="secondary">Aktualisieren</button>
+    </div>
+    <div id="pairPanel" class="panel" hidden>
+      <p id="pairDescription">QR-Verbindung erkannt</p>
+      <button id="pairButton">MGU einmalig koppeln</button>
+      <p id="pairError" class="error"></p>
+    </div>
+    <p class="status-line"><span id="mguDot" class="dot"></span><span id="mguText">Noch keine Abfrage</span></p>
+    <details>
+      <summary>Rohdaten</summary>
+      <pre id="statusResult">Noch keine Abfrage</pre>
+    </details>
+    <p class="hint">Nicht verfügbare Live-Daten bleiben ausdrücklich als nicht verfügbar markiert. Fahrzeugfunktionen (Lenkrad-/Sitzheizung, Ambiente) sind gesperrt, solange kein geprüfter Steuergeräte-Adapter vorhanden ist.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Systemdiagnose</h2>
+    <div class="toolbar">
+      <select id="preset" aria-label="Diagnose wählen">
+        <option value="system">System</option>
+        <option value="network">Netzwerk</option>
+        <option value="audio">Audio</option>
+        <option value="services">Dienste</option>
+        <option value="storage">Speicher</option>
+        <option value="bridge">Bisherige Bridge</option>
+        <option value="recent_logs">MGU-Dienstlogs</option>
+        <option value="vehicle">Fahrzeugdaten (nur bei geprüftem Adapter)</option>
+      </select>
+      <button id="createDiag">Freigabe anfordern</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-head">
+      <h2>Berichte</h2>
+      <button id="refreshReports" class="secondary">Aktualisieren</button>
+    </div>
+    <div id="reportList"></div>
+  </div>
+</section>
+
+<!-- ===== Konsole ===== -->
 <section id="console" class="tab" hidden>
   <div class="console-heading">
     <div><h2>MGU-Terminal</h2><p class="hint">Befehle auf der Headunit ausführen – im geschützten Lesemodus.</p></div>
@@ -66,9 +250,74 @@
     <button type="button" id="consoleClear" class="console-utility">Verlauf leeren</button>
   </div>
 </section>
-<section id="actions" class="tab" hidden><h2>Fahrzeugfunktionen</h2><p>Vorbereitete Schnittstellen: Lenkradheizung, Fahrersitzheizung und Ambient-Rücksetzung.</p><div class="panel"><strong>Noch gesperrt</strong><p>Ohne verifizierte BMW-ID7-Diagnoseadapter und sichere Rückmeldung werden keine physischen Befehle übertragen. Die Server-API antwortet derzeit absichtlich mit „nicht implementiert“.</p></div></section>
-<section id="jobs" class="tab" hidden><h2>Freigaben</h2><button id="refreshJobs">Aktualisieren</button><div id="jobList"></div></section>
-<section id="files" class="tab" hidden><h2>Dateien</h2><div class="toolbar"><input type="file" id="upload"><button id="uploadBtn">Datei hochladen</button></div><div class="toolbar"><input type="text" id="mguFilePath" placeholder="MGU-Dateipfad, z. B. /etc/cinemo/... "><button id="fetchFile">Abruf anfragen</button></div><div class="toolbar"><input type="text" id="mguFolderPath" placeholder="Verzeichnis, z. B. /var/log"><button id="listFolder">Verzeichnis auflisten</button></div><div id="fileList"></div></section>
-<section id="reports" class="tab" hidden><h2>Diagnoseberichte</h2><button id="refreshReports">Aktualisieren</button><div id="reportList"></div></section>
-<section id="logs" class="tab" hidden><h2>Serverprotokolle</h2><button id="refreshLogs">Aktualisieren</button><button id="downloadLogs">Logs herunterladen</button><pre id="logsResult"></pre></section>
-<section id="updates" class="tab" hidden><h2>Raspberry-Pi-Updates</h2><p class="hint">Nur ZIP-Pakete mit einer geprüften BMW-AI-Herausgebersignatur können installiert werden. Vorher wird ein Backup erstellt; bei fehlgeschlagenem Health-Test erfolgt ein Rollback. Die Anmeldedaten, Chats und Fahrzeugkopplung werden nicht ersetzt.</p><div class="panel"><button id="refreshUpdates">Jetzt auf Updates prüfen</button><p id="updateCheckResult" class="hint" role="status">Manuelle Prüfung startet einen GitHub-Abruf. Bei aktivierter Automatik werden neue signierte Versionen installiert.</p><pre id="updateStatus">Noch nicht abgefragt</pre></div><div class="panel"><h3>Update-ZIP installieren</h3><input type="file" id="updateZip" accept=".zip,application/zip"><button id="uploadUpdate">ZIP prüfen &amp; hochladen</button><div id="updateConfirm" hidden><p><strong>Diese Installation muss ausdrücklich bestätigt werden:</strong></p><pre id="updateDetails"></pre><button id="confirmUpdate">Jetzt signiertes Update installieren</button><button id="cancelUpdate" class="danger">Abbrechen</button></div></div><div class="panel"><h3>Automatische GitHub-Updates</h3><p>Nur aus deinem festgelegten GitHub-Repository, mit Signaturprüfung. Sobald die Veröffentlichungs-Pipeline eingerichtet ist, kann der Pi nach neuen Versionen suchen und sie installieren.</p><label><input type="checkbox" id="autoUpdate" disabled> Signierte Updates automatisch installieren</label><p class="hint" id="autoUpdateInfo" role="status">Gespeicherte Einstellung wird beim Öffnen geladen.</p><p class="hint">Standardmäßig deaktiviert. Aktivieren erst nach Einrichtung des signierenden GitHub-Workflows.</p></div></section><p id="notice" role="status"></p></main><footer>Privates Projekt • MGU-Schreibzugriffe gesperrt • <button id="logout" class="textbutton">Abmelden</button></footer></div><script src="/app.js"></script></body></html>
+
+<!-- ===== Dateien ===== -->
+<section id="files" class="tab" hidden>
+  <h2>Dateien</h2>
+  <div class="panel">
+    <h3>Von der MGU holen</h3>
+    <div class="toolbar">
+      <input type="text" id="mguFilePath" placeholder="Dateipfad, z. B. /etc/cinemo/cinemo_options.xml" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button id="fetchFile">Abruf anfragen</button>
+    </div>
+    <div class="toolbar">
+      <input type="text" id="mguFolderPath" placeholder="Verzeichnis, z. B. /var/log" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button id="listFolder">Verzeichnis auflisten</button>
+    </div>
+    <p class="hint">Beides erzeugt einen Auftrag, den du unter „Freigaben“ bestätigst.</p>
+  </div>
+  <div class="panel">
+    <h3>Vom Gerät hochladen</h3>
+    <div class="toolbar">
+      <input type="file" id="upload">
+      <button id="uploadBtn">Datei hochladen</button>
+    </div>
+  </div>
+  <h3>Gespeicherte Dateien</h3>
+  <div id="fileList"></div>
+</section>
+
+<!-- ===== System ===== -->
+<section id="system" class="tab" hidden>
+  <h2>Raspberry-Pi-Updates</h2>
+  <p class="hint">Nur ZIP-Pakete mit einer geprüften BMW-AI-Herausgebersignatur können installiert werden. Vorher wird ein Backup erstellt; bei fehlgeschlagenem Health-Test erfolgt ein Rollback. Die Anmeldedaten, Chats und Fahrzeugkopplung werden nicht ersetzt.</p>
+  <div class="panel">
+    <button id="refreshUpdates">Jetzt auf Updates prüfen</button>
+    <p id="updateCheckResult" class="hint" role="status">Manuelle Prüfung startet einen GitHub-Abruf. Bei aktivierter Automatik werden neue signierte Versionen installiert.</p>
+    <label class="check"><input type="checkbox" id="autoUpdate" disabled> Signierte Updates automatisch installieren</label>
+    <p class="hint" id="autoUpdateInfo" role="status">Gespeicherte Einstellung wird beim Öffnen geladen.</p>
+    <details>
+      <summary>Technische Details</summary>
+      <pre id="updateStatus">Noch nicht abgefragt</pre>
+    </details>
+  </div>
+  <details class="panel">
+    <summary>Update-ZIP von Hand installieren</summary>
+    <input type="file" id="updateZip" accept=".zip,application/zip">
+    <button id="uploadUpdate">ZIP prüfen &amp; hochladen</button>
+    <div id="updateConfirm" hidden>
+      <p><strong>Diese Installation muss ausdrücklich bestätigt werden:</strong></p>
+      <pre id="updateDetails"></pre>
+      <button id="confirmUpdate">Jetzt signiertes Update installieren</button>
+      <button id="cancelUpdate" class="danger">Abbrechen</button>
+    </div>
+  </details>
+
+  <div class="section-head">
+    <h2>Serverprotokoll</h2>
+    <div class="actions">
+      <button id="refreshLogs" class="secondary">Aktualisieren</button>
+      <button id="downloadLogs" class="secondary">Herunterladen</button>
+    </div>
+  </div>
+  <pre id="logsResult"></pre>
+</section>
+
+</main>
+<footer>Privates Projekt · MGU-Schreibzugriffe gesperrt</footer>
+</div>
+
+<p id="notice" role="status"></p>
+<script src="/app.js"></script>
+</body>
+</html>

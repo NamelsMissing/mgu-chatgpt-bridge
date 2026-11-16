@@ -17,7 +17,9 @@ sessions[crypto.createHash('sha256').update(session).digest('hex')]={expires:new
 fs.writeFileSync(path.join(temp,'state.json'),JSON.stringify({sessions,conversations:{},messages:{},jobs:{},reports:{},files:{},logs:[]}));
 const frontend=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
 const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8');
-assert.match(frontend,/updates:refreshUpdates/,'opening the Updates tab must load stored settings');
+assert.match(frontend,/system:refreshSystem/,'opening the System tab must load stored settings');
+assert.match(frontend,/function refreshSystem\(\)\{refreshUpdates\(\);/,'the System tab loads the update settings');
+assert.match(frontend,/updates:'system'/,'old #updates links must still reach the update settings');
 assert.match(frontend,/autoSettingsError/,'frontend must recognize unreadable settings');
 assert.match(html,/id="autoUpdate" disabled/,'checkbox must not look off while loading');
 const {route}=require('../server.js');

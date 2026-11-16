@@ -1,31 +1,271 @@
 'use strict';
+// BMW AI Weboberfläche.
+// Abschnitte: Grundlagen · Anmeldung · Reiter · Chat · Freigaben · Diagnose (Diagnosemodus für
+// Claude, MGU, Berichte) · Konsole · Dateien · Chat-Import/-Export · System · Auto-Reload.
+
+// ----- Grundlagen -----
 let token=sessionStorage.getItem('bmw-ai-token')||'',conversationId='',currentTab='chat';
 function authHeaders(){return token==='cookie'?{'x-bmw-ai-client':'1'}:{authorization:'Bearer '+token,'x-bmw-ai-client':'1'};}
-const $=s=>document.getElementById(s);const txt=(tag,value,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=String(value);return e;};
-function notice(s){$('notice').textContent=s;}
-async function api(endpoint,method='GET',data,raw){const headers=authHeaders();if(data&&!raw)headers['content-type']='application/json';const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined});const result=await res.json().catch(()=>({error:'Invalid response'}));if(!res.ok)throw Error(result.error||'HTTP '+res.status);return result;}
+const $=s=>document.getElementById(s);
+const txt=(tag,value,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=String(value);return e;};
+let noticeTimer=null;
+function notice(s){
+ const n=$('notice');n.textContent=s;n.classList.toggle('is-visible',!!s);
+ clearTimeout(noticeTimer);if(s)noticeTimer=setTimeout(()=>n.classList.remove('is-visible'),7000);
+}
+async function api(endpoint,method='GET',data,raw){
+ const headers=authHeaders();if(data&&!raw)headers['content-type']='application/json';
+ const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined});
+ const result=await res.json().catch(()=>({error:'Invalid response'}));
+ if(!res.ok)throw Error(result.error||'HTTP '+res.status);
+ return result;
+}
+const clock=iso=>new Date(iso).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+const stamp=iso=>iso?new Date(iso).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+function triggerFileDownload(blob,filename){
+ const u=URL.createObjectURL(blob),a=document.createElement('a');
+ a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(u),30000);
+}
+async function authenticatedDownload(path,name){
+ try{const r=await fetch('/api/v1'+path,{headers:authHeaders()});if(!r.ok)throw Error('HTTP '+r.status);triggerFileDownload(await r.blob(),name);}
+ catch(e){notice(e.message);}
+}
+
+// ----- MGU-Kopplung per QR-Link (/pair?ip=…&code=…) -----
 const pairParams=new URLSearchParams(location.search);
 const pendingPair=(location.pathname==='/pair'&&/^[0-9a-f]{32}$/.test(pairParams.get('code')||'')&&/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(?:\d{1,3}\.)\d{1,3}$/.test(pairParams.get('ip')||''))?{ip:pairParams.get('ip'),code:pairParams.get('code')}:null;
 if(location.pathname==='/pair')history.replaceState(null,'','/');
-function renderPair(){const panel=$('pairPanel');panel.hidden=!pendingPair;if(pendingPair){$('pairDescription').textContent='Neue BMW-MGU mit Tailscale-Adresse '+pendingPair.ip+' koppeln? Die Kopplung erfolgt nur nach deiner ausdruecklichen Bestaetigung.';}}
+function renderPair(){const panel=$('pairPanel');panel.hidden=!pendingPair;if(pendingPair){$('pairDescription').textContent='Neue BMW-MGU mit Tailscale-Adresse '+pendingPair.ip+' koppeln? Die Kopplung erfolgt nur nach deiner ausdrücklichen Bestätigung.';}}
 $('pairButton').onclick=async()=>{if(!pendingPair||!token)return;const btn=$('pairButton');btn.disabled=true;try{const d=await api('/pair','POST',pendingPair);$('pairDescription').textContent='Erfolgreich gekoppelt: '+d.host;$('pairError').textContent='';btn.hidden=true;await refreshStatus();}catch(e){$('pairError').textContent=e.message;btn.disabled=false;}};
-function show(){ $('login').hidden=!!token;$('shell').hidden=!token;if(token){
+
+// ----- Anmeldung -----
+let pollTimer=null;
+function show(){
+ $('login').hidden=!!token;$('shell').hidden=!token;$('logout').hidden=!token;
+ if(!token){clearInterval(pollTimer);pollTimer=null;$('diagPill').hidden=true;return;}
  const resumeConvo=sessionStorage.getItem('bmw-ai-resume-conversation');
  const resumeTab=sessionStorage.getItem('bmw-ai-resume-tab')||(/^#[a-z-]+$/.test(location.hash)?location.hash.slice(1):'');
  if(resumeConvo)conversationId=resumeConvo;
- refreshConvos();refreshJobs();refreshPlanStatus();
- if(resumeTab&&document.querySelector('[data-tab="'+resumeTab+'"]')){
-  document.querySelector('[data-tab="'+resumeTab+'"]').click();
+ refreshConvos();refreshJobs();refreshPlanStatus();refreshDiagMode();
+ // Hält Freigabe-Zähler und Diagnosemodus aktuell, auch wenn Claude im Hintergrund etwas vorschlägt.
+ if(!pollTimer)pollTimer=setInterval(()=>{if(!document.hidden)refreshDiagMode();},5000);
+ if(resumeTab){
+  openTab(resumeTab);
   sessionStorage.removeItem('bmw-ai-resume-tab');
   sessionStorage.removeItem('bmw-ai-resume-conversation');
  }
- if(pendingPair){document.querySelector('[data-tab="status"]').click();renderPair();}
-}}
+ if(pendingPair){openTab('diag');renderPair();}
+}
 $('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-bmw-ai-client':'1'},body:JSON.stringify({password:$('password').value,remember:$('rememberMe').checked})});const d=await r.json();if(!r.ok)throw Error(d.error);
  token=d.remembered?'cookie':d.token;if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
  $('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
+$('password').onkeydown=e=>{if(e.key==='Enter')$('loginButton').click();};
 $('logout').onclick=async()=>{try{await api('/logout','POST');}catch(e){}token='';sessionStorage.removeItem('bmw-ai-token');show();};
-$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>{currentTab=b.dataset.tab;if(currentTab==='console')history.replaceState(null,'',location.pathname+location.search+'#console');document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==currentTab);$('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===b));({status:refreshStatus,jobs:refreshJobs,files:refreshFiles,reports:refreshReports,logs:refreshLogs,updates:refreshUpdates,console:refreshConsoleConnection}[currentTab]||(()=>{}))();});
+async function restoreSession(){
+ if(token){try{await api('/session');show();return;}catch(e){token='';sessionStorage.removeItem('bmw-ai-token');}}
+ try{const r=await fetch('/api/v1/session',{credentials:'same-origin',headers:{'x-bmw-ai-client':'1'}});if(r.ok){token='cookie';show();return;}}catch(e){}
+ show();
+}
+
+// ----- Reiter -----
+// Frühere Reiternamen (Lesezeichen, QR-Links, gespeicherte Ansicht) führen zum neuen Ort.
+const TAB_ALIASES={status:'diag',reports:'diag',actions:'diag',logs:'system',updates:'system'};
+function openTab(name){
+ name=TAB_ALIASES[name]||name;
+ const button=document.querySelector('#tabs [data-tab="'+name+'"]');if(!button)return;
+ currentTab=name;
+ if(name==='console')history.replaceState(null,'',location.pathname+location.search+'#console');
+ document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==name);
+ $('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===button));
+ ({jobs:refreshJobs,diag:refreshDiag,files:refreshFiles,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
+}
+$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
+
+// ----- Chat -----
+async function refreshConvos(){try{const data=await api('/conversations'),sel=$('convos');sel.replaceChildren();sel.appendChild(new Option('Neuer Chat',''));data.conversations.forEach(c=>sel.appendChild(new Option((c.importSource==='ChatGPT'?'[ChatGPT-Import] ':'')+c.title,c.id)));sel.value=conversationId;if(conversationId)await loadMessages();}catch(e){notice(e.message);}}
+function addMessage(m){const node=txt('div',m.content,'message '+m.role);node.prepend(txt('span',m.role==='user'?'Du':'Assistent','meta'));$('messages').appendChild(node);$('messages').scrollTop=$('messages').scrollHeight;}
+async function loadMessages(){$('messages').replaceChildren();if(!conversationId)return;const d=await api('/conversations/'+conversationId+'/messages');d.messages.forEach(addMessage);}
+async function refreshPlanStatus(){try{const c=await api('/config');const p=c.chatgptPlan||{};$('chatgptPlanStatus').textContent=p.permission?'ChatGPT-Plus-Anmeldung aktiv'+(p.email?' ('+p.email+')':'')+' – Nutzung über das Abo, kein zusätzlicher API-Schlüssel.':p.connected?'ChatGPT-Konto angemeldet, Planfreigabe fehlt. OAuth-Anmeldung erneut durchführen.': 'ChatGPT-Plan nicht verbunden. OAuth-Anmeldung auf dem Raspberry Pi über Termius starten.';}catch(e){$('chatgptPlanStatus').textContent='Planstatus unbekannt: '+e.message;}}
+$('newChat').onclick=()=>{conversationId='';$('convos').value='';$('messages').replaceChildren();notice('Neuer Chat');};
+$('convos').onchange=()=>{conversationId=$('convos').value;loadMessages().catch(e=>notice(e.message));};
+$('sendChat').onclick=async()=>{const v=$('chatInput').value.trim();if(!v)return;const btn=$('sendChat');btn.disabled=true;notice('OpenAI wird angefragt ...');try{const d=await api('/chat','POST',{message:v,conversationId:conversationId||undefined,fileId:$('chatFile').value||undefined});$('chatInput').value='';conversationId=d.conversationId;await refreshConvos();notice(d.pendingJob?'Freigabe im Reiter „Freigaben“ erforderlich.':'Antwort erhalten');if(d.pendingJob)refreshJobs();}catch(e){notice(e.message);}finally{btn.disabled=false;}};
+$('chatInput').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('sendChat').click();}};
+// Die native iPhone/iPad-Hülle kann hier ein bestätigtes Sprachtranskript einsetzen.
+window.bmwAIInjectTranscript=function(text){$('chatInput').value=String(text||'').slice(0,8000);$('chatInput').focus();};
+
+// ----- Freigaben -----
+const JOB_TYPES={status:'MGU-Status abfragen',diagnostic:'Systemdiagnose',list:'Verzeichnis auflisten',download:'Datei abrufen',console:'Lesebefehl ausführen',action:'Fahrzeugfunktion'};
+const JOB_STATES={pending:'Wartet auf Freigabe',running:'Läuft',done:'Erledigt',failed:'Fehlgeschlagen',rejected:'Abgelehnt',expired:'Abgelaufen'};
+function setJobBadge(count){const b=$('jobBadge');b.textContent=String(count);b.hidden=!count;}
+function jobCard(j){
+ const fromClaude=j.source==='claude',payload=j.payload||{},detail=payload.command||payload.path||payload.preset||payload.action||'';
+ const panel=txt('div','','panel job job-'+j.status),head=txt('div','','job-head');
+ head.appendChild(txt('strong',JOB_TYPES[j.type]||j.type));
+ head.appendChild(txt('span',fromClaude?'Claude':j.conversationId?'Chat':'Website','pill '+(fromClaude?'pill-claude':'pill-off')));
+ head.appendChild(txt('span',(JOB_STATES[j.status]||j.status)+' · '+stamp(j.createdAt),'job-state'));
+ panel.appendChild(head);
+ if(detail)panel.appendChild(txt('pre',detail,'job-detail'));
+ if(j.reason)panel.appendChild(txt('p',j.reason));
+ if(j.status==='pending'){
+  if(fromClaude)panel.appendChild(txt('p','Vorschlag von Claude. Nach deiner Freigabe wird das Ergebnis an Claude übermittelt.','hint'));
+  const actions=txt('div','','actions');
+  for(const choice of ['approve','reject']){
+   const b=txt('button',choice==='approve'?'Einmalig freigeben':'Ablehnen',choice==='reject'?'danger':'');
+   b.onclick=async()=>{
+    actions.querySelectorAll('button').forEach(x=>x.disabled=true);
+    try{await api('/jobs/'+j.id+'/'+choice,'POST');notice(choice==='approve'?'Auftrag ausgeführt.':'Auftrag abgelehnt.');}
+    catch(e){notice(e.message);}
+    await refreshJobs();
+    if(choice==='approve'){refreshReports();refreshFiles();loadMessages().catch(()=>{});}
+   };
+   actions.appendChild(b);
+  }
+  panel.appendChild(actions);
+ }
+ if(j.status==='done'||j.status==='failed'){
+  const out=j.result&&typeof j.result.stdout==='string'?j.result.stdout:JSON.stringify(j.result||j.error,null,2);
+  const box=document.createElement('details');
+  box.appendChild(txt('summary',j.status==='done'?'Ergebnis anzeigen':'Fehler anzeigen'));
+  box.appendChild(txt('pre',String(out).slice(0,10000)));
+  panel.appendChild(box);
+ }
+ return panel;
+}
+async function refreshJobs(){
+ if(!token)return;
+ try{
+  const d=await api('/jobs');
+  const open=d.jobs.filter(j=>j.status==='pending'||j.status==='running'),past=d.jobs.filter(j=>!open.includes(j)).slice(0,40);
+  $('jobList').replaceChildren(...(open.length?open.map(jobCard):[txt('p','Keine offenen Freigaben.','hint')]));
+  $('jobHistory').replaceChildren(...past.map(jobCard));
+  $('jobHistoryCount').textContent=past.length?'('+past.length+')':'';
+  $('jobHistoryBox').hidden=!past.length;
+  setJobBadge(open.filter(j=>j.status==='pending').length);
+ }catch(e){notice(e.message);}
+}
+$('refreshJobs').onclick=refreshJobs;
+// Ein neuer Auftrag von dieser Website: gleich dorthin, wo er bestätigt wird.
+async function requestJob(type,payload,reason){
+ try{await api('/jobs','POST',{type,payload,reason});openTab('jobs');notice('Auftrag erstellt. Bitte prüfen und freigeben.');}
+ catch(e){notice(e.message);}
+}
+
+// ----- Diagnose: Diagnosemodus für Claude -----
+let lastDiagView='',lastPendingJobs=-1;
+function renderDiagMode(d){
+ lastDiagView=JSON.stringify(d);
+ const on=d.active===true;
+ $('diagPill').hidden=!on;
+ if(on)$('diagPill').textContent='Diagnosemodus bis '+clock(d.until);
+ const state=$('diagModeState');
+ state.textContent=on?'Aktiv bis '+clock(d.until)+' Uhr':'Aus';state.className='pill '+(on?'pill-live':'pill-off');
+ const toggle=$('diagModeToggle');
+ toggle.textContent=on?'Diagnosemodus beenden':'Diagnosemodus starten';toggle.classList.toggle('danger',on);toggle.dataset.active=on?'1':'';
+ $('diagModeMinutes').disabled=on;
+ $('diagModeActive').hidden=!on;
+ $('diagMcpUrl').value=location.origin+'/mcp';
+
+ const requests=$('diagRequests');requests.replaceChildren();
+ if(!d.requests.length)requests.appendChild(txt('p','Keine offene Verbindungsanfrage.','hint'));
+ for(const r of d.requests){
+  const row=txt('div','','request'),info=txt('div','','request-info'),actions=txt('div','','actions');
+  row.appendChild(txt('div',r.code,'request-code'));
+  info.appendChild(txt('strong',r.client));
+  info.appendChild(txt('span','Rückleitung an '+r.redirectHost+' · gültig bis '+clock(r.expiresAt),'hint'));
+  row.appendChild(info);
+  for(const [verb,label,cls] of [['approve','Verbindung erlauben',''],['deny','Ablehnen','danger']]){
+   const b=txt('button',label,cls);
+   b.onclick=async()=>{
+    actions.querySelectorAll('button').forEach(x=>x.disabled=true);
+    try{renderDiagMode(await api('/diag-mode/requests/'+r.id+'/'+verb,'POST'));notice(verb==='approve'?'Verbindung erlaubt. Claude übernimmt in wenigen Sekunden.':'Verbindung abgelehnt.');}
+    catch(e){notice(e.message);refreshDiagMode();}
+   };
+   actions.appendChild(b);
+  }
+  row.appendChild(actions);requests.appendChild(row);
+ }
+
+ const clients=$('diagClients');clients.replaceChildren();
+ if(!d.clients.length)clients.appendChild(txt('p','Noch kein Client verbunden.','hint'));
+ for(const c of d.clients){
+  const row=txt('div','','request'),info=txt('div','','request-info');
+  info.appendChild(txt('strong',c.name));
+  info.appendChild(txt('span','verbunden seit '+stamp(c.connectedAt)+(c.lastUsedAt?' · zuletzt aktiv '+stamp(c.lastUsedAt):''),'hint'));
+  row.appendChild(info);
+  const b=txt('button','Zugang widerrufen','danger');
+  b.onclick=async()=>{b.disabled=true;try{renderDiagMode(await api('/diag-mode/clients/'+c.id+'/revoke','POST'));notice('Zugang widerrufen.');}catch(e){notice(e.message);b.disabled=false;}};
+  row.appendChild(b);clients.appendChild(row);
+ }
+
+ const funnel=d.funnel||{},box=$('diagAutoFunnel'),info=$('diagFunnelInfo');
+ box.checked=d.autoFunnel===true;box.disabled=false;
+ info.classList.toggle('error',!!funnel.error);
+ info.textContent=funnel.error
+  ?'Tailscale-Befehl fehlgeschlagen: '+funnel.error+' – Der Dienst braucht Tailscale-Operator-Rechte (siehe README-CLAUDE-MCP.md). Der Zustand von Port 443 ist unbekannt.'
+  :d.autoFunnel
+   ?(funnel.public===true?'Port 443 ist bis zum Ende des Diagnosemodus öffentlich erreichbar. Öffentliche Anfragen kommen nur an die MCP-Adresse, nie an Website oder Login.':'Port 443 ist nur in deinem Tailnet erreichbar. Mit dem Start des Diagnosemodus wird er geöffnet.')
+   :'Aus: Dieser Server ändert nichts an Tailscale. Ohne Funnel erreicht nur ein Client in deinem Tailnet (z. B. Claude Code) die Adresse.';
+}
+async function refreshDiagMode(){
+ if(!token)return;
+ let d;try{d=await api('/diag-mode');}catch(e){return;}
+ setJobBadge(d.pendingJobs);
+ if(d.pendingJobs!==lastPendingJobs){
+  if(lastPendingJobs>=0&&d.pendingJobs>lastPendingJobs&&currentTab!=='jobs')notice(d.pendingClaudeJobs?'Claude bittet um eine Freigabe.':'Neue Freigabe wartet.');
+  const first=lastPendingJobs<0;lastPendingJobs=d.pendingJobs;
+  if(!first)refreshJobs();
+ }
+ if(JSON.stringify(d)!==lastDiagView)renderDiagMode(d);
+}
+$('diagModeToggle').onclick=async()=>{
+ const b=$('diagModeToggle'),on=b.dataset.active==='1';b.disabled=true;
+ try{
+  renderDiagMode(await api('/diag-mode','POST',on?{enabled:false}:{enabled:true,minutes:Number($('diagModeMinutes').value)}));
+  notice(on?'Diagnosemodus beendet. Der MCP-Zugang ist geschlossen.':'Diagnosemodus gestartet.');
+ }catch(e){notice(e.message);}
+ finally{b.disabled=false;}
+};
+$('diagAutoFunnel').onchange=async()=>{
+ const box=$('diagAutoFunnel');box.disabled=true;
+ $('diagFunnelInfo').textContent='Tailscale wird eingestellt ...';
+ try{renderDiagMode(await api('/diag-mode/funnel','POST',{auto:box.checked}));}
+ catch(e){notice(e.message);lastDiagView='';await refreshDiagMode();}
+};
+$('diagCopyUrl').onclick=async()=>{
+ try{await navigator.clipboard.writeText($('diagMcpUrl').value);notice('Adresse kopiert.');}
+ catch(e){$('diagMcpUrl').select();notice('Kopieren nicht möglich – Adresse ist markiert.');}
+};
+
+// ----- Diagnose: MGU, Systemdiagnose, Berichte -----
+async function refreshStatus(){
+ try{
+  const d=await api('/status'),on=!!(d.mgu&&d.mgu.online===true);
+  $('statusResult').textContent=JSON.stringify(d,null,2);
+  $('mguDot').className='dot '+(on?'is-online':'is-offline');
+  $('mguText').textContent=on?'MGU verbunden'+(d.mgu.host?' ('+d.mgu.host+')':''):'MGU nicht erreichbar'+(d.error?': '+String(d.error).slice(0,140):'');
+ }catch(e){notice(e.message);}
+}
+$('refreshStatus').onclick=refreshStatus;
+$('createDiag').onclick=()=>requestJob('diagnostic',{preset:$('preset').value},'Manuelle Diagnose '+$('preset').value);
+async function refreshReports(){
+ try{
+  const d=await api('/reports'),root=$('reportList');root.replaceChildren();
+  if(!d.reports.length)root.appendChild(txt('p','Noch keine Berichte.','hint'));
+  d.reports.slice(0,60).forEach(r=>{
+   const box=document.createElement('details');box.className='report';
+   box.appendChild(txt('summary',r.title+' · '+stamp(r.createdAt)));
+   box.appendChild(txt('p',r.source,'hint'));
+   box.appendChild(txt('pre',JSON.stringify(r.result,null,2)));
+   const b=txt('button','JSON herunterladen','secondary');
+   b.onclick=()=>authenticatedDownload('/reports/'+r.id+'/download','diagnose-'+r.id+'.json');
+   box.appendChild(b);root.appendChild(box);
+  });
+ }catch(e){notice(e.message);}
+}
+$('refreshReports').onclick=refreshReports;
+function refreshDiag(){refreshDiagMode();refreshStatus();refreshReports();}
+
 // ----- MGU mobile terminal: read-only, individually approved commands -----
 let pendingConsoleId=null,consoleHistory=[],consoleHistoryIndex=0;
 const CONSOLE_TRANSCRIPT_KEY='bmw-ai-mgu-terminal-session-v1';
@@ -162,40 +402,29 @@ $('consoleExport').onclick=()=>{
 };
 consoleRestore();
 
-async function refreshConvos(){try{const data=await api('/conversations'),sel=$('convos');sel.replaceChildren();sel.appendChild(new Option('Neuer Chat',''));data.conversations.forEach(c=>sel.appendChild(new Option((c.importSource==='ChatGPT'?'[ChatGPT-Import] ':'')+c.title,c.id)));sel.value=conversationId;if(conversationId)await loadMessages();}catch(e){notice(e.message);}}
-function addMessage(m){const node=txt('div',m.content,'message '+m.role);node.prepend(txt('span',m.role==='user'?'Du':'Assistent','meta'));$('messages').appendChild(node);$('messages').scrollTop=$('messages').scrollHeight;}
-async function loadMessages(){$('messages').replaceChildren();if(!conversationId)return;const d=await api('/conversations/'+conversationId+'/messages');d.messages.forEach(addMessage);}
-async function refreshPlanStatus(){try{const c=await api('/config');const p=c.chatgptPlan||{};$('chatgptPlanStatus').textContent=p.permission?'ChatGPT-Plus-Anmeldung aktiv'+(p.email?' ('+p.email+')':'')+' – Nutzung über das Abo, kein zusätzlicher API-Schlüssel.':p.connected?'ChatGPT-Konto angemeldet, Planfreigabe fehlt. OAuth-Anmeldung erneut durchführen.': 'ChatGPT-Plan nicht verbunden. OAuth-Anmeldung auf dem Raspberry Pi über Termius starten.';}catch(e){$('chatgptPlanStatus').textContent='Planstatus unbekannt: '+e.message;}}
-$('newChat').onclick=()=>{conversationId='';$('convos').value='';$('messages').replaceChildren();notice('Neuer Chat');};
-$('convos').onchange=()=>{conversationId=$('convos').value;loadMessages().catch(e=>notice(e.message));};
-$('sendChat').onclick=async()=>{const v=$('chatInput').value.trim();if(!v)return;const btn=$('sendChat');btn.disabled=true;notice('OpenAI wird angefragt ...');try{const d=await api('/chat','POST',{message:v,conversationId:conversationId||undefined,fileId:$('chatFile').value||undefined});$('chatInput').value='';conversationId=d.conversationId;await refreshConvos();notice(d.pendingJob?'Freigabe in „Freigaben“ erforderlich.':'Antwort erhalten');if(d.pendingJob)refreshJobs();}catch(e){notice(e.message);}finally{btn.disabled=false;}};
-$('chatInput').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('sendChat').click();}};
-async function refreshStatus(){try{$('statusResult').textContent=JSON.stringify(await api('/status'),null,2);}catch(e){notice(e.message);}}
-$('refreshStatus').onclick=refreshStatus;
-$('createDiag').onclick=async()=>{try{await api('/jobs','POST',{type:'diagnostic',payload:{preset:$('preset').value},reason:'Manuelle Diagnose '+$('preset').value});notice('Auftrag erstellt; jetzt unter Freigaben bestätigen.');}catch(e){notice(e.message);}};
-async function refreshJobs(){if(!token)return;try{const d=await api('/jobs'),root=$('jobList');root.replaceChildren();d.jobs.slice(0,60).forEach(j=>{const panel=txt('div','','panel');panel.appendChild(txt('strong',j.type+' • '+j.status));panel.appendChild(txt('p',j.reason));panel.appendChild(txt('pre',JSON.stringify(j.payload)));if(j.status==='pending'){const actions=txt('div','','actions');for(const choice of ['approve','reject']){const b=txt('button',choice==='approve'?'Einmalig freigeben':'Ablehnen',choice==='reject'?'danger':'');b.onclick=async()=>{b.disabled=true;try{await api('/jobs/'+j.id+'/'+choice,'POST');notice('Auftrag '+choice+' abgeschlossen.');await refreshJobs();if(choice==='approve'){refreshReports();refreshFiles();loadMessages().catch(()=>{});}}catch(e){notice(e.message);b.disabled=false;}};actions.appendChild(b);}panel.appendChild(actions);}if(j.status==='done'||j.status==='failed')panel.appendChild(txt('pre',JSON.stringify(j.result||j.error,null,2).slice(0,10000)));root.appendChild(panel);});}catch(e){notice(e.message);}}
-$('refreshJobs').onclick=refreshJobs;
-async function refreshFiles(){try{const d=await api('/files'),root=$('fileList');root.replaceChildren();const select=$('chatFile');const previous=select.value;select.replaceChildren(new Option('Ohne Datei',''));d.files.filter(f=>/\.(txt|json|log|xml|csv|md|ini|conf)$/i.test(f.name)&&f.bytes<=131072).forEach(f=>select.appendChild(new Option('Datei analysieren: '+f.name,f.id)));select.value=previous;d.files.forEach(f=>{const panel=txt('div','','panel');panel.appendChild(txt('strong',f.name));panel.appendChild(txt('p',f.bytes+' Bytes • '+f.source));const b=txt('button','Herunterladen');b.onclick=async()=>{const r=await fetch('/api/v1/files/'+f.id+'/download',{headers:authHeaders()});if(!r.ok)return notice('Download: HTTP '+r.status);const blob=await r.blob(),link=document.createElement('a'),url=URL.createObjectURL(blob);link.href=url;link.download=f.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};panel.appendChild(b);root.appendChild(panel);});}catch(e){notice(e.message);}}
-$('uploadBtn').onclick=async()=>{const f=$('upload').files[0];if(!f)return notice('Datei auswählen');if(f.size>8*1024*1024)return notice('Maximal 8 MiB');try{const r=await fetch('/api/v1/files?name='+encodeURIComponent(f.name),{method:'POST',headers:authHeaders(),body:f});if(!r.ok)throw Error('Upload HTTP '+r.status);notice('Datei hochgeladen');refreshFiles();}catch(e){notice(e.message);}};
-$('fetchFile').onclick=()=>requestFile('download',$('mguFilePath').value);
-$('listFolder').onclick=()=>requestFile('list',$('mguFolderPath').value);
-async function requestFile(type,p){try{await api('/jobs','POST',{type,payload:{path:p},reason:type+': '+p});notice('Datei-Auftrag erzeugt. Unter Freigaben bestätigen.');}catch(e){notice(e.message);}}
-async function refreshReports(){try{const d=await api('/reports'),root=$('reportList');root.replaceChildren();d.reports.forEach(r=>{const p=txt('div','','panel');p.appendChild(txt('strong',r.title));p.appendChild(txt('p',r.createdAt+' • '+r.source));p.appendChild(txt('pre',JSON.stringify(r.result,null,2)));const a=document.createElement('a');a.textContent='JSON herunterladen';a.href='#';a.onclick=async e=>{e.preventDefault();await authenticatedDownload('/reports/'+r.id+'/download','diagnose-'+r.id+'.json');};p.appendChild(a);root.appendChild(p);});}catch(e){notice(e.message);}}
-$('refreshReports').onclick=refreshReports;
-async function refreshLogs(){try{$('logsResult').textContent=JSON.stringify((await api('/logs')).logs,null,2);}catch(e){notice(e.message);}}
-$('refreshLogs').onclick=refreshLogs;
-$('downloadLogs').onclick=()=>authenticatedDownload('/logs/download','bmw-ai-logs.json');
-async function authenticatedDownload(path,name){try{const r=await fetch('/api/v1'+path,{headers:authHeaders()});if(!r.ok)throw Error('HTTP '+r.status);const u=URL.createObjectURL(await r.blob()),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}catch(e){notice(e.message);}}
-async function restoreSession(){
- if(token){try{await api('/session');show();return;}catch(e){token='';sessionStorage.removeItem('bmw-ai-token');}}
- try{const r=await fetch('/api/v1/session',{credentials:'same-origin',headers:{'x-bmw-ai-client':'1'}});if(r.ok){token='cookie';show();return;}}catch(e){}
- show();
+// ----- Dateien -----
+async function refreshFiles(){
+ try{
+  const d=await api('/files'),root=$('fileList'),select=$('chatFile'),previous=select.value;
+  root.replaceChildren();
+  select.replaceChildren(new Option('Ohne Datei',''));
+  d.files.filter(f=>/\.(txt|json|log|xml|csv|md|ini|conf)$/i.test(f.name)&&f.bytes<=131072).forEach(f=>select.appendChild(new Option('Datei analysieren: '+f.name,f.id)));
+  select.value=previous;
+  if(!d.files.length)root.appendChild(txt('p','Noch keine Dateien.','hint'));
+  d.files.forEach(f=>{
+   const panel=txt('div','','panel file-row'),info=txt('div','','request-info');
+   info.appendChild(txt('strong',f.name));
+   info.appendChild(txt('span',f.bytes+' Bytes · '+f.source+' · '+stamp(f.at),'hint'));
+   panel.appendChild(info);
+   const b=txt('button','Herunterladen','secondary');
+   b.onclick=()=>authenticatedDownload('/files/'+f.id+'/download',f.name);
+   panel.appendChild(b);root.appendChild(panel);
+  });
+ }catch(e){notice(e.message);}
 }
-restoreSession();
-// Native iPhone/iPad shell may inject a confirmed speech transcript here.
-window.bmwAIInjectTranscript=function(text){$('chatInput').value=String(text||'').slice(0,8000);$('chatInput').focus();};
-
-renderPair();
+$('uploadBtn').onclick=async()=>{const f=$('upload').files[0];if(!f)return notice('Datei auswählen');if(f.size>8*1024*1024)return notice('Maximal 8 MiB');try{const r=await fetch('/api/v1/files?name='+encodeURIComponent(f.name),{method:'POST',headers:authHeaders(),body:f});if(!r.ok)throw Error('Upload HTTP '+r.status);notice('Datei hochgeladen');refreshFiles();}catch(e){notice(e.message);}};
+$('fetchFile').onclick=()=>{const p=$('mguFilePath').value.trim();if(!p)return notice('Bitte einen Dateipfad eingeben.');requestJob('download',{path:p},'Datei abrufen: '+p);};
+$('listFolder').onclick=()=>{const p=$('mguFolderPath').value.trim();if(!p)return notice('Bitte ein Verzeichnis eingeben.');requestJob('list',{path:p},'Verzeichnis auflisten: '+p);};
 
 // ----- Local import of selected ChatGPT-export conversations -----
 let exportChats=[],pendingUpdate=null;
@@ -293,11 +522,6 @@ function chatExportRequest(){
  const ids=Array.from(chosenChatExports);
  if(!ids.length||ids.length>25)throw Error('Bitte 1 bis 25 Chats markieren.');
  return {ids,scope:$('chatExportNewOnly').checked?'new':'full',format:$('chatExportFormat').value};
-}
-function triggerFileDownload(blob,filename){
- const u=URL.createObjectURL(blob),a=document.createElement('a');
- a.href=u;a.download=filename;document.body.appendChild(a);a.click();a.remove();
- setTimeout(()=>URL.revokeObjectURL(u),30000);
 }
 async function generateChatExport(share){
  const data=chatExportRequest(),button=$(share?'shareExportChats':'exportSelectedChats');
@@ -407,6 +631,16 @@ $('autoUpdate').onchange=async()=>{
  await refreshUpdates();
 };
 
+// ----- System: Serverprotokoll -----
+async function refreshLogs(){
+ try{
+  const logs=(await api('/logs')).logs;
+  $('logsResult').textContent=logs.length?logs.map(l=>new Date(l.at).toLocaleString('de-DE')+'  '+l.action+(l.details?'  '+l.details:'')).join('\n'):'Noch keine Einträge.';
+ }catch(e){notice(e.message);}
+}
+$('refreshLogs').onclick=refreshLogs;
+$('downloadLogs').onclick=()=>authenticatedDownload('/logs/download','bmw-ai-logs.json');
+function refreshSystem(){refreshUpdates();refreshLogs();}
 
 // ----- Automatically refresh this already-open webpage after a successful Pi update -----
 // The server embeds its running version into HTML on each page load. Re-check via
@@ -487,3 +721,7 @@ window.addEventListener('pageshow',()=>bmaiCheckServerBuild());
 document.addEventListener('input',()=>{if(bmaiPendingVersion)setTimeout(bmaiReloadIfSafe,500);});
 document.addEventListener('change',()=>{if(bmaiPendingVersion)setTimeout(bmaiReloadIfSafe,500);});
 bmaiCheckServerBuild();
+
+// ----- Start -----
+restoreSession();
+renderPair();
