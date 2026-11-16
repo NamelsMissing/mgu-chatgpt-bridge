@@ -1,4 +1,4 @@
-# BMW AI Pi 0.5.0 – Diagnosemodus und Claude-Anbindung (MCP)
+# BMW AI Pi 0.5.1 – Diagnosemodus und Claude-Anbindung (MCP)
 
 Der Pi-Server (`pi-source/`) hat einen MCP-Endpunkt, über den Claude Diagnoseaufträge **vorschlagen** kann. Ausgeführt wird nur, was du auf der Website unter „Freigaben“ einzeln bestätigst.
 
@@ -47,6 +47,18 @@ claude mcp add --transport http bmw-ai https://bmw-ai-pi.<tailnet>.ts.net/mcp
 ```
 
 Anmeldung und Freigaben laufen genauso wie oben.
+
+## Privater Zugang zur Website, während Funnel offen ist
+
+Solange Funnel läuft, hat `bmw-ai-pi.<tailnet>.ts.net` zusätzlich eine öffentliche Adresse. Geräte im Tailnet können den Namen dann dorthin auflösen (am 16.11.2026 auf einem iPad so beobachtet); die Website antwortet ihnen mit „Not found“ und SSH über den Namen schlägt fehl. Einmalig einen zweiten, rein privaten Zugang über die Tailnet-IP einrichten:
+
+```sh
+sudo tailscale serve --bg --tcp=8790 tcp://127.0.0.1:8790
+```
+
+Die Website ist dann im Tailnet unter `http://<Tailnet-IP des Pi>:8790/` erreichbar (durch Tailscale verschlüsselt), SSH über die IP. Über http gibt es kein 30-Tage-Login; die Seite meldet dich dann für den offenen Tab an. Browser mit „Nur HTTPS“-Modus brauchen für diese Adresse eine Ausnahme. Die Adresse für Claude bleibt `https://bmw-ai-pi.<tailnet>.ts.net/mcp`.
+
+Beim ersten Öffnen von Funnel verlangt Tailscale eine einmalige Freischaltung im Tailnet. Der Link dazu erscheint unter dem Funnel-Schalter.
 
 ## Einstellungen (`.env`, alle optional)
 

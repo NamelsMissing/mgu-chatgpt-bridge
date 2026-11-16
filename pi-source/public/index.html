@@ -151,6 +151,7 @@
     <h3>Öffentlicher Zugang (Tailscale Funnel)</h3>
     <label class="check"><input type="checkbox" id="diagAutoFunnel" disabled> Port 443 automatisch mit dem Diagnosemodus öffnen und danach wieder schließen</label>
     <p class="hint" id="diagFunnelInfo" role="status">Einstellung wird geladen ...</p>
+    <p><a id="diagFunnelLink" href="https://login.tailscale.com/" rel="noopener noreferrer" target="_blank" hidden>Funnel bei Tailscale freischalten</a></p>
 
     <details>
       <summary>So verbindest du Claude</summary>
@@ -161,6 +162,7 @@
         <li>Claude schlägt Aufträge vor. Jeden einzelnen unter „Freigaben“ prüfen und bestätigen.</li>
       </ol>
       <p class="hint">Die Claude-App und claude.ai erreichen den Pi nur über das öffentliche Internet; dafür muss Port 443 per Tailscale Funnel offen sein (Schalter oben oder von Hand). Claude Code auf einem Gerät in deinem Tailnet funktioniert ohne Funnel. Website, Login und Freigaben sind über Funnel nie erreichbar.</p>
+      <p class="hint">Solange Funnel offen ist, kann der Name dieser Website auf deinen Geräten zur öffentlichen Adresse auflösen; dann erscheint hier nur „Not found“. Für diesen Fall einmalig einen privaten Zugang über die Tailnet-IP einrichten (README-CLAUDE-MCP.md, Abschnitt „Privater Zugang“) und die Website unter <code>http://&lt;Tailnet-IP&gt;:8790/</code> öffnen.</p>
     </details>
   </div>
 

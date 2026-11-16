@@ -57,9 +57,26 @@ function show(){
  }
  if(pendingPair){openTab('diag');renderPair();}
 }
-$('loginButton').onclick=async()=>{try{const r=await fetch('/api/v1/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-bmw-ai-client':'1'},body:JSON.stringify({password:$('password').value,remember:$('rememberMe').checked})});const d=await r.json();if(!r.ok)throw Error(d.error);
- token=d.remembered?'cookie':d.token;if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
- $('password').value='';$('loginError').textContent='';show();}catch(e){$('loginError').textContent=e.message;}};
+async function postLogin(remember){
+ const r=await fetch('/api/v1/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-bmw-ai-client':'1'},body:JSON.stringify({password:$('password').value,remember})});
+ const d=await r.json();if(!r.ok)throw Error(d.error);return d;
+}
+$('loginButton').onclick=async()=>{
+ const button=$('loginButton');button.disabled=true;
+ try{
+  let d=await postLogin($('rememberMe').checked),hint='';
+  if(d.remembered){
+   // Das dauerhafte Login ist ein Secure-Cookie. Über http (z. B. die Tailnet-IP) nimmt der
+   // Browser es nicht an: prüfen und sonst normal für diesen Tab anmelden.
+   const kept=await fetch('/api/v1/session',{credentials:'same-origin',headers:{'x-bmw-ai-client':'1'}}).then(r=>r.ok).catch(()=>false);
+   if(!kept){d=await postLogin(false);hint='Dauerhaftes Login geht nur über https. Du bist für diesen Tab angemeldet.';}
+  }
+  token=d.remembered?'cookie':d.token;
+  if(d.remembered)sessionStorage.removeItem('bmw-ai-token');else sessionStorage.setItem('bmw-ai-token',token);
+  $('password').value='';$('loginError').textContent='';show();if(hint)notice(hint);
+ }catch(e){$('loginError').textContent=e.message;}
+ finally{button.disabled=false;}
+};
 $('password').onkeydown=e=>{if(e.key==='Enter')$('loginButton').click();};
 $('logout').onclick=async()=>{try{await api('/logout','POST');}catch(e){}token='';sessionStorage.removeItem('bmw-ai-token');show();};
 async function restoreSession(){
@@ -164,7 +181,9 @@ function renderDiagMode(d){
  toggle.textContent=on?'Diagnosemodus beenden':'Diagnosemodus starten';toggle.classList.toggle('danger',on);toggle.dataset.active=on?'1':'';
  $('diagModeMinutes').disabled=on;
  $('diagModeActive').hidden=!on;
- $('diagMcpUrl').value=location.origin+'/mcp';
+ const address=d.mcpUrl||(location.protocol==='https:'?location.origin+'/mcp':'');
+ $('diagMcpUrl').value=address||'Adresse unbekannt: https://<name>.ts.net/mcp';
+ $('diagCopyUrl').disabled=!address;
 
  const requests=$('diagRequests');requests.replaceChildren();
  if(!d.requests.length)requests.appendChild(txt('p','Keine offene Verbindungsanfrage.','hint'));
@@ -201,8 +220,11 @@ function renderDiagMode(d){
  const funnel=d.funnel||{},box=$('diagAutoFunnel'),info=$('diagFunnelInfo');
  box.checked=d.autoFunnel===true;box.disabled=false;
  info.classList.toggle('error',!!funnel.error);
+ // Tailscale nennt bei fehlender Freischaltung einen Link: direkt antippbar machen.
+ const link=/https:\/\/login\.tailscale\.com\/[A-Za-z0-9\/?=&._%-]+/.exec(funnel.error||''),anchor=$('diagFunnelLink');
+ anchor.hidden=!link;if(link){anchor.href=link[0];anchor.textContent='Funnel bei Tailscale freischalten';}
  info.textContent=funnel.error
-  ?'Tailscale-Befehl fehlgeschlagen: '+funnel.error+' – Der Dienst braucht Tailscale-Operator-Rechte (siehe README-CLAUDE-MCP.md). Der Zustand von Port 443 ist unbekannt.'
+  ?'Tailscale meldet: '+funnel.error+' – Der Zustand von Port 443 ist unbekannt. Häufige Ursachen: fehlende Operator-Rechte des Dienstes oder Funnel ist im Tailnet noch nicht freigeschaltet (siehe README-CLAUDE-MCP.md).'
   :d.autoFunnel
    ?(funnel.public===true?'Port 443 ist bis zum Ende des Diagnosemodus öffentlich erreichbar. Öffentliche Anfragen kommen nur an die MCP-Adresse, nie an Website oder Login.':'Port 443 ist nur in deinem Tailnet erreichbar. Mit dem Start des Diagnosemodus wird er geöffnet.')
    :'Aus: Dieser Server ändert nichts an Tailscale. Ohne Funnel erreicht nur ein Client in deinem Tailnet (z. B. Claude Code) die Adresse.';

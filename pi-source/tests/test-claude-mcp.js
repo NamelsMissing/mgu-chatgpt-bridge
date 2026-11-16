@@ -9,7 +9,10 @@ const os=require('node:os');
 const path=require('node:path');
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'bmw-ai-mcp-'));
 const tsLog=path.join(temp,'tailscale.log'),tsBin=path.join(temp,'tailscale');
-fs.writeFileSync(tsBin,'#!/bin/sh\necho "$@" >> "'+tsLog+'"\n',{mode:0o755});
+const tsFail=path.join(temp,'tailscale.fail');
+fs.writeFileSync(tsBin,'#!/bin/sh\nif [ "$1" = status ]; then echo \'{"Self":{"DNSName":"bmw-ai-pi.example-tailnet.ts.net."}}\'; exit 0; fi\n'
+ +'if [ -f "'+tsFail+'" ]; then echo "Funnel is not enabled on your tailnet. To enable, visit: https://login.tailscale.com/f/funnel?node=abc"; exit 1; fi\n'
+ +'echo "$@" >> "'+tsLog+'"\n',{mode:0o755});
 process.env.LOGIN_PASSWORD='test-only-secure-password-not-used-in-production';
 process.env.DATA_DIR=temp;
 process.env.HOST='127.0.0.1';
@@ -69,6 +72,7 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   assert.equal(view.active,false);
   view=(await site('POST','/api/v1/diag-mode',{enabled:true,minutes:30})).data;
   assert.equal(view.active,true);assert.ok(Date.parse(view.until)>Date.now()+29*60000);
+  assert.equal(view.mcpUrl,'https://'+PUBLIC+'/mcp','address for Claude does not depend on how the website was opened');
   assert.equal(tsLines().length,0,'no tailscale command while automatic Funnel is off');
   assert.equal((await pub('/')).status,404,'website stays closed to Funnel while the mode is on');
 
@@ -180,6 +184,12 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   assert.equal((await rpc(tokens.access_token,'ping')).status,200);
 
   // 12. Automatischer Funnel: mit dem Modus auf, mit dem Ende wieder zu.
+  fs.writeFileSync(tsFail,'1');
+  view=(await site('POST','/api/v1/diag-mode/funnel',{auto:true})).data;
+  assert.match(view.funnel.error,/https:\/\/login\.tailscale\.com\/f\/funnel\?node=abc/,'the real Tailscale message reaches the website');
+  assert.equal(view.funnel.public,null);
+  fs.rmSync(tsFail);
+  await site('POST','/api/v1/diag-mode/funnel',{auto:false});
   view=(await site('POST','/api/v1/diag-mode/funnel',{auto:true})).data;
   assert.equal(view.funnel.public,true);
   assert.equal(tsLines().at(-1),'funnel --bg --https=443 http://127.0.0.1:8790');
@@ -207,9 +217,10 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   // 14. Die Oberfläche bietet den Schalter an.
   const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8');
   const js=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
-  for(const id of ['diagModeToggle','diagModeMinutes','diagModeState','diagMcpUrl','diagRequests','diagClients','diagAutoFunnel','jobBadge'])
+  for(const id of ['diagModeToggle','diagModeMinutes','diagModeState','diagMcpUrl','diagRequests','diagClients','diagAutoFunnel','diagFunnelLink','jobBadge'])
    assert.match(html,new RegExp('id="'+id+'"'),'Missing diagnostic-mode control: '+id);
   assert.match(js,/\/diag-mode/);
+  assert.match(js,/if\(!kept\)\{d=await postLogin\(false\)/,'login falls back when the browser drops the Secure cookie');
   console.log('BMW AI Claude/MCP tests passed: closed by default, Funnel guard, OAuth with website approval, propose-only tools, per-job approval, rotation, revocation, automatic Funnel.');
  }finally{
   await new Promise(resolve=>server.close(resolve));await new Promise(resolve=>mgu.close(resolve));

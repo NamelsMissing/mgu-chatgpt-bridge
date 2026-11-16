@@ -10,7 +10,7 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.5.0'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.5.1'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -197,11 +197,31 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const secret=()=>crypto.randomBytes(32).toString('base64url');
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function diagActive(){return diag.until>Date.now();}
+// Öffentliche Adresse dieses Geräts (https://<name>.ts.net): fest vorgegeben, von Tailscale
+// erfragt oder aus einer Anfrage gemerkt. Die Website selbst kann auch über die IP offen sein.
+const TS_HOST=/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.ts\.net$/;
+let tailscaleOrigin='';
+function noteOrigin(req){
+  const host=String(req.headers['x-forwarded-host']||req.headers.host||'').split(',')[0].trim().toLowerCase();
+  if(TS_HOST.test(host)&&st.mcp.origin!=='https://'+host){st.mcp.origin='https://'+host;save();}
+}
+async function learnTailscaleOrigin(){
+  try{
+    const self=JSON.parse(await tailscale(['status','--json'])).Self||{},name=String(self.DNSName||'').replace(/\.$/,'').toLowerCase();
+    if(TS_HOST.test(name))tailscaleOrigin='https://'+name;
+  }catch(e){}
+}
+function mcpUrl(){const origin=MCP_PUBLIC_URL||tailscaleOrigin||st.mcp.origin||'';return origin?origin+'/mcp':null;}
 
 // --- Tailscale Funnel (optional, nur wenn auf der Website eingeschaltet) ---
 function tailscale(args){
-  return new Promise((resolve,reject)=>execFile(TAILSCALE_BIN,args,{timeout:15000},(err,out,errOut)=>
-    err?reject(Error(String(errOut||err.message).trim().slice(0,240)||'tailscale fehlgeschlagen')):resolve(String(out))));
+  // Tailscale schreibt Hinweise (z. B. den Link zum Freischalten von Funnel) teils auf stdout
+  // und wartet dann: bei Fehler oder Zeitüberschreitung beides zurückgeben.
+  return new Promise((resolve,reject)=>execFile(TAILSCALE_BIN,args,{timeout:15000},(err,out,errOut)=>{
+    if(!err)return resolve(String(out));
+    const said=(String(errOut||'')+'\n'+String(out||'')).replace(/\s+/g,' ').trim().slice(0,400);
+    reject(Error((err.killed?'Keine Antwort nach 15 s. ':'')+(said||err.message)));
+  }));
 }
 // "funnel" macht Port 443 öffentlich, "serve" wieder rein privat; der letzte Befehl gilt.
 const funnelArgs=open=>[open?'funnel':'serve','--bg','--https=443','http://127.0.0.1:'+PORT];
@@ -232,6 +252,7 @@ async function setDiagMode(enabled,minutes){
     diag.timer=setTimeout(()=>{setDiagMode(false).catch(()=>{});},minutes*60000);
     diag.timer.unref();
     audit('diag_mode_on',minutes+' Minuten');
+    if(!MCP_PUBLIC_URL&&!tailscaleOrigin)await learnTailscaleOrigin();
   }else{
     const was=diag.until>0;let changed=false;
     diag.until=0;diag.requests.clear();diag.codes.clear();
@@ -247,7 +268,7 @@ function connectedClients(){
 }
 function diagView(){
   const t=Date.now();
-  return {active:diagActive(),until:diagActive()?new Date(diag.until).toISOString():null,durations:DIAG_DURATIONS,
+  return {active:diagActive(),until:diagActive()?new Date(diag.until).toISOString():null,durations:DIAG_DURATIONS,mcpUrl:mcpUrl(),
     requests:[...diag.requests.values()].filter(r=>r.status==='pending'&&r.expiresAt>t)
       .map(r=>({id:r.ref,code:r.code,client:r.clientName,redirectHost:new URL(r.redirectUri).host,expiresAt:new Date(r.expiresAt).toISOString()})),
     clients:connectedClients().map(c=>({id:c.id,name:c.name,connectedAt:c.connectedAt||null,lastUsedAt:c.lastUsedAt||null})),
@@ -532,11 +553,12 @@ async function mcpRoute(req,res,url){
 }
 
 function route(req,res){const url=new URL(req.url,'http://localhost');const p=url.pathname;
+ noteOrigin(req);
  if(isMcpPath(p))return mcpRoute(req,res,url);
  // Alles andere, das über Tailscale Funnel (öffentliches Internet) ankommt, existiert nicht.
  if(req.headers['tailscale-funnel-request']!==undefined)return fail(res,404,'Not found');
  return (async()=>{
- if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.5.0'});
+ if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.5.1'});
  if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');
   const remember=d.remember===true,days=remember?30:14;
   const t=crypto.randomBytes(32).toString('base64url');
