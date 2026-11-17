@@ -114,7 +114,43 @@ footer{padding:18px;text-align:center;color:#94aabb;border-top:1px solid #2c455c
 .report{border-top:1px solid #2c4057;padding:4px 0}
 .report:first-child{border-top:0}
 
+/* ----- Fahrzeug ----- */
+.km-big{font-size:2rem;font-weight:750;margin:4px 0;font-variant-numeric:tabular-nums}
+.due{padding:12px 14px;margin:10px 0;border-radius:12px;border:1px solid var(--line);background:var(--surface-2);border-left-width:4px}
+.due p{margin:6px 0}
+.due-overdue{border-left-color:#e0656f}
+.due-soon{border-left-color:#e2b04f}
+.due-ok{border-left-color:var(--ok)}
+.due-unknown{border-left-color:#6d849b}
+.due-pill-overdue{background:#4b1f26;border-color:#c24f5b;color:#ffc2c8}
+.due-pill-soon{background:#46381a;border-color:#c59a3e;color:#ffe2a6}
+.due-pill-ok{background:#123d2f;border-color:#2f8f68;color:#9af0c8}
+.due-pill-unknown{background:#22364b;border-color:#3a546d;color:#b9cee4}
+.service-entry{padding:10px 0;border-top:1px solid #2c4057}
+.service-entry:first-child{border-top:0}
+.service-entry p{margin:4px 0}
+.notes{white-space:pre-wrap}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:12px 0}
+.form-grid label{display:flex;flex-direction:column;gap:6px;font-size:.85rem;color:var(--muted)}
+.form-grid .wide{grid-column:1/-1}
+.form-grid fieldset{border:1px solid var(--line);border-radius:11px;padding:8px 12px;margin:0}
+.form-grid legend{font-size:.85rem;color:var(--muted);padding:0 4px}
+.form-grid .actions{margin-top:0}
+.check-list{display:flex;flex-wrap:wrap;gap:4px 18px}
+.check-list .check{margin:6px 0;color:var(--text);font-size:.95rem}
+
 /* ----- Dateien und System ----- */
+.list-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 2px;border-top:1px solid #2c4057}
+.list-row:first-child{border-top:0}
+.list-row .request-info{min-width:160px}
+.list-row .pill{margin-left:8px}
+.file-list{margin-top:8px;max-height:min(60vh,640px);overflow:auto}
+.chip-row{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
+.chip-row .console-chip{background:#192e41;border:1px solid #345874;font-size:.82rem;padding:8px 12px;border-radius:20px}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;margin:6px 0;font-size:.88rem}
+.linkbutton{border:0;background:transparent;color:#a9d3f7;padding:4px 6px;text-align:left;overflow-wrap:anywhere}
+.linkbutton:hover{background:transparent;text-decoration:underline}
+input.full{width:100%;margin:8px 0}
 .file-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 #system .section-head{margin-top:28px}
 #updateZip{display:block;margin:12px 0}
@@ -186,6 +222,8 @@ footer{padding:18px;text-align:center;color:#94aabb;border-top:1px solid #2c455c
   .panel .actions button,.request .actions button{flex:1}
   .request .actions{width:100%}
   .job-state{margin-left:0;width:100%}
+  .form-grid{grid-template-columns:1fr}
+  .km-big{font-size:1.7rem}
   /* iOS zoomt bei Eingabefeldern unter 16 px hinein. */
   input[type=text],input[type=search],input[type=password],textarea,select{font-size:16px}
   .console-heading{gap:10px;margin-bottom:12px}

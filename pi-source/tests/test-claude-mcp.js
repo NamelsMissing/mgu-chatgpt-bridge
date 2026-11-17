@@ -152,7 +152,15 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   assert.equal(r.status,202);
   assert.equal((await pub('/mcp',{headers:{authorization:'Bearer '+tokens.access_token}})).status,405);
   const tools=(await rpc(tokens.access_token,'tools/list')).data.result.tools;
-  assert.equal(tools.length,8);
+  assert.equal(tools.length,10);
+  assert.equal(tools.find(t=>t.name==='get_vehicle_overview').annotations.readOnlyHint,true);
+  const overview=(await tool(tokens.access_token,'get_vehicle_overview')).data;
+  assert.equal(overview.due[0].item,'Motoröl und Ölfilter');assert.equal(overview.due[0].interval.km,8000);
+  assert.equal((await tool(tokens.access_token,'report_log_files',{paths:'/var/log/x.log'})).isError,true,'paths must be an array');
+  const reported=(await tool(tokens.access_token,'report_log_files',{paths:['/var/log/oap/a.log','/etc/shadow'],note:'beim Suchen gefunden'})).data;
+  assert.deepEqual(reported.reported.map(r=>r.status),['new','rejected']);assert.equal(reported.auto_save,false);
+  assert.equal((await site('GET','/api/v1/found-logs')).data.found[0].foundBy,'claude');
+  assert.equal(mguCalls.length,0,'reporting logs does not contact the vehicle');
   assert.ok(tools.every(t=>!/approve|freigeb|action|shell|write/i.test(t.name)),'no approval, action or write tool exists');
   assert.equal((await rpc(tokens.access_token,'resources/list')).data.error.code,-32601);
   assert.equal((await tool(tokens.access_token,'request_console_command',{command:'ls /etc/cinemo',reason:'x',approve:true})).isError,true,'unknown arguments are rejected');

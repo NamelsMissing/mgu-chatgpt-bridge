@@ -36,6 +36,7 @@
 <nav id="tabs">
   <button data-tab="chat" class="active">Chat</button>
   <button data-tab="jobs">Freigaben <span id="jobBadge" class="badge" hidden>0</span></button>
+  <button data-tab="vehicle">Fahrzeug</button>
   <button data-tab="diag">Diagnose</button>
   <button data-tab="console">Konsole</button>
   <button data-tab="files">Dateien</button>
@@ -112,12 +113,84 @@
     <h2>Freigaben</h2>
     <button id="refreshJobs" class="secondary">Aktualisieren</button>
   </div>
-  <p class="hint">Nichts wird am Fahrzeug ausgeführt, bevor du den genauen Auftrag hier einmalig freigibst. Das gilt für den Chat, für diese Website und für Claude.</p>
+  <p class="hint">Nichts wird am Fahrzeug ausgeführt, bevor du den genauen Auftrag hier einmalig freigibst. Das gilt für Vorschläge aus dem Chat und von Claude sowie für Konsolenbefehle. Lesen und Herunterladen im Dateibrowser löst du direkt selbst aus.</p>
   <div id="jobList"></div>
   <details id="jobHistoryBox">
     <summary>Verlauf <span id="jobHistoryCount"></span></summary>
     <div id="jobHistory"></div>
   </details>
+</section>
+
+<!-- ===== Fahrzeug ===== -->
+<section id="vehicle" class="tab" hidden>
+  <div class="section-head">
+    <h2>Fahrzeug</h2>
+    <button id="refreshVehicle" class="secondary">Aktualisieren</button>
+  </div>
+
+  <div class="panel">
+    <div class="section-head">
+      <h3>Kilometerstand</h3>
+      <span id="mileageSource" class="pill pill-off">–</span>
+    </div>
+    <p class="km-big" id="mileageNow">Noch kein Kilometerstand</p>
+    <p class="hint" id="mileageInfo"></p>
+    <div class="toolbar">
+      <input type="text" id="mileageKm" inputmode="numeric" placeholder="Stand in km" autocomplete="off">
+      <input type="date" id="mileageDate" aria-label="Datum">
+      <button id="addMileage">Speichern</button>
+    </div>
+    <details>
+      <summary>Verlauf</summary>
+      <div id="mileageHistory"></div>
+    </details>
+    <p class="hint" id="vehicleLive">Live-Daten vom Fahrzeug werden beim Öffnen abgefragt.</p>
+  </div>
+
+  <div class="panel">
+    <h3>Fällig</h3>
+    <div id="dueList"></div>
+    <details id="itemBox">
+      <summary>Wartungsart hinzufügen oder ändern</summary>
+      <form id="itemForm" class="form-grid" autocomplete="off">
+        <input type="hidden" id="itemId">
+        <label class="wide">Name <input type="text" id="itemName" maxlength="60" placeholder="z. B. Bremsflüssigkeit"></label>
+        <label>Intervall Monate <input type="number" id="itemMonths" min="0" max="240" inputmode="numeric" placeholder="0 = keins"></label>
+        <label>Intervall km <input type="number" id="itemKm" min="0" max="300000" step="500" inputmode="numeric" placeholder="0 = keins"></label>
+        <label>Nächste Fälligkeit (Datum) <input type="date" id="itemDueDate"></label>
+        <label>Nächste Fälligkeit (km) <input type="number" id="itemDueKm" min="0" inputmode="numeric"></label>
+        <p class="hint wide">Eine feste Fälligkeit (z. B. laut Anzeige im Fahrzeug) gilt statt des Intervalls, bis du die Wartung als erledigt einträgst.</p>
+        <div class="actions wide">
+          <button type="submit" id="itemSave">Speichern</button>
+          <button type="button" id="itemCancel" class="secondary">Neu</button>
+          <button type="button" id="itemDelete" class="danger" hidden>Löschen</button>
+        </div>
+      </form>
+    </details>
+  </div>
+
+  <div class="panel">
+    <div class="section-head">
+      <h3>Serviceheft</h3>
+      <button id="newServiceEntry" class="secondary">Eintrag hinzufügen</button>
+    </div>
+    <form id="serviceForm" class="form-grid" autocomplete="off" hidden>
+      <input type="hidden" id="entryId">
+      <label>Datum <input type="date" id="entryDate"></label>
+      <label>Kilometerstand <input type="text" id="entryKm" inputmode="numeric" placeholder="km"></label>
+      <fieldset class="wide"><legend>Erledigt</legend><div id="entryItems" class="check-list"></div></fieldset>
+      <label class="wide">Beschreibung <input type="text" id="entryTitle" maxlength="120" placeholder="z. B. Inspektion, Bremsen vorne"></label>
+      <label>Werkstatt <input type="text" id="entryWorkshop" maxlength="80"></label>
+      <label>Kosten (€) <input type="text" id="entryCost" inputmode="decimal"></label>
+      <label class="wide">Notizen <textarea id="entryNotes" maxlength="2000" rows="3"></textarea></label>
+      <div class="actions wide">
+        <button type="submit">Speichern</button>
+        <button type="button" id="entryCancel" class="secondary">Abbrechen</button>
+        <button type="button" id="entryDelete" class="danger" hidden>Löschen</button>
+      </div>
+    </form>
+    <div id="serviceEntries"></div>
+  </div>
 </section>
 
 <!-- ===== Diagnose ===== -->
@@ -256,27 +329,45 @@
 <!-- ===== Dateien ===== -->
 <section id="files" class="tab" hidden>
   <h2>Dateien</h2>
+
   <div class="panel">
-    <h3>Von der MGU holen</h3>
+    <h3>MGU durchsuchen</h3>
+    <div id="mguRoots" class="chip-row"></div>
     <div class="toolbar">
-      <input type="text" id="mguFilePath" placeholder="Dateipfad, z. B. /etc/cinemo/cinemo_options.xml" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <button id="fetchFile">Abruf anfragen</button>
+      <select id="mguSearchRoot" aria-label="Suchen in"></select>
+      <input type="search" id="mguSearchTerm" placeholder="Dateiname enthält …" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button id="mguSearch">Suchen</button>
     </div>
-    <div class="toolbar">
-      <input type="text" id="mguFolderPath" placeholder="Verzeichnis, z. B. /var/log" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <button id="listFolder">Verzeichnis auflisten</button>
-    </div>
-    <p class="hint">Beides erzeugt einen Auftrag, den du unter „Freigaben“ bestätigst.</p>
+    <div id="mguCrumbs" class="crumbs"></div>
+    <div id="mguListing" class="file-list"><p class="hint">Ordner oben wählen.</p></div>
+    <p class="hint">Lesen, Suchen und Herunterladen im Browser führst du selbst aus; dafür ist keine Freigabe nötig. Geholte Dateien landen in der Bibliothek auf dem Pi.</p>
   </div>
+
   <div class="panel">
-    <h3>Vom Gerät hochladen</h3>
-    <div class="toolbar">
-      <input type="file" id="upload">
-      <button id="uploadBtn">Datei hochladen</button>
+    <div class="section-head">
+      <h3>Gefundene Logs</h3>
+      <button id="refreshFoundLogs" class="secondary">Aktualisieren</button>
     </div>
+    <label class="check"><input type="checkbox" id="foundLogsAuto" disabled> Von Claude gefundene Logs automatisch auf den Pi holen</label>
+    <p class="hint">Claude meldet Logdateien, die es bei freigegebenen Aufträgen findet. Ohne Automatik holst du sie hier per Klick. Inhalte gehen dabei nicht an Claude.</p>
+    <div id="foundLogs"></div>
   </div>
-  <h3>Gespeicherte Dateien</h3>
-  <div id="fileList"></div>
+
+  <div class="panel">
+    <div class="section-head">
+      <h3>Bibliothek</h3>
+      <select id="libraryFilter" aria-label="Filter"><option value="">Alle</option><option value="log">Logs</option><option value="mgu">Von der MGU</option><option value="upload">Hochgeladen</option></select>
+    </div>
+    <input type="search" id="librarySearch" placeholder="Bibliothek durchsuchen" class="full">
+    <div id="libraryList" class="file-list"></div>
+    <details>
+      <summary>Vom Gerät hochladen</summary>
+      <div class="toolbar">
+        <input type="file" id="upload">
+        <button id="uploadBtn">Datei hochladen</button>
+      </div>
+    </details>
+  </div>
 </section>
 
 <!-- ===== System ===== -->

@@ -1,7 +1,7 @@
 'use strict';
 // BMW AI Weboberfläche.
 // Abschnitte: Grundlagen · Anmeldung · Reiter · Chat · Freigaben · Diagnose (Diagnosemodus für
-// Claude, MGU, Berichte) · Konsole · Dateien · Chat-Import/-Export · System · Auto-Reload.
+// Claude, MGU, Berichte) · Konsole · Fahrzeug · Dateien · Chat-Import/-Export · System · Auto-Reload.
 
 // ----- Grundlagen -----
 let token=sessionStorage.getItem('bmw-ai-token')||'',conversationId='',currentTab='chat';
@@ -47,7 +47,7 @@ function show(){
  const resumeConvo=sessionStorage.getItem('bmw-ai-resume-conversation');
  const resumeTab=sessionStorage.getItem('bmw-ai-resume-tab')||(/^#[a-z-]+$/.test(location.hash)?location.hash.slice(1):'');
  if(resumeConvo)conversationId=resumeConvo;
- refreshConvos();refreshJobs();refreshPlanStatus();refreshDiagMode();
+ refreshConvos();refreshJobs();refreshPlanStatus();refreshDiagMode();refreshFiles();
  // Hält Freigabe-Zähler und Diagnosemodus aktuell, auch wenn Claude im Hintergrund etwas vorschlägt.
  if(!pollTimer)pollTimer=setInterval(()=>{if(!document.hidden)refreshDiagMode();},5000);
  if(resumeTab){
@@ -87,7 +87,7 @@ async function restoreSession(){
 
 // ----- Reiter -----
 // Frühere Reiternamen (Lesezeichen, QR-Links, gespeicherte Ansicht) führen zum neuen Ort.
-const TAB_ALIASES={status:'diag',reports:'diag',actions:'diag',logs:'system',updates:'system'};
+const TAB_ALIASES={status:'diag',reports:'diag',actions:'diag',logs:'system',updates:'system',service:'vehicle'};
 function openTab(name){
  name=TAB_ALIASES[name]||name;
  const button=document.querySelector('#tabs [data-tab="'+name+'"]');if(!button)return;
@@ -95,7 +95,7 @@ function openTab(name){
  if(name==='console')history.replaceState(null,'',location.pathname+location.search+'#console');
  document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==name);
  $('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===button));
- ({jobs:refreshJobs,diag:refreshDiag,files:refreshFiles,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
+ ({jobs:refreshJobs,vehicle:refreshVehicle,diag:refreshDiag,files:refreshFilesTab,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
 }
 $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 
@@ -424,29 +424,269 @@ $('consoleExport').onclick=()=>{
 };
 consoleRestore();
 
-// ----- Dateien -----
-async function refreshFiles(){
+// ----- Fahrzeug: Kilometerstand, Fälligkeiten, Serviceheft -----
+let vehicleData=null;
+const kmText=n=>n===null||n===undefined?'–':Number(n).toLocaleString('de-DE')+' km';
+const dateText=d=>d?new Date(d+'T12:00:00').toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}):'–';
+const MILEAGE_SOURCES={manual:'eigene Angabe',vehicle:'vom Fahrzeug',service:'aus Serviceeintrag'};
+const DUE_STATES={overdue:'Überfällig',soon:'Bald fällig',ok:'In Ordnung',unknown:'Noch kein Eintrag'};
+function parseKm(v){const s=String(v||'').replace(/[.\s]/g,'').replace(/km$/i,'');return s===''?null:Number(s);}
+function plural(n,one,many){return n+' '+(Math.abs(n)===1?one:many);}
+function dueLine(d){
+ const parts=[];
+ if(d.dueDate)parts.push(d.daysLeft<0?'seit '+dateText(d.dueDate)+' ('+plural(-d.daysLeft,'Tag','Tagen')+' drüber)':d.daysLeft===0?'heute':'am '+dateText(d.dueDate)+' (in '+plural(d.daysLeft,'Tag','Tagen')+')');
+ if(d.dueKm!==null)parts.push(d.kmLeft===null?'bei '+kmText(d.dueKm):d.kmLeft<0?'bei '+kmText(d.dueKm)+' ('+kmText(-d.kmLeft)+' drüber)':'bei '+kmText(d.dueKm)+' (noch '+kmText(d.kmLeft)+')');
+ return parts.join(' oder ');
+}
+function renderVehicle(v){
+ vehicleData=v;
+ const m=v.mileage;
+ $('mileageNow').textContent=m?kmText(m.km):'Noch kein Kilometerstand';
+ $('mileageSource').textContent=m?MILEAGE_SOURCES[m.source]||m.source:'–';
+ $('mileageSource').className='pill '+(m&&m.source==='vehicle'?'pill-live':'pill-off');
+ $('mileageInfo').textContent=m?'Stand vom '+dateText(m.date)+(v.kmPerDay?' · Ø '+v.kmPerDay.toLocaleString('de-DE')+' km pro Tag im letzten Jahr':''):'Trag den aktuellen Stand ein. Er ist die Grundlage für die km-Fälligkeiten.';
+ if(!$('mileageDate').value)$('mileageDate').value=v.today;
+ $('mileageDate').max=v.today;
+ const hist=$('mileageHistory');hist.replaceChildren();
+ if(!v.mileageHistory.length)hist.appendChild(txt('p','Noch keine Einträge.','hint'));
+ const own=new Map(v.ownMileage.map(r=>[r.date+'|'+r.km+'|'+r.source,r]));
+ for(const h of v.mileageHistory){
+  const row=txt('div','','list-row');
+  row.appendChild(txt('span',dateText(h.date)));row.appendChild(txt('strong',kmText(h.km)));
+  row.appendChild(txt('span',MILEAGE_SOURCES[h.source]||h.source,'hint'));
+  const rec=own.get(h.date+'|'+h.km+'|'+h.source);
+  if(rec){const b=txt('button','Löschen','textbutton');b.onclick=async()=>{try{renderVehicle(await api('/vehicle/mileage/'+rec.id,'DELETE'));}catch(e){notice(e.message);}};row.appendChild(b);}
+  hist.appendChild(row);
+ }
+
+ const due=$('dueList');due.replaceChildren();
+ for(const d of v.due){
+  const card=txt('div','','due due-'+d.status),head=txt('div','','job-head');
+  head.appendChild(txt('strong',d.name));head.appendChild(txt('span',DUE_STATES[d.status],'pill due-pill-'+d.status));
+  if(d.override)head.appendChild(txt('span','feste Fälligkeit','pill pill-off'));
+  card.appendChild(head);
+  if(d.status==='unknown')card.appendChild(txt('p',d.override?'':'Trag die letzte Durchführung im Serviceheft ein, dann wird die Fälligkeit berechnet.','hint'));
+  else{
+   card.appendChild(txt('p','Fällig '+dueLine(d)));
+   if(d.estimatedKmDate&&d.kmLeft>=0)card.appendChild(txt('p','km-Grenze voraussichtlich um den '+dateText(d.estimatedKmDate)+' (Schätzung aus deinem Durchschnitt)','hint'));
+  }
+  const meta=[];
+  if(d.intervalMonths||d.intervalKm)meta.push('Intervall: '+[d.intervalMonths?plural(d.intervalMonths,'Monat','Monate'):'',d.intervalKm?kmText(d.intervalKm):''].filter(Boolean).join(' oder '));
+  if(d.lastDone)meta.push('zuletzt '+dateText(d.lastDone.date)+(d.lastDone.km!==null?' bei '+kmText(d.lastDone.km):''));
+  if(meta.length)card.appendChild(txt('p',meta.join(' · '),'hint'));
+  const edit=txt('button','Ändern','textbutton');edit.onclick=()=>editItem(d.id);card.appendChild(edit);
+  due.appendChild(card);
+ }
+
+ const items=$('entryItems'),checked=new Set([...items.querySelectorAll('input:checked')].map(i=>i.value));items.replaceChildren();
+ for(const it of v.items){const l=document.createElement('label');l.className='check';const c=document.createElement('input');c.type='checkbox';c.value=it.id;c.checked=checked.has(it.id);l.append(c,document.createTextNode(' '+it.name));items.appendChild(l);}
+
+ const list=$('serviceEntries');list.replaceChildren();
+ if(!v.entries.length)list.appendChild(txt('p','Noch keine Serviceeinträge.','hint'));
+ const names=Object.fromEntries(v.items.map(i=>[i.id,i.name]));
+ for(const e of v.entries){
+  const card=txt('div','','service-entry'),head=txt('div','','job-head');
+  head.appendChild(txt('strong',dateText(e.date)));
+  if(e.km!==null)head.appendChild(txt('span',kmText(e.km),'hint'));
+  if(e.cost!==null)head.appendChild(txt('span',e.cost.toLocaleString('de-DE',{style:'currency',currency:'EUR'}),'job-state'));
+  card.appendChild(head);
+  const what=[...e.items.map(i=>names[i]||'gelöschte Wartungsart'),e.title].filter(Boolean).join(' · ');
+  card.appendChild(txt('p',what));
+  if(e.workshop)card.appendChild(txt('p',e.workshop,'hint'));
+  if(e.notes)card.appendChild(txt('p',e.notes,'hint notes'));
+  const b=txt('button','Bearbeiten','textbutton');b.onclick=()=>editEntry(e.id);card.appendChild(b);
+  list.appendChild(card);
+ }
+}
+async function refreshVehicle(){
+ if(!token)return;
+ try{renderVehicle(await api('/vehicle'));}catch(e){notice(e.message);}
+ // Liefert der MGU-Agent einen Kilometerstand, übernimmt der Server ihn dabei.
  try{
-  const d=await api('/files'),root=$('fileList'),select=$('chatFile'),previous=select.value;
-  root.replaceChildren();
-  select.replaceChildren(new Option('Ohne Datei',''));
-  d.files.filter(f=>/\.(txt|json|log|xml|csv|md|ini|conf)$/i.test(f.name)&&f.bytes<=131072).forEach(f=>select.appendChild(new Option('Datei analysieren: '+f.name,f.id)));
-  select.value=previous;
-  if(!d.files.length)root.appendChild(txt('p','Noch keine Dateien.','hint'));
-  d.files.forEach(f=>{
-   const panel=txt('div','','panel file-row'),info=txt('div','','request-info');
-   info.appendChild(txt('strong',f.name));
-   info.appendChild(txt('span',f.bytes+' Bytes · '+f.source+' · '+stamp(f.at),'hint'));
-   panel.appendChild(info);
-   const b=txt('button','Herunterladen','secondary');
-   b.onclick=()=>authenticatedDownload('/files/'+f.id+'/download',f.name);
-   panel.appendChild(b);root.appendChild(panel);
-  });
+  const s=await api('/status'),veh=s.mgu&&s.mgu.vehicle;
+  $('vehicleLive').textContent=!s.mgu?'MGU nicht erreichbar: '+String(s.error||'').slice(0,120)
+   :veh&&Number.isInteger(veh.mileageKm)?'Live vom Fahrzeug: '+kmText(veh.mileageKm)
+   :'Live-Daten vom Fahrzeug: noch keine Quelle auf der MGU ('+((veh&&veh.reason)||'kein geprüfter Fahrzeugsignal-Adapter')+'). Bis dahin zählt dein eingetragener Stand.';
+  if(veh&&Number.isInteger(veh.mileageKm))renderVehicle(await api('/vehicle'));
+ }catch(e){$('vehicleLive').textContent='Live-Daten nicht abrufbar: '+e.message;}
+}
+$('refreshVehicle').onclick=refreshVehicle;
+$('addMileage').onclick=async()=>{
+ const km=parseKm($('mileageKm').value);if(km===null||!Number.isInteger(km))return notice('Bitte den Kilometerstand als ganze Zahl eingeben.');
+ try{renderVehicle(await api('/vehicle/mileage','POST',{km,date:$('mileageDate').value||undefined}));$('mileageKm').value='';notice('Kilometerstand gespeichert.');}catch(e){notice(e.message);}
+};
+$('mileageKm').onkeydown=e=>{if(e.key==='Enter')$('addMileage').click();};
+function editItem(id){
+ const it=vehicleData&&vehicleData.items.find(i=>i.id===id);
+ $('itemId').value=it?it.id:'';$('itemName').value=it?it.name:'';
+ $('itemMonths').value=it?it.intervalMonths||0:'';$('itemKm').value=it?it.intervalKm||0:'';
+ const d=it&&vehicleData.due.find(x=>x.id===id),o=d&&d.override;
+ $('itemDueDate').value=o&&o.date||'';$('itemDueKm').value=o&&o.km!==null&&o.km!==undefined?o.km:'';
+ $('itemDelete').hidden=!it;$('itemBox').open=true;$('itemName').focus();
+}
+$('itemCancel').onclick=()=>editItem(null);
+$('itemForm').onsubmit=async e=>{
+ e.preventDefault();
+ const num=v=>v===''?0:Number(v);
+ try{
+  renderVehicle(await api('/vehicle/items','POST',{id:$('itemId').value||undefined,name:$('itemName').value,intervalMonths:num($('itemMonths').value),intervalKm:num($('itemKm').value),dueDate:$('itemDueDate').value||null,dueKm:$('itemDueKm').value===''?null:Number($('itemDueKm').value)}));
+  notice('Wartungsart gespeichert.');editItem(null);$('itemBox').open=false;
+ }catch(err){notice(err.message);}
+};
+$('itemDelete').onclick=async()=>{const id=$('itemId').value;if(!id)return;try{renderVehicle(await api('/vehicle/items/'+id,'DELETE'));editItem(null);$('itemBox').open=false;}catch(e){notice(e.message);}};
+function editEntry(id){
+ const e=id&&vehicleData?vehicleData.entries.find(x=>x.id===id):null;
+ $('serviceForm').hidden=false;$('entryId').value=e?e.id:'';
+ $('entryDate').value=e?e.date:vehicleData?vehicleData.today:'';
+ $('entryKm').value=e&&e.km!==null?e.km:vehicleData&&vehicleData.mileage?vehicleData.mileage.km:'';
+ $('entryTitle').value=e?e.title:'';$('entryWorkshop').value=e?e.workshop:'';$('entryNotes').value=e?e.notes:'';
+ $('entryCost').value=e&&e.cost!==null?String(e.cost).replace('.',','):'';
+ $('entryItems').querySelectorAll('input').forEach(c=>c.checked=!!e&&e.items.includes(c.value));
+ $('entryDelete').hidden=!e;$('entryDate').focus();
+}
+$('newServiceEntry').onclick=()=>editEntry(null);
+$('entryCancel').onclick=()=>{$('serviceForm').hidden=true;};
+$('serviceForm').onsubmit=async e=>{
+ e.preventDefault();
+ const km=parseKm($('entryKm').value);
+ try{
+  renderVehicle(await api('/vehicle/entries','POST',{id:$('entryId').value||undefined,date:$('entryDate').value,km,items:[...$('entryItems').querySelectorAll('input:checked')].map(c=>c.value),
+   title:$('entryTitle').value,workshop:$('entryWorkshop').value,notes:$('entryNotes').value,cost:$('entryCost').value}));
+  $('serviceForm').hidden=true;notice('Serviceeintrag gespeichert.');
+ }catch(err){notice(err.message);}
+};
+$('entryDelete').onclick=async()=>{const id=$('entryId').value;if(!id||!confirmInline($('entryDelete')))return;try{renderVehicle(await api('/vehicle/entries/'+id,'DELETE'));$('serviceForm').hidden=true;}catch(e){notice(e.message);}};
+// Zweimal tippen statt Browser-Dialog: erster Tipp fragt nach, zweiter löscht.
+function confirmInline(button){
+ if(button.dataset.armed==='1'){button.dataset.armed='';button.textContent=button.dataset.label;return true;}
+ button.dataset.label=button.textContent;button.dataset.armed='1';button.textContent='Wirklich löschen?';
+ setTimeout(()=>{if(button.dataset.armed==='1'){button.dataset.armed='';button.textContent=button.dataset.label;}},4000);return false;
+}
+
+// ----- Dateien: MGU-Browser, gefundene Logs, Bibliothek -----
+let mguRootsList=[],mguCurrent='',libraryFiles=[];
+const sizeText=b=>b===undefined||b===null?'':b<1024?b+' B':b<1048576?(b/1024).toFixed(1).replace('.',',')+' KB':(b/1048576).toFixed(1).replace('.',',')+' MB';
+const isLogName=n=>/(?:\.(?:log|logs|txt|out|err|trace|dlt|journal)(?:\.\d+)?(?:\.gz)?|\.log\.\d+|_log)$/i.test(n);
+const fileKind=f=>f.kind||(String(f.source||'').startsWith('MGU:')?'mgu':'upload');
+async function fetchFromMgu(p,kind,button){
+ if(button)button.disabled=true;
+ try{
+  const d=await api('/mgu/fetch','POST',{path:p,kind});
+  notice(d.duplicate?'Schon in der Bibliothek, unverändert.':kind==='log'?'Als Log gespeichert.':'In die Bibliothek geholt.');
+  refreshFiles();if(kind==='log')refreshFoundLogs();
+  return d.file;
+ }catch(e){notice(e.message);return null;}
+ finally{if(button)button.disabled=false;}
+}
+function mguFileRow(fullPath,bytes,kind){
+ const row=txt('div','','list-row'),name=fullPath.split('/').pop();
+ if(kind==='directory'){
+  const b=txt('button','📁 '+name,'linkbutton');b.onclick=()=>browseMgu(fullPath);row.appendChild(b);
+  return row;
+ }
+ const info=txt('div','','request-info');info.appendChild(txt('span',name));
+ info.appendChild(txt('span',[sizeText(bytes),kind==='symlink'?'Verknüpfung (nicht lesbar)':''].filter(Boolean).join(' · ')||fullPath,'hint'));
+ row.appendChild(info);
+ if(kind==='file'||kind===undefined){
+  const dl=txt('button','Herunterladen','secondary');
+  dl.onclick=async()=>{const f=await fetchFromMgu(fullPath,isLogName(name)||fullPath.startsWith('/var/log/')?'log':'mgu',dl);if(f)authenticatedDownload('/files/'+f.id+'/download',f.name);};
+  row.appendChild(dl);
+  if(isLogName(name)||fullPath.startsWith('/var/log/')){const lg=txt('button','Als Log speichern','textbutton');lg.onclick=()=>fetchFromMgu(fullPath,'log',lg);row.appendChild(lg);}
+ }
+ return row;
+}
+function renderCrumbs(p){
+ const c=$('mguCrumbs');c.replaceChildren();if(!p)return;
+ const root=mguRootsList.find(r=>p===r||p.startsWith(r+'/'))||p,rest=p.slice(root.length).split('/').filter(Boolean);
+ let acc=root;const add=(label,target)=>{const b=txt('button',label,'linkbutton');b.onclick=()=>browseMgu(target);c.appendChild(b);};
+ add(root,root);for(const seg of rest){acc+='/'+seg;c.appendChild(txt('span','/','hint'));add(seg,acc);}
+}
+async function browseMgu(p){
+ const box=$('mguListing');box.replaceChildren(txt('p','Lade '+p+' …','hint'));
+ try{
+  const d=await api('/mgu/browse','POST',{path:p});mguCurrent=d.path||p;renderCrumbs(mguCurrent);box.replaceChildren();
+  const root=mguRootsList.find(r=>mguCurrent===r||mguCurrent.startsWith(r+'/'));if(root)$('mguSearchRoot').value=root;
+  const entries=[...(d.entries||[])].sort((a,b)=>(a.kind==='directory'?0:1)-(b.kind==='directory'?0:1)||a.name.localeCompare(b.name));
+  if(!entries.length)box.appendChild(txt('p','Ordner ist leer.','hint'));
+  for(const e of entries)box.appendChild(mguFileRow(mguCurrent+'/'+e.name,e.bytes,e.kind));
+  if(entries.length>=200)box.appendChild(txt('p','Nur die ersten 200 Einträge. Nutze die Suche.','hint'));
+ }catch(e){box.replaceChildren(txt('p',e.message,'error'));}
+}
+$('mguSearch').onclick=async()=>{
+ const term=$('mguSearchTerm').value.trim(),root=$('mguSearchRoot').value,box=$('mguListing');
+ if(term.length<2)return notice('Mindestens 2 Zeichen eingeben.');
+ box.replaceChildren(txt('p','Suche „'+term+'“ in '+root+' …','hint'));$('mguCrumbs').replaceChildren(txt('span','Suchergebnisse in '+root,'hint'));
+ try{
+  const d=await api('/mgu/search','POST',{root,term});box.replaceChildren();
+  if(!d.results.length)box.appendChild(txt('p','Nichts gefunden (bis 4 Ebenen tief).','hint'));
+  for(const r of d.results){
+   const row=mguFileRow(r,null,undefined),open=txt('button','Ordner öffnen','textbutton');
+   open.onclick=()=>browseMgu(r.slice(0,r.lastIndexOf('/'))||root);row.appendChild(open);box.appendChild(row);
+  }
+  if(d.truncated)box.appendChild(txt('p','Mehr als 180 Treffer, bitte genauer suchen.','hint'));
+ }catch(e){box.replaceChildren(txt('p',e.message,'error'));}
+};
+$('mguSearchTerm').onkeydown=e=>{if(e.key==='Enter')$('mguSearch').click();};
+async function loadMguRoots(){
+ if(mguRootsList.length)return;
+ try{
+  mguRootsList=(await api('/mgu/roots')).roots;
+  const chips=$('mguRoots'),sel=$('mguSearchRoot');chips.replaceChildren();sel.replaceChildren();
+  for(const r of mguRootsList){const b=txt('button',r,'console-chip');b.onclick=()=>browseMgu(r);chips.appendChild(b);sel.appendChild(new Option(r,r));}
  }catch(e){notice(e.message);}
 }
+const FOUND_STATES={new:'Neu',queued:'Wird geholt',saving:'Wird geholt',saved:'Gespeichert',failed:'Fehlgeschlagen',ignored:'Ignoriert'};
+const FOUND_BY={claude:'Claude',manual:'du'};
+async function refreshFoundLogs(){
+ try{
+  const d=await api('/found-logs'),box=$('foundLogs');
+  $('foundLogsAuto').checked=d.auto;$('foundLogsAuto').disabled=false;box.replaceChildren();
+  const visible=d.found.filter(f=>f.status!=='ignored');
+  if(!visible.length)box.appendChild(txt('p','Noch keine gefundenen Logs.','hint'));
+  for(const f of visible){
+   const row=txt('div','','list-row'),info=txt('div','','request-info');
+   info.appendChild(txt('span',f.path));
+   info.appendChild(txt('span',[FOUND_STATES[f.status]||f.status,'gefunden von '+(FOUND_BY[f.foundBy]||f.foundBy),stamp(f.foundAt),sizeText(f.bytes),f.note||'',f.error||''].filter(Boolean).join(' · '),'hint'+(f.status==='failed'?' error':'')));
+   row.appendChild(info);
+   if(f.status==='saved'&&f.fileId){const b=txt('button','Herunterladen','secondary');b.onclick=()=>authenticatedDownload('/files/'+f.fileId+'/download',f.path.split('/').pop());row.appendChild(b);}
+   if(['new','failed','saved'].includes(f.status)){
+    const s=txt('button',f.status==='saved'?'Neu holen':'Hinzufügen',f.status==='saved'?'textbutton':'');
+    s.onclick=async()=>{s.disabled=true;try{await api('/found-logs/'+f.id+'/save','POST');refreshFiles();}catch(e){notice(e.message);}refreshFoundLogs();};row.appendChild(s);
+   }
+   if(f.status==='new'||f.status==='failed'){const i=txt('button','Ignorieren','textbutton');i.onclick=async()=>{try{await api('/found-logs/'+f.id+'/ignore','POST');}catch(e){notice(e.message);}refreshFoundLogs();};row.appendChild(i);}
+   box.appendChild(row);
+  }
+  const hidden=d.found.length-visible.length;if(hidden)box.appendChild(txt('p',hidden+' ignoriert','hint'));
+  if(d.found.some(f=>f.status==='queued'||f.status==='saving'))setTimeout(()=>{if(currentTab==='files'){refreshFoundLogs();refreshFiles();}},3000);
+ }catch(e){notice(e.message);}
+}
+$('refreshFoundLogs').onclick=refreshFoundLogs;
+$('foundLogsAuto').onchange=async()=>{const box=$('foundLogsAuto');box.disabled=true;try{await api('/found-logs/settings','POST',{auto:box.checked});notice(box.checked?'Gefundene Logs werden automatisch geholt.':'Gefundene Logs holst du per Klick.');}catch(e){notice(e.message);}refreshFoundLogs();};
+function renderLibrary(){
+ const q=$('librarySearch').value.trim().toLowerCase(),kind=$('libraryFilter').value,box=$('libraryList');box.replaceChildren();
+ const shown=libraryFiles.filter(f=>(!kind||fileKind(f)===kind)&&(!q||(f.name+' '+(f.mguPath||f.source||'')).toLowerCase().includes(q)));
+ if(!shown.length)box.appendChild(txt('p',libraryFiles.length?'Keine Treffer.':'Noch keine Dateien.','hint'));
+ for(const f of shown){
+  const row=txt('div','','list-row'),info=txt('div','','request-info');
+  const title=txt('span','');title.appendChild(txt('strong',f.name));if(fileKind(f)==='log')title.appendChild(txt('span','Log','pill pill-off'));
+  info.appendChild(title);info.appendChild(txt('span',[sizeText(f.bytes),f.mguPath||f.source,stamp(f.at)].filter(Boolean).join(' · '),'hint'));
+  row.appendChild(info);
+  const b=txt('button','Herunterladen','secondary');b.onclick=()=>authenticatedDownload('/files/'+f.id+'/download',f.name);row.appendChild(b);
+  const del=txt('button','Löschen','textbutton');del.onclick=async()=>{if(!confirmInline(del))return;try{await api('/files/'+f.id,'DELETE');refreshFiles();refreshFoundLogs();}catch(e){notice(e.message);}};row.appendChild(del);
+  box.appendChild(row);
+ }
+}
+$('librarySearch').oninput=renderLibrary;$('libraryFilter').onchange=renderLibrary;
+async function refreshFiles(){
+ try{
+  const d=await api('/files'),select=$('chatFile'),previous=select.value;libraryFiles=d.files;
+  select.replaceChildren(new Option('Ohne Datei',''));
+  d.files.filter(f=>/\.(txt|json|log|xml|csv|md|ini|conf)$/i.test(f.name)&&f.bytes<=131072).forEach(f=>select.appendChild(new Option('Datei analysieren: '+f.name,f.id)));
+  select.value=previous;renderLibrary();
+ }catch(e){notice(e.message);}
+}
+function refreshFilesTab(){loadMguRoots();refreshFoundLogs();refreshFiles();}
 $('uploadBtn').onclick=async()=>{const f=$('upload').files[0];if(!f)return notice('Datei auswählen');if(f.size>8*1024*1024)return notice('Maximal 8 MiB');try{const r=await fetch('/api/v1/files?name='+encodeURIComponent(f.name),{method:'POST',headers:authHeaders(),body:f});if(!r.ok)throw Error('Upload HTTP '+r.status);notice('Datei hochgeladen');refreshFiles();}catch(e){notice(e.message);}};
-$('fetchFile').onclick=()=>{const p=$('mguFilePath').value.trim();if(!p)return notice('Bitte einen Dateipfad eingeben.');requestJob('download',{path:p},'Datei abrufen: '+p);};
-$('listFolder').onclick=()=>{const p=$('mguFolderPath').value.trim();if(!p)return notice('Bitte ein Verzeichnis eingeben.');requestJob('list',{path:p},'Verzeichnis auflisten: '+p);};
 
 // ----- Local import of selected ChatGPT-export conversations -----
 let exportChats=[],pendingUpdate=null;

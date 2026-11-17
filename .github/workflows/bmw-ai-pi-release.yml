@@ -69,6 +69,7 @@ jobs:
           node pi-source/tests/test-auto-web-refresh.js
           node pi-source/tests/test-mobile-console.js
           node pi-source/tests/test-claude-mcp.js
+          node pi-source/tests/test-vehicle-files.js
           python3 - <<'PY'
           import hashlib,json,os,pathlib,re,subprocess,tempfile,zipfile
           root=pathlib.Path('pi-source')
