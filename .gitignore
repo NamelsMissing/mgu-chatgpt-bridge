@@ -4,3 +4,4 @@ broker/data/
 dist/
 __pycache__/
 *.pyc
+reference/someip-interfaces.json

@@ -1,0 +1,47 @@
+{
+  "id": "vehicle_data",
+  "title": "Vehicle Data",
+  "description": "Mileage, service due messages and the car's service history, read-only. Shares them with your private BMW AI server.",
+  "version": "0.1.0",
+  "vendor": "custom",
+  "loggingId": "OVD1",
+  "iconGlyph": "service",
+  "signals": {
+    "de.bmw.infrastructure.SecureMileage": {
+      "mileage": "rs"
+    },
+    "de.bmw.infrastructure.MileageSupreme": {
+      "mileageSupreme": "rs"
+    },
+    "de.bmw.infotainment.ConditionBasedServicesLegacy": {
+      "cBSMessageEngineOil": "s",
+      "cBSMessageBrakeFront": "s",
+      "cBSMessageBrakeRear": "s",
+      "cBSMessageGearOil": "s",
+      "cBSMessageParticleFilter": "s",
+      "cBSMessageSparkPlug": "s"
+    },
+    "com.harman.infotainment.systemfunctions.servicehistory.ServiceHistory": {
+      "_instances": "SystemFunctionsServiceHistoryInst1",
+      "_methods": [
+        "readServiceHistory"
+      ],
+      "_broadcasts": [
+        "serviceHistoryUpdated"
+      ]
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "canvas",
+      "title": "Vehicle Data",
+      "buttons": [
+        ["BTN_PAGE", "Next page"],
+        ["BTN_REFRESH", "Read service history again"]
+      ]
+    }
+  ],
+  "settings": [],
+  "mguAppStartType": "autostart"
+}

@@ -10,7 +10,6 @@ for directory,files in {'agent':['agent.js','executor.js','network-worker.js'],'
     (native/directory).mkdir(exist_ok=True)
     for file in files: shutil.copy2(ROOT/directory/file,native/directory/file)
 shutil.copy2(ROOT/'agent/config.example.json',native/'config.example.json')
-shutil.copy2(ROOT/'apps/mgu_chatgpt_bridge/QR-LICENSE',ROOT/'THIRD_PARTY_QR_LICENSE')
 manifest=json.loads((native/'component.json').read_text())
 for item in manifest['files']:
     f=native/item.get('from',item['path'])
@@ -22,6 +21,8 @@ with tarfile.open(DIST/'mgu-chatgpt-bridge-service-0.1.0.tgz','w:gz') as t:
         for f in sorted((ROOT/directory).rglob('*')):
             if f.is_file() and '__pycache__' not in f.parts:t.add(f,arcname=str(f.relative_to(ROOT)))
     t.add(ROOT/'README.md',arcname='README.md')
+    t.add(ROOT/'LICENSE',arcname='LICENSE')
+    t.add(ROOT/'THIRD_PARTY_NOTICES.md',arcname='THIRD_PARTY_NOTICES.md')
 archive=DIST/'MGU_ChatGPT_Bridge_v0.1.0.zip'
 with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
     for f in sorted(ROOT.rglob('*')):

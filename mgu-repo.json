@@ -23,6 +23,24 @@
       }
     },
     {
+      "id": "vehicle_data",
+      "kind": "app",
+      "title": "Vehicle Data",
+      "version": "0.1.0",
+      "path": "apps/vehicle_data",
+      "mguHmi": [
+        "ID7"
+      ],
+      "build": {
+        "python": "tools/build_store_app.py",
+        "args": [
+          "{id}"
+        ],
+        "sdk": "oap-sdk",
+        "output": "dist/{id}@{version}.tgz"
+      }
+    },
+    {
       "id": "mgu-chatgpt-bridge",
       "kind": "tool",
       "title": "MGU Analysis Bridge Service",
