@@ -481,6 +481,7 @@ function renderVehicle(v){
  const items=$('entryItems'),checked=new Set([...items.querySelectorAll('input:checked')].map(i=>i.value));items.replaceChildren();
  for(const it of v.items){const l=document.createElement('label');l.className='check';const c=document.createElement('input');c.type='checkbox';c.value=it.id;c.checked=checked.has(it.id);l.append(c,document.createTextNode(' '+it.name));items.appendChild(l);}
 
+ renderReported(v);
  const list=$('serviceEntries');list.replaceChildren();
  if(!v.entries.length)list.appendChild(txt('p','Noch keine Serviceeinträge.','hint'));
  const names=Object.fromEntries(v.items.map(i=>[i.id,i.name]));
@@ -498,6 +499,35 @@ function renderVehicle(v){
   list.appendChild(card);
  }
 }
+function renderReported(v){
+ const live=v.live,box=$('cbsList'),hist=$('historyList');box.replaceChildren();hist.replaceChildren();
+ $('reportedAge').textContent=live?'gelesen '+stamp(live.at):'keine Daten';
+ $('reportedAge').className='pill '+(live&&Date.now()-Date.parse(live.at)<3600000?'pill-live':'pill-off');
+ if(!live){box.appendChild(txt('p','Noch nichts vom Fahrzeug. Dafür muss auf der MGU die App „Vehicle Data“ installiert sein und einmal gelaufen sein.','hint'));return;}
+ if(live.mileageKm!==null)box.appendChild(txt('p','Kilometerstand laut Fahrzeug: '+kmText(live.mileageKm)+(live.mileageAt?' ('+stamp(live.mileageAt)+')':'')));
+ if(!live.cbs.length)box.appendChild(txt('p','Noch keine Servicebedarf-Meldung empfangen.','hint'));
+ for(const c of live.cbs){
+  const row=txt('div','','list-row'),info=txt('div','','request-info');
+  info.appendChild(txt('strong',c.label));
+  row.appendChild(info);
+  const parts=[c.dueDate?'bis '+dateText(c.dueDate):'',c.remainingKm!==null?'noch '+kmText(c.remainingKm):''].filter(Boolean);
+  row.appendChild(txt('span',parts.join(' · ')||'–',c.remainingKm===0?'error':''));
+  box.appendChild(row);
+ }
+ const h=live.serviceHistory;
+ if(!h)hist.appendChild(txt('p','Noch nicht gelesen.','hint'));
+ else if(!h.sets.length)hist.appendChild(txt('p','Keine Einträge im Fahrzeug'+(h.status&&h.status!=='E_OK'?' ('+h.status+')':'')+'.','hint'));
+ for(const x of h?h.sets:[]){
+  const row=txt('div','','list-row'),info=txt('div','','request-info');
+  const title=txt('span','');title.appendChild(txt('strong',dateText(x.date)));if(x.km!==null)title.appendChild(txt('span','  '+kmText(x.km),'hint'));
+  info.appendChild(title);
+  info.appendChild(txt('span',[x.services.map(s=>s.label).join(', '),x.dealer?'Händler '+x.dealer:''].filter(Boolean).join(' · ')||'–','hint'));
+  row.appendChild(info);
+  if(x.imported)row.appendChild(txt('span','im Serviceheft','pill pill-live'));
+  else if(x.date){const b=txt('button','Ins Serviceheft','secondary');b.onclick=async()=>{b.disabled=true;try{renderVehicle(await api('/vehicle/import-history','POST',{date:x.date,km:x.km}));notice('Übernommen.');}catch(e){notice(e.message);b.disabled=false;}};row.appendChild(b);}
+  hist.appendChild(row);
+ }
+}
 async function refreshVehicle(){
  if(!token)return;
  try{renderVehicle(await api('/vehicle'));}catch(e){notice(e.message);}
@@ -505,9 +535,10 @@ async function refreshVehicle(){
  try{
   const s=await api('/status'),veh=s.mgu&&s.mgu.vehicle;
   $('vehicleLive').textContent=!s.mgu?'MGU nicht erreichbar: '+String(s.error||'').slice(0,120)
-   :veh&&Number.isInteger(veh.mileageKm)?'Live vom Fahrzeug: '+kmText(veh.mileageKm)
-   :'Live-Daten vom Fahrzeug: noch keine Quelle auf der MGU ('+((veh&&veh.reason)||'kein geprüfter Fahrzeugsignal-Adapter')+'). Bis dahin zählt dein eingetragener Stand.';
-  if(veh&&Number.isInteger(veh.mileageKm))renderVehicle(await api('/vehicle'));
+   :veh&&Number.isInteger(veh.mileageKm)?'Live vom Fahrzeug: '+kmText(veh.mileageKm)+' (Vehicle Data, Einheit noch nicht abgeglichen)'
+   :veh&&veh.status==='waiting'?'Vehicle Data läuft, hat aber noch keinen Kilometerstand vom Fahrzeug.'
+   :'Live-Daten vom Fahrzeug: '+((veh&&veh.reason)||'keine Quelle auf der MGU')+'. Bis dahin zählt dein eingetragener Stand.';
+  if(veh&&(veh.status==='ok'||veh.status==='waiting'))renderVehicle(await api('/vehicle'));
  }catch(e){$('vehicleLive').textContent='Live-Daten nicht abrufbar: '+e.message;}
 }
 $('refreshVehicle').onclick=refreshVehicle;

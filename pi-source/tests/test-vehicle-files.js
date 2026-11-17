@@ -17,11 +17,11 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
 
 (async()=>{
  const files={'/var/log/oap/app.log':'boot ok\nerror: dsp timeout\n','/usr/lib/oap-mainapp/dsp.conf':'gain=3\n','/var/log/oap/app.log.1':'old\n'};
- let mileage=null;const calls=[];
+ let mileage=null,extra={};const calls=[];
  const mgu=http.createServer((req,res)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
   const b=raw?JSON.parse(raw):{};calls.push(req.url+' '+(b.path||b.command||''));
   const json=(c,d)=>{res.writeHead(c,{'content-type':'application/json'});res.end(JSON.stringify(d));};
-  if(req.url==='/v1/status')return json(200,{online:true,host:'mgu',vehicle:mileage===null?{status:'unavailable'}:{status:'ok',mileageKm:mileage}});
+  if(req.url==='/v1/status')return json(200,{online:true,host:'mgu',vehicle:mileage===null?{status:'unavailable'}:Object.assign({status:'ok',mileageKm:mileage},extra)});
   if(req.url==='/v1/files/list'){
    if(b.path==='/var/log/oap')return json(200,{path:'/var/log/oap',entries:[...Object.keys(files).filter(f=>f.startsWith('/var/log/oap/')).map(f=>({name:path.basename(f),kind:'file',bytes:files[f].length})),{name:'state',kind:'directory',bytes:0}]});
    if(b.path==='/usr/lib/oap-mainapp')return json(200,{path:b.path,entries:[{name:'dsp.conf',kind:'file',bytes:7}]});
@@ -93,6 +93,23 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
   mileage=100;await api('GET','/status');
   assert.equal((await api('GET','/vehicle')).data.mileage.km,108900,'implausible vehicle value ignored');
 
+  // ----- Servicebedarf und Servicehistorie laut Fahrzeug (App Vehicle Data über den Agent) -----
+  mileage=109000;extra={unverified:true,source:'Vehicle Data 0.1.0',cbs:[{scope:'OELSERVICE',label:'Motoröl',remainingKm:7100,dueDate:'2027-11-01',raw:'x'}],
+   serviceHistory:{status:'E_OK',sets:[{date:day(-30),km:108300,dealer:'12345',status:'SERVICE_PERFORMED',services:[{scope:'OELSERVICE',label:'Motoröl'},{scope:'MIKROFILTER',label:'Mikrofilter'}]},
+    {date:day(-10),km:108900,dealer:'',status:'SERVICE_CARRIED_OUT_LATE',services:[{scope:'BREMSFLUESSIGKEIT',label:'Bremsflüssigkeit'}]}]}};
+  await api('GET','/status');
+  v=(await api('GET','/vehicle')).data;
+  assert.equal(v.live.cbs[0].remainingKm,7100);assert.equal(v.live.cbs[0].raw,undefined,'only known fields are stored');
+  assert.equal(v.live.serviceHistory.sets.length,2);assert.equal(v.live.serviceHistory.sets[0].imported,false);
+  v=(await api('POST','/vehicle/import-history',{date:day(-30),km:108300})).data;
+  const imported=v.entries.find(e=>e.date===day(-30));
+  assert.deepEqual(imported.items,['oil']);assert.equal(imported.title,'Mikrofilter');assert.equal(imported.workshop,'Händler 12345');
+  assert.equal(v.live.serviceHistory.sets.find(x=>x.date===day(-30)).imported,true);
+  assert.equal((await api('POST','/vehicle/import-history',{date:day(-30),km:108300})).status,400,'no duplicates');
+  assert.equal((await api('POST','/vehicle/import-history',{date:day(-400)})).status,400);
+  v=(await api('POST','/vehicle/import-history',{date:day(-10),km:108900})).data;
+  assert.match(v.entries.find(e=>e.date===day(-10)).notes,/verspätet/);
+
   // ----- Dateibrowser -----
   let r=await api('POST','/mgu/browse',{path:'/var/log/oap'});
   assert.equal(r.status,200);assert.equal(r.data.entries.length,3);
@@ -145,7 +162,7 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
 
   // ----- Oberfläche -----
   const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8'),js=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
-  for(const id of ['vehicle','mileageKm','addMileage','dueList','serviceForm','serviceEntries','itemForm','mguRoots','mguListing','mguSearchTerm','foundLogs','foundLogsAuto','libraryList','librarySearch'])
+  for(const id of ['vehicle','cbsList','historyList','mileageKm','addMileage','dueList','serviceForm','serviceEntries','itemForm','mguRoots','mguListing','mguSearchTerm','foundLogs','foundLogsAuto','libraryList','librarySearch'])
    assert.match(html,new RegExp('id="'+id+'"'),'Missing UI element: '+id);
   assert.match(js,/\/vehicle\/entries/);assert.match(js,/\/mgu\/browse/);assert.match(js,/\/found-logs/);
   console.log('BMW AI vehicle/files tests passed: service intervals, manual due values, mileage plausibility, vehicle mileage, file browser, dedupe, found logs manual/auto.');

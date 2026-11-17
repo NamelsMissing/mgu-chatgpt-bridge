@@ -10,7 +10,7 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.6.0'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.7.0'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -258,7 +258,9 @@ function vehicleView(){
     ownMileage:[...st.vehicle.mileage].sort((a,b)=>b.date.localeCompare(a.date)||b.km-a.km).slice(0,40),
     due:Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate)).sort((a,b)=>order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9'))),
     items:Object.values(st.vehicle.items),
-    entries:Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0))};
+    entries:Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0)),
+    live:st.vehicle.live?Object.assign({},st.vehicle.live,{serviceHistory:st.vehicle.live.serviceHistory?Object.assign({},st.vehicle.live.serviceHistory,
+      {sets:st.vehicle.live.serviceHistory.sets.map(x=>Object.assign({},x,{imported:!!(x.date&&historyEntryFor(x))}))}):null}):null};
 }
 function addMileage(km,date,source){
   const d=checkDate(date||today(),'Datum'),k=checkInt(km,'Kilometerstand',2000000);
@@ -271,10 +273,44 @@ function addMileage(km,date,source){
 }
 // Vom Fahrzeug gelieferter Stand (MGU-Agent). Nur übernehmen, wenn er plausibel ist.
 function noteVehicleMileage(status){
-  const v=status&&status.vehicle,km=v&&v.mileageKm;
+  const v=status&&status.vehicle;
+  noteVehicleLive(v);
+  const km=v&&v.mileageKm;
   if(!Number.isInteger(km)||km<=0||km>2000000)return;
   const cur=currentMileage();if(cur&&(km<cur.km||(cur.date===today()&&cur.km===km)))return;
   addMileage(km,today(),'vehicle');
+}
+// Servicebedarf (CBS) und Servicehistorie, wie sie die App "Vehicle Data" auf der MGU liest.
+const str=(v,max)=>typeof v==='string'?v.slice(0,max):null;
+const int=(v,max)=>Number.isInteger(v)&&v>=0&&v<=max?v:null;
+const isoDay=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?v:null;
+function noteVehicleLive(v){
+  if(!v||(v.status!=='ok'&&v.status!=='waiting'))return;
+  const h=v.serviceHistory&&typeof v.serviceHistory==='object'?v.serviceHistory:null;
+  const live={at:now(),source:str(v.source,60),writtenAt:str(v.writtenAt,40),unverified:v.unverified!==false,
+    mileageKm:int(v.mileageKm,2000000),mileageAt:str(v.mileageAt,40),
+    cbs:(Array.isArray(v.cbs)?v.cbs:[]).slice(0,20).map(c=>({scope:str(c&&c.scope,40),label:str(c&&c.label,60)||'Service',remainingKm:int(c&&c.remainingKm,65534),dueDate:isoDay(c&&c.dueDate)})),
+    serviceHistory:h?{status:str(h.status,40),readAt:str(h.readAt,40),sets:(Array.isArray(h.sets)?h.sets:[]).slice(0,60).map(x=>({date:isoDay(x&&x.date),km:int(x&&x.km,2000000),dealer:str(x&&x.dealer,40)||'',status:str(x&&x.status,40),
+      services:(Array.isArray(x&&x.services)?x.services:[]).slice(0,30).map(e=>({scope:str(e&&e.scope,40),label:str(e&&e.label,60)||'Service',status:str(e&&e.status,40)}))}))}:null};
+  const before=JSON.stringify(Object.assign({},st.vehicle.live||{},{at:null}));
+  st.vehicle.live=live;
+  if(JSON.stringify(Object.assign({},live,{at:null}))!==before)save();
+}
+const HISTORY_STATES={SERVICE_CARRIED_OUT_LATE:'verspätet durchgeführt',SERVICE_INCOMPLETE:'unvollständig'};
+function historyEntryFor(set){return Object.values(st.vehicle.entries).find(e=>e.date===set.date&&(e.km===null||set.km===null||e.km===set.km))||null;}
+function importHistory(date,km){
+  const live=st.vehicle.live,sets=live&&live.serviceHistory?live.serviceHistory.sets:[];
+  const set=sets.find(x=>x.date===date&&(km===undefined||km===null||x.km===km));
+  if(!set||!set.date)throw Error('Diesen Eintrag meldet das Fahrzeug nicht (mehr)');
+  if(historyEntryFor(set))throw Error('Schon im Serviceheft');
+  const byName=Object.fromEntries(Object.values(st.vehicle.items).map(i=>[i.name.toLowerCase(),i.id]));
+  const items=[],rest=[];
+  for(const sv of set.services){
+    const id=sv.scope==='OELSERVICE'&&st.vehicle.items.oil?'oil':byName[sv.label.toLowerCase()];
+    if(id&&!items.includes(id))items.push(id);else if(!id)rest.push(sv.label);
+  }
+  return saveServiceEntry({date:set.date,km:set.km,items,title:rest.length?rest.join(', '):(items.length?'':'Service laut Fahrzeug'),
+    workshop:set.dealer?'Händler '+set.dealer:'',notes:'Aus der Servicehistorie des Fahrzeugs übernommen'+(HISTORY_STATES[set.status]?' ('+HISTORY_STATES[set.status]+')':'')+'.'});
 }
 function saveServiceItem(d){
   const id=d.id&&st.vehicle.items[d.id]?d.id:null;
@@ -632,6 +668,7 @@ async function mcpCall(name,args,client){
     const v=vehicleView();
     return {today:v.today,current_mileage:v.mileage?{km:v.mileage.km,date:v.mileage.date,source:v.mileage.source}:null,average_km_per_day:v.kmPerDay,
       due:v.due.map(d=>({item:d.name,status:d.status,due_date:d.dueDate,due_km:d.dueKm,days_left:d.daysLeft,km_left:d.kmLeft,estimated_date_by_km:d.estimatedKmDate,last_done:d.lastDone,interval:{months:d.intervalMonths,km:d.intervalKm},fixed_by_owner:!!d.override})),
+      reported_by_vehicle:v.live?{note:'From the MGU app Vehicle Data; units not yet confirmed against the iDrive screen.',read_at:v.live.at,mileage_km:v.live.mileageKm,service_due:v.live.cbs,service_history:v.live.serviceHistory}:null,
       recent_service:v.entries.slice(0,10).map(e=>({date:e.date,km:e.km,items:e.items.map(i=>st.vehicle.items[i]?st.vehicle.items[i].name:i),title:e.title,workshop:e.workshop,notes:e.notes})),
       note:'Owner-maintained records. Mileage source "vehicle" means reported by the MGU agent.'};
   }
@@ -790,7 +827,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
  // Alles andere, das über Tailscale Funnel (öffentliches Internet) ankommt, existiert nicht.
  if(req.headers['tailscale-funnel-request']!==undefined)return fail(res,404,'Not found');
  return (async()=>{
- if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.6.0'});
+ if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.7.0'});
  if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');
   const remember=d.remember===true,days=remember?30:14;
   const t=crypto.randomBytes(32).toString('base64url');
@@ -935,6 +972,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
   if(req.method==='POST'&&p==='/api/v1/vehicle/items'){const d=await body(req,4096);const item=saveServiceItem(d);audit('service_item',item.name);return send(res,200,vehicleView());}
   const vi=/^\/api\/v1\/vehicle\/items\/([A-Za-z0-9-]{2,36})$/.exec(p);
   if(req.method==='DELETE'&&vi){if(!st.vehicle.items[vi[1]])return fail(res,404,'Unbekannte Wartungsart');if(Object.values(st.vehicle.entries).some(e=>e.items.includes(vi[1])))return fail(res,400,'Wird in Serviceeinträgen verwendet');delete st.vehicle.items[vi[1]];save();return send(res,200,vehicleView());}
+  if(req.method==='POST'&&p==='/api/v1/vehicle/import-history'){const d=await body(req,1024);const e=importHistory(checkDate(d.date,'Datum'),d.km===undefined?undefined:checkInt(d.km,'km',2000000,true));audit('service_history_import',e.date);return send(res,200,vehicleView());}
   if(req.method==='POST'&&p==='/api/v1/vehicle/entries'){const d=await body(req,16384);const e=saveServiceEntry(d);audit('service_entry',e.date+' '+(e.title||e.items.join(',')));return send(res,200,vehicleView());}
   const ve=/^\/api\/v1\/vehicle\/entries\/([0-9a-f-]{36})$/.exec(p);
   if(req.method==='DELETE'&&ve){if(!st.vehicle.entries[ve[1]])return fail(res,404,'Unbekannter Eintrag');delete st.vehicle.entries[ve[1]];save();audit('service_entry_deleted',ve[1]);return send(res,200,vehicleView());}

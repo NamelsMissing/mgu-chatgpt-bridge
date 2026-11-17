@@ -7,6 +7,22 @@ var ROOT='/var/opt/mgu-ai-agent',CONFIG=process.env.MGU_AI_CONFIG||ROOT+'/config
 var DATA=process.env.MGU_AI_DATA||ROOT+'/data';
 var PORT=Number(process.env.MGU_AI_PORT||18766);
 var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
+// Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
+// file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
+var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
+function vehicleData(){
+ var best=null;
+ try{fs.readdirSync(OAP_APPS).forEach(function(d){if(!/^oap_\d+$/.test(d))return;var f=path.join(OAP_APPS,d,'data',VEHICLE_FILE);try{var st=fs.statSync(f);if(st.isFile()&&st.size<512*1024&&(!best||st.mtimeMs>best.mtime))best={file:f,mtime:st.mtimeMs};}catch(e){}});}catch(e){}
+ if(!best)return {status:'unavailable',reason:'Vehicle Data app not installed or not started yet'};
+ var doc;try{doc=JSON.parse(fs.readFileSync(best.file,'utf8'));}catch(e){return {status:'unavailable',reason:'Vehicle Data file unreadable'};}
+ if(!doc||doc.schema!==1||doc.app!=='vehicle_data')return {status:'unavailable',reason:'Unknown Vehicle Data format'};
+ var m=doc.mileage,km=m&&Number.isInteger(m.km)&&m.km>0&&m.km<2000000?m.km:null;
+ return {status:km!==null||(doc.cbs&&doc.cbs.length)||doc.serviceHistory?'ok':'waiting',source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
+  mileageKm:km,mileageAt:m?m.at:null,mileageSource:m?m.source:null,unverified:true,
+  cbs:Array.isArray(doc.cbs)?doc.cbs.slice(0,20).map(function(c){return {scope:c.scope,label:c.label,remainingKm:c.remainingKm,dueDate:c.dueDate,status:c.status,at:c.at};}):[],
+  serviceHistory:doc.serviceHistory?{status:doc.serviceHistory.status,readAt:doc.serviceHistory.readAt,sets:(doc.serviceHistory.sets||[]).slice(0,60)}:null,
+  signals:doc.signals||{}};
+}
 var PRESETS=['system','network','audio','services','storage','bridge','recent_logs','vehicle'];
 function mkdir(d){if(!fs.existsSync(d))fs.mkdirSync(d,0o700);}
 function init(silent){mkdir(ROOT);mkdir(DATA);if(fs.existsSync(CONFIG))throw Error('Configuration already exists; will not replace secret');var token=crypto.randomBytes(32).toString('hex');fs.writeFileSync(CONFIG,JSON.stringify({token:token,enabled:true,allowActions:false,piOrigin:''},null,2)+'\n',{mode:0o600});fs.chmodSync(CONFIG,0o600);if(!silent)console.log('MGU token created. Copy securely to the Pi MGU_TOKEN setting: '+token);}
@@ -25,7 +41,7 @@ case 'services':x.values.failed=run('/bin/systemctl',['--failed','--no-pager','-
 case 'storage':x.values.df=run('/bin/df',['-h']);break;
 case 'bridge':x.values=bridgeInfo();break;
 case 'recent_logs':x.values.log=run(first(['/bin/journalctl','/usr/bin/journalctl']),['--no-pager','-n','70','-u','mgu-ai-agent.service']);break;
-case 'vehicle':x.values={available:false,note:'No verified DDE/BDC/vehicle-signal adapter installed. No simulated values.'};break;
+case 'vehicle':x.values=vehicleData();break;
 }return x;}
 function pathAllowed(input){if(typeof input!=='string'||input.length>300||input[0]!=='/'||input.indexOf('\0')!==-1)throw Error('Invalid absolute path');
 var full=path.resolve(input),real=fs.realpathSync(full);if(!ALLOWED.some(function(base){return real===base||real.indexOf(base+'/')===0;}))throw Error('Path outside read-only allowlist');
@@ -117,7 +133,7 @@ function claimPair(code){
  pair=null;latest.paired=true;latest.message='MGU mit dem Pi gekoppelt';emitUI();return cfg().token;
 }
 function appDataDirs(){var root='/var/opt/public/oap',result=[];try{fs.readdirSync(root).forEach(function(d){if(!/^oap_\d+$/.test(d))return;var dir=path.join(root,d);try{var pkg=JSON.parse(fs.readFileSync(path.join(dir,'source/package.json'),'utf8'));if(pkg.name==='mgu_ai_assistant'||pkg.name==='mgu_chatgpt_bridge')result.push(path.join(dir,'data'));}catch(e){}});}catch(e){}return result;}
-function emitUI(){var value={version:'0.2.3',paired:!!latest.paired,tailscale:tsNetworkStatus(),pairing:pairingInfo(),webConsoleUrl:latest.webConsoleUrl||'',at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:bridgeInfo()};appDataDirs().forEach(function(dir){try{var f=path.join(dir,'bmw-ai-status.json'),tmp=f+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),{mode:0o644});fs.renameSync(tmp,f);}catch(e){}});}
+function emitUI(){var value={version:'0.2.4',paired:!!latest.paired,tailscale:tsNetworkStatus(),pairing:pairingInfo(),webConsoleUrl:latest.webConsoleUrl||'',at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:bridgeInfo()};appDataDirs().forEach(function(dir){try{var f=path.join(dir,'bmw-ai-status.json'),tmp=f+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),{mode:0o644});fs.renameSync(tmp,f);}catch(e){}});}
 function localRequests(){appDataDirs().forEach(function(dir){var f=path.join(dir,'bmw-ai-request.json');try{if(!fs.existsSync(f))return;var b=fs.readFileSync(f,'utf8');fs.unlinkSync(f);if(b.length>1000)return;var d=JSON.parse(b);if(d.action==='diagnostic'&&['system','network','audio','bridge'].indexOf(d.preset)>=0){var result=diag(d.preset);latest.lastDiagnostic={preset:d.preset,at:result.at,preview:JSON.stringify(result.values).slice(0,350)};fs.writeFileSync(path.join(DATA,'last-local-diagnostic.json'),JSON.stringify(result),{mode:0o600});}if(d.action==='network-connect')connectTailscale();if(d.action==='refresh'){latest.message='Status aktualisiert';}if(d.action==='pair')beginPair();if(d.action==='console-link'){
  var origin=String(cfg().piOrigin||'').replace(/\/+$/,'')||autoPiOrigin();
  // Public QR shows only a URL. The protected terminal still requires Pi login and Tailscale.
@@ -132,7 +148,7 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
    if(!deviceToken)return json(res,403,{error:'Pairing code invalid or expired'});
    return json(res,200,{token:deviceToken});
  }
- if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;emitUI();return json(res,200,{online:true,at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:false,vehicle:{status:'unavailable',reason:'No verified vehicle-signal adapter'},capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
+ if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;emitUI();return json(res,200,{online:true,at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:vehicleData().status==='ok',vehicle:vehicleData(),capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
  if(req.method==='POST'&&url==='/v1/console')return json(res,200,readOnlyConsole.run(b.command));
  if(req.method==='POST'&&url==='/v1/diagnostics'){var d=diag(b.preset);latest.lastDiagnostic={preset:d.preset,at:d.at,preview:JSON.stringify(d.values).slice(0,350)};emitUI();return json(res,200,d);}
  if(req.method==='POST'&&url==='/v1/files/list')return json(res,200,listFiles(b.path));
@@ -142,4 +158,4 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
  return json(res,404,{error:'Not found'});
  })().catch(function(e){json(res,400,{error:String(e.message).slice(0,200)});});}
 if(require.main===module){if(process.argv[2]==='init'){init(false);process.exit(0);}if(!fs.existsSync(CONFIG))init(true);cfg();if(!Number.isInteger(PORT)||PORT<1024||PORT>65535)throw Error('Invalid port');http.createServer(app).listen(PORT,'127.0.0.1',function(){console.log('BMW MGU companion agent listening on local loopback port '+PORT);});setInterval(localRequests,3000);localRequests();}
-module.exports={diag:diag,pathAllowed:pathAllowed,app:app,beginPair:beginPair,claimPair:claimPair,pairingInfo:pairingInfo,connectTailscale:connectTailscale,autoPiOrigin:autoPiOrigin,tsNetworkStatus:tsNetworkStatus,safeTailscaleLoginUrl:safeTailscaleLoginUrl};
+module.exports={vehicleData:vehicleData,diag:diag,pathAllowed:pathAllowed,app:app,beginPair:beginPair,claimPair:claimPair,pairingInfo:pairingInfo,connectTailscale:connectTailscale,autoPiOrigin:autoPiOrigin,tsNetworkStatus:tsNetworkStatus,safeTailscaleLoginUrl:safeTailscaleLoginUrl};
