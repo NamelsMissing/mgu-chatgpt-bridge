@@ -1,8 +1,8 @@
 {
   "id": "vehicle_data",
   "title": "Vehicle Data",
-  "description": "Mileage, service due messages and the car's service history, read-only. Shares them with your private BMW AI server.",
-  "version": "0.1.0",
+  "description": "Mileage, service due messages, the car's service history, check-control messages, tyre pressures, fault memory and DPF values, read-only. Shares them with your private BMW AI server.",
+  "version": "0.2.0",
   "vendor": "custom",
   "loggingId": "OVD1",
   "iconGlyph": "service",
@@ -29,6 +29,27 @@
       "_broadcasts": [
         "serviceHistoryUpdated"
       ]
+    },
+    "de.bmw.infotainment.checkcontrol.CheckControlMaster": {
+      "basicList": "rs"
+    },
+    "de.bmw.infotainment.KombiInterface_2": {
+      "newCCMessage": "s",
+      "_methods": [
+        "requestCCMessage"
+      ]
+    },
+    "de.bmw.infotainment.vehicle.TPMSInternalData": {
+      "tpmsInternalLastValues": "rs"
+    },
+    "com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu": {
+      "_instances": "SystemFunctionsInternalTasuInst1",
+      "_methods": [
+        "sendTasuRequest"
+      ],
+      "_broadcasts": [
+        "sendTasuResponse"
+      ]
     }
   },
   "screens": [
@@ -37,8 +58,14 @@
       "kind": "canvas",
       "title": "Vehicle Data",
       "buttons": [
-        ["BTN_PAGE", "Next page"],
-        ["BTN_REFRESH", "Read service history again"]
+        [
+          "BTN_PAGE",
+          "Next page"
+        ],
+        [
+          "BTN_REFRESH",
+          "Read service history and fault memory again"
+        ]
       ]
     }
   ],

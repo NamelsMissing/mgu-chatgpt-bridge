@@ -11,7 +11,7 @@
         "ID7"
       ],
       "requires": {
-        "mgu-ai-agent": "0.2.4"
+        "mgu-ai-agent": "0.2.5"
       },
       "build": {
         "python": "kit/tools/build.py",
@@ -26,7 +26,7 @@
       "id": "vehicle_data",
       "kind": "app",
       "title": "Vehicle Data",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "path": "apps/vehicle_data",
       "mguHmi": [
         "ID7"
@@ -55,7 +55,7 @@
       "id": "mgu-ai-agent",
       "kind": "tool",
       "title": "BMW AI Companion Agent",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "path": "native/mgu-ai-agent",
       "mguHmi": [
         "ID7"

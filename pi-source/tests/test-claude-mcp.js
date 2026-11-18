@@ -152,7 +152,10 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   assert.equal(r.status,202);
   assert.equal((await pub('/mcp',{headers:{authorization:'Bearer '+tokens.access_token}})).status,405);
   const tools=(await rpc(tokens.access_token,'tools/list')).data.result.tools;
-  assert.equal(tools.length,10);
+  assert.equal(tools.length,11);
+  const fjob=(await tool(tokens.access_token,'request_fault_memory_read',{reason:'Fehlerspeicher prüfen'})).data;
+  assert.equal(fjob.type,'faults');assert.equal(fjob.status,'pending');
+  assert.equal((await site('POST','/api/v1/jobs/'+fjob.job_id+'/reject')).status,200);
   assert.equal(tools.find(t=>t.name==='get_vehicle_overview').annotations.readOnlyHint,true);
   const overview=(await tool(tokens.access_token,'get_vehicle_overview')).data;
   assert.equal(overview.due[0].item,'Motoröl und Ölfilter');assert.equal(overview.due[0].interval.km,8000);

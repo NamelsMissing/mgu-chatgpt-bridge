@@ -85,6 +85,121 @@ async function restoreSession(){
  show();
 }
 
+// ----- Fahrzeug: Reifen und Dieselpartikelfilter -----
+const barText=v=>v===null||v===undefined?'–':v.toFixed(2).replace('.',',')+' bar';
+const num1=v=>v===null||v===undefined?'–':(Math.round(v*10)/10).toLocaleString('de-DE');
+function renderTyres(t){
+ const box=$('tyreList');box.replaceChildren();
+ $('tyreAge').textContent=t?'gelesen '+stamp(t.at):'keine Daten';
+ $('tyreAge').className='pill '+(t&&Date.now()-Date.parse(t.at)<3600000?'pill-live':'pill-off');
+ if(!t){box.appendChild(txt('p','Noch keine Reifendaten. Sie kommen von der App „Vehicle Data“, sobald das Fahrzeug sie sendet.','hint'));return;}
+ for(const w of t.wheels){
+  const card=txt('div','','tyre'+(w.low?' tyre-low':''));
+  card.appendChild(txt('span',w.name,'hint'));
+  card.appendChild(txt('strong',barText(w.p)));
+  card.appendChild(txt('span',[w.target?'Soll '+barText(w.target):'',w.temp!==null?w.temp+' °C':''].filter(Boolean).join(' · ')||'–','hint'));
+  if(w.change7d!==null)card.appendChild(txt('span',(w.change7d>0?'+':'')+w.change7d.toFixed(2).replace('.',',')+' bar in 7 Tagen',Math.abs(w.change7d)>=0.15?'error':'hint'));
+  box.appendChild(card);
+ }
+}
+function renderDpf(d){
+ const vals=$('dpfValues'),regs=$('dpfRegens');vals.replaceChildren();regs.replaceChildren();
+ $('dpfAge').textContent=d?'gelesen '+stamp(d.latest.at):'keine Daten';
+ $('dpfAge').className='pill '+(d&&Date.now()-Date.parse(d.latest.at)<3600000?'pill-live':'pill-off');
+ if(!d){vals.appendChild(txt('p','Noch keine Werte. Sie kommen alle 5 Minuten bei laufendem Auto von der App „Vehicle Data“.','hint'));return;}
+ const l=d.latest;
+ for(const [label,value,unit] of [['Ruß',l.soot,' g'],['Asche',l.ash,' g'],['Seit Regeneration',l.distance,' km'],['Regenerationen',l.regenCount,''],['Ø Abstand',l.regenAverage,' km'],['Temperatur',l.temperature,' °C']]){
+  if(value===null||value===undefined)continue;
+  const c=txt('div','','stat');c.appendChild(txt('span',label,'hint'));c.appendChild(txt('strong',num1(value)+unit));vals.appendChild(c);
+ }
+ if(!d.regens.length)regs.appendChild(txt('p','Noch keine Regeneration erkannt.','hint'));
+ for(const r of d.regens){
+  const row=txt('div','','list-row');row.appendChild(txt('strong',stamp(r.at)));
+  row.appendChild(txt('span',[r.km!==null?kmText(r.km):'',r.distanceBefore!==null?'nach '+num1(r.distanceBefore)+' km':'',r.sootBefore!==null?'Ruß vorher '+num1(r.sootBefore)+' g':''].filter(Boolean).join(' · '),'hint'));
+  regs.appendChild(row);
+ }
+}
+
+// ----- Fehler: Check-Control und Fehlerspeicher -----
+const DTC_LABELS={ACTIVE:'aktiv','WARNING LAMP':'Warnleuchte',PENDING:'vorläufig',STORED:'gespeichert',HISTORY:'Historie'};
+function setFaultBadge(f){
+ const n=f.checkControl.active.length+(f.faultMemory.latest?f.faultMemory.latest.dtcs.filter(d=>d.active).length:0);
+ $('faultBadge').textContent=String(n);$('faultBadge').hidden=!n;
+}
+function dtcRow(d,extra){
+ const row=txt('div','','list-row'),info=txt('div','','request-info');
+ const head=txt('span','');head.appendChild(txt('strong',d.code));
+ head.appendChild(txt('span',DTC_LABELS[d.label]||d.label||'','pill '+(d.active?'due-pill-overdue':'pill-off')));
+ if(d.isNew)head.appendChild(txt('span','neu','pill due-pill-soon'));
+ info.appendChild(head);info.appendChild(txt('span',extra,'hint'));row.appendChild(info);return row;
+}
+function renderFaults(f){
+ setFaultBadge(f);
+ const act=$('ccActive');act.replaceChildren();
+ if(!f.checkControl.active.length)act.appendChild(txt('p','Keine aktive Meldung.','hint'));
+ for(const c of f.checkControl.active){
+  const card=txt('div','','due due-overdue');
+  card.appendChild(txt('strong',c.text||'Meldung '+c.id));
+  if(c.description)card.appendChild(txt('p',c.description,'notes'));
+  card.appendChild(txt('p','seit '+stamp(c.since)+' · '+c.ecuName+' · ID '+c.id,'hint'));
+  act.appendChild(card);
+ }
+ const ev=$('ccEvents');ev.replaceChildren();
+ if(!f.checkControl.events.length)ev.appendChild(txt('p','Noch kein Verlauf.','hint'));
+ for(const e of f.checkControl.events){
+  const row=txt('div','','list-row');row.appendChild(txt('span',stamp(e.at),'hint'));
+  row.appendChild(txt('strong',(e.text||'Meldung '+e.id)));row.appendChild(txt('span',e.active?'erschienen':'erloschen','pill '+(e.active?'due-pill-soon':'pill-off')));
+  ev.appendChild(row);
+ }
+ const fm=f.faultMemory,list=$('faultList');list.replaceChildren();
+ const latest=fm.latest,last=fm.lastAttempt;
+ $('faultInfo').textContent=!latest?(last&&last.error?'Letzter Versuch '+stamp(last.readAt)+' fehlgeschlagen: '+last.error:'Noch nicht ausgelesen. Das passiert bei jedem Fahrzeugstart einmal automatisch.')
+  :'Ausgelesen '+stamp(latest.readAt)+': '+latest.dtcs.length+' Codes aus '+latest.ecus.length+' Steuergeräten'+(last&&last.error&&last.readAt!==latest.readAt?' · letzter Versuch fehlgeschlagen: '+last.error:'');
+ if(latest){
+  const byEcu=new Map();for(const d of latest.dtcs){if(!byEcu.has(d.ecu))byEcu.set(d.ecu,[]);byEcu.get(d.ecu).push(d);}
+  if(!byEcu.size)list.appendChild(txt('p','Keine Fehlercodes gespeichert.','hint'));
+  for(const [ecu,codes] of byEcu){
+   const box=txt('div','','service-entry');box.appendChild(txt('strong',codes[0].ecuName+' (0x'+ecu.toString(16).toUpperCase().padStart(2,'0')+')'));
+   for(const d of codes)box.appendChild(dtcRow(d,'Status 0x'+d.status.toString(16).toUpperCase().padStart(2,'0')+(d.firstSeen?' · zuerst gesehen '+stamp(d.firstSeen):'')));
+   list.appendChild(box);
+  }
+  const refused=latest.ecus.filter(e=>!e.ok);
+  if(refused.length)list.appendChild(txt('p','Ohne Antwort oder abgelehnt: '+refused.map(e=>e.ecuName+(e.nrc?' ('+e.nrc+')':'')).join(', '),'hint'));
+ }
+ const earlier=$('faultEarlier');earlier.replaceChildren();
+ if(!fm.earlier.length)earlier.appendChild(txt('p','Keine.','hint'));
+ for(const k of fm.earlier)earlier.appendChild(dtcRow(k,k.ecuName+' · zuletzt '+stamp(k.lastSeen)));
+}
+async function refreshFaults(){if(!token)return;try{renderFaults(await api('/faults'));}catch(e){notice(e.message);}}
+$('refreshFaults').onclick=refreshFaults;
+$('faultRead').onclick=async()=>{
+ const b=$('faultRead');b.disabled=true;b.textContent='Liest … (bis 90 s)';
+ try{renderFaults(await api('/faults/read','POST'));notice('Fehlerspeicher ausgelesen.');}
+ catch(e){notice(e.message);refreshFaults();}
+ finally{b.disabled=false;b.textContent='Jetzt auslesen';}
+};
+
+// ----- System: Benachrichtigungen -----
+function renderNotify(n){
+ $('notifyEnabled').checked=n.enabled;$('notifyServer').value=n.server;$('notifyTopic').value=n.topic;
+ $('notifyToken').placeholder=n.hasToken?'gespeichert (leer lassen = behalten)':'leer lassen für ntfy.sh';
+ const cats=$('notifyCategories');cats.replaceChildren();
+ for(const [k,label] of Object.entries(n.labels)){const l=document.createElement('label');l.className='check';const c=document.createElement('input');c.type='checkbox';c.dataset.cat=k;c.checked=n.categories[k]!==false;l.append(c,document.createTextNode(' '+label));cats.appendChild(l);}
+ const log=$('notifyLog');log.replaceChildren();
+ if(!n.log.length)log.appendChild(txt('p','Noch nichts gesendet.','hint'));
+ for(const e of n.log){const row=txt('div','','list-row');row.appendChild(txt('span',stamp(e.at),'hint'));row.appendChild(txt('strong',e.title));row.appendChild(txt('span',e.ok?'zugestellt':'Fehler: '+(e.error||'?'),e.ok?'hint':'error'));log.appendChild(row);}
+ const p=n.poll||{};
+ $('pollInfo').textContent='Hintergrundabfrage der MGU: '+(p.at?(p.ok?'zuletzt erfolgreich '+stamp(p.at):'MGU nicht erreichbar ('+stamp(p.at)+')'+(p.lastOk?', zuletzt erreichbar '+stamp(p.lastOk):'')):'noch keine')+'. Alle 2 Minuten, wenn erreichbar, sonst alle 10 Minuten.';
+}
+async function refreshNotify(){try{renderNotify(await api('/notify'));}catch(e){notice(e.message);}}
+$('notifySave').onclick=async()=>{
+ const d={enabled:$('notifyEnabled').checked,server:$('notifyServer').value,topic:$('notifyTopic').value,categories:{}};
+ if($('notifyToken').value)d.token=$('notifyToken').value;
+ $('notifyCategories').querySelectorAll('input').forEach(c=>d.categories[c.dataset.cat]=c.checked);
+ try{renderNotify(await api('/notify','POST',d));$('notifyToken').value='';notice('Gespeichert.');}catch(e){notice(e.message);}
+};
+$('notifyTest').onclick=async()=>{const b=$('notifyTest');b.disabled=true;try{renderNotify(await api('/notify/test','POST'));notice('Test gesendet. Kommt er auf dem Handy an?');}catch(e){notice(e.message);refreshNotify();}finally{b.disabled=false;}};
+
 // ----- Reiter -----
 // Frühere Reiternamen (Lesezeichen, QR-Links, gespeicherte Ansicht) führen zum neuen Ort.
 const TAB_ALIASES={status:'diag',reports:'diag',actions:'diag',logs:'system',updates:'system',service:'vehicle'};
@@ -95,7 +210,7 @@ function openTab(name){
  if(name==='console')history.replaceState(null,'',location.pathname+location.search+'#console');
  document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==name);
  $('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===button));
- ({jobs:refreshJobs,vehicle:refreshVehicle,diag:refreshDiag,files:refreshFilesTab,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
+ ({jobs:refreshJobs,vehicle:refreshVehicle,faults:refreshFaults,diag:refreshDiag,files:refreshFilesTab,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
 }
 $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 
@@ -169,7 +284,7 @@ async function requestJob(type,payload,reason){
 }
 
 // ----- Diagnose: Diagnosemodus für Claude -----
-let lastDiagView='',lastPendingJobs=-1;
+let lastDiagView='',lastPendingJobs=-1,lastFaultBadge=0;
 function renderDiagMode(d){
  lastDiagView=JSON.stringify(d);
  const on=d.active===true;
@@ -239,6 +354,7 @@ async function refreshDiagMode(){
   if(!first)refreshJobs();
  }
  if(JSON.stringify(d)!==lastDiagView)renderDiagMode(d);
+ if(Date.now()-lastFaultBadge>60000){lastFaultBadge=Date.now();api('/faults').then(setFaultBadge).catch(()=>{});}
 }
 $('diagModeToggle').onclick=async()=>{
  const b=$('diagModeToggle'),on=b.dataset.active==='1';b.disabled=true;
@@ -440,6 +556,7 @@ function dueLine(d){
 }
 function renderVehicle(v){
  vehicleData=v;
+ renderTyres(v.tyres||null);renderDpf(v.dpf||null);
  const m=v.mileage;
  $('mileageNow').textContent=m?kmText(m.km):'Noch kein Kilometerstand';
  $('mileageSource').textContent=m?MILEAGE_SOURCES[m.source]||m.source:'–';
@@ -933,7 +1050,7 @@ async function refreshLogs(){
 }
 $('refreshLogs').onclick=refreshLogs;
 $('downloadLogs').onclick=()=>authenticatedDownload('/logs/download','bmw-ai-logs.json');
-function refreshSystem(){refreshUpdates();refreshLogs();}
+function refreshSystem(){refreshUpdates();refreshLogs();refreshNotify();}
 
 // ----- Automatically refresh this already-open webpage after a successful Pi update -----
 // The server embeds its running version into HTML on each page load. Re-check via

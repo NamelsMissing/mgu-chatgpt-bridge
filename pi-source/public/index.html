@@ -37,6 +37,7 @@
   <button data-tab="chat" class="active">Chat</button>
   <button data-tab="jobs">Freigaben <span id="jobBadge" class="badge" hidden>0</span></button>
   <button data-tab="vehicle">Fahrzeug</button>
+  <button data-tab="faults">Fehler <span id="faultBadge" class="badge" hidden>0</span></button>
   <button data-tab="diag">Diagnose</button>
   <button data-tab="console">Konsole</button>
   <button data-tab="files">Dateien</button>
@@ -169,6 +170,26 @@
     </details>
   </div>
 
+  <div class="panel">
+    <div class="section-head">
+      <h3>Reifen</h3>
+      <span id="tyreAge" class="pill pill-off">–</span>
+    </div>
+    <div id="tyreList" class="tyre-grid"></div>
+    <p class="hint">Druck und Temperatur aus der Reifendruckkontrolle (Einheiten laut Fahrzeugschnittstelle: mbar und °C, noch nicht mit iDrive abgeglichen). Gewarnt wird unter 90 % des Solldrucks.</p>
+  </div>
+
+  <div class="panel" id="dpfPanel">
+    <div class="section-head">
+      <h3>Dieselpartikelfilter</h3>
+      <span id="dpfAge" class="pill pill-off">–</span>
+    </div>
+    <div id="dpfValues" class="stat-grid"></div>
+    <h3>Regenerationen</h3>
+    <div id="dpfRegens"></div>
+    <p class="hint">Werte vom Motorsteuergerät (DDE, gleiche Kennungen wie DPF Monitor), alle 5 Minuten bei laufendem Auto. Eine Regeneration wird erkannt, wenn die Strecke seit der letzten Regeneration zurückspringt.</p>
+  </div>
+
   <div class="panel" id="vehicleReported">
     <div class="section-head">
       <h3>Laut Fahrzeug</h3>
@@ -201,6 +222,38 @@
       </div>
     </form>
     <div id="serviceEntries"></div>
+  </div>
+</section>
+
+<!-- ===== Fehler ===== -->
+<section id="faults" class="tab" hidden>
+  <div class="section-head">
+    <h2>Fehler</h2>
+    <button id="refreshFaults" class="secondary">Aktualisieren</button>
+  </div>
+
+  <div class="panel">
+    <h3>Check-Control-Meldungen</h3>
+    <div id="ccActive"></div>
+    <details>
+      <summary>Verlauf</summary>
+      <div id="ccEvents"></div>
+    </details>
+    <p class="hint">Die Warnungen, die das Fahrzeug anzeigt, mit dem Text aus dem Fahrzeug. Der Pi sammelt sie im Hintergrund, solange die MGU erreichbar ist.</p>
+  </div>
+
+  <div class="panel">
+    <div class="section-head">
+      <h3>Fehlerspeicher der Steuergeräte</h3>
+      <button id="faultRead">Jetzt auslesen</button>
+    </div>
+    <p class="hint" id="faultInfo">Wird bei jedem Fahrzeugstart einmal ausgelesen.</p>
+    <div id="faultList"></div>
+    <details>
+      <summary>Frühere Fehlercodes</summary>
+      <div id="faultEarlier"></div>
+    </details>
+    <p class="hint">Nur lesend (UDS 0x19), gelöscht wird nichts. Die Codes erscheinen ohne Klartext; die Texte stehen in den Beschreibungsdateien der Steuergeräte, die hier nicht vorliegen. Auslesen dauert bis zu 90 Sekunden.</p>
   </div>
 </section>
 
@@ -406,6 +459,33 @@
       <button id="cancelUpdate" class="danger">Abbrechen</button>
     </div>
   </details>
+
+  <div class="panel">
+    <h2>Benachrichtigungen</h2>
+    <label class="check"><input type="checkbox" id="notifyEnabled"> Benachrichtigungen aufs Handy senden</label>
+    <div class="form-grid">
+      <label>Server <input type="text" id="notifyServer" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <label>Thema <input type="text" id="notifyTopic" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+      <label class="wide">Zugriffstoken (nur für eigenen, geschützten Server) <input type="password" id="notifyToken" autocomplete="off" placeholder="leer lassen für ntfy.sh"></label>
+      <fieldset class="wide"><legend>Melden bei</legend><div id="notifyCategories" class="check-list"></div></fieldset>
+    </div>
+    <div class="actions">
+      <button id="notifySave">Speichern</button>
+      <button id="notifyTest" class="secondary">Test senden</button>
+    </div>
+    <details>
+      <summary>So richtest du es ein</summary>
+      <ol>
+        <li>Die App „ntfy“ auf dem iPhone installieren.</li>
+        <li>Dort „Thema abonnieren“ wählen und das Thema von oben eintragen (Server ntfy.sh).</li>
+        <li>Hier „Benachrichtigungen aufs Handy senden“ einschalten, speichern und „Test senden“ drücken.</li>
+      </ol>
+      <p class="hint">Bei ntfy.sh laufen die Meldungen über einen öffentlichen Dienst. Wer das Thema kennt, kann mitlesen; deshalb ist es zufällig erzeugt. Ein eigener ntfy-Server mit Zugriffstoken geht ebenso.</p>
+    </details>
+    <h3>Zuletzt gesendet</h3>
+    <div id="notifyLog"></div>
+    <p class="hint" id="pollInfo"></p>
+  </div>
 
   <div class="section-head">
     <h2>Serverprotokoll</h2>

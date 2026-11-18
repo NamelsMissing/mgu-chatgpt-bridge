@@ -132,7 +132,7 @@ class VehicleSnapshot {
     }
     document() {
         const m = this.mileage(), iso = (t) => (t ? new Date(t).toISOString() : null);
-        return {
+        return Object.assign({
             schema: SCHEMA, app: 'vehicle_data', version: this.version,
             mileage: m ? { km: m.km, source: m.source, at: iso(m.at), unverified: true } : null,
             mileageSources: {
@@ -142,7 +142,7 @@ class VehicleSnapshot {
             cbs: Object.values(this.state.cbs).map((c) => Object.assign({}, c, { at: iso(c.at) })),
             serviceHistory: this.state.history ? { status: this.state.history.status, readAt: iso(this.state.historyReadAt), sets: this.state.history.sets } : null,
             signals: this.state.signals,
-        };
+        }, this.extra ? this.extra() : {});
     }
     /** Writes when the content changed, at most once per second. Returns true when written. */
     flush(force) {

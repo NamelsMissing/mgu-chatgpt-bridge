@@ -22,5 +22,18 @@ fs.rmSync(path.join(dir,'oap','oap_12212'),{recursive:true});
 write(12211,{schema:1,app:'vehicle_data',mileage:{km:99999999}});
 assert.strictEqual(agent.vehicleData().mileageKm,null,'implausible value dropped');
 assert.strictEqual(agent.vehicleData().status,'waiting');
-fs.rmSync(dir,{recursive:true,force:true});
-console.log('mgu-ai-agent vehicle data tests passed');
+// New data passes through; fault-memory request goes to the app's data directory.
+write(12211,{schema:1,app:'vehicle_data',mileage:{km:143400},checkControl:{active:[{id:220,text:'Kühlmittelstand zu niedrig',ecu:64}],events:[]},
+ tyres:{wheels:[{position:'FRONT_LEFT',pressureBar:2.45,targetBar:2.5,temperatureC:18,battery:'OK',rawPressure:2450}]},dpf:{soot:12.3},faultMemory:{requestId:'start',dtcs:[],ecus:[]}});
+const v2=agent.vehicleData();
+assert.strictEqual(v2.checkControl.active[0].text,'Kühlmittelstand zu niedrig');assert.strictEqual(v2.tyres.wheels[0].rawPressure,undefined);assert.strictEqual(v2.dpf.soot,12.3);
+agent.readFaultMemory(r=>{
+ assert.strictEqual(r.status,200);assert.strictEqual(r.body.faultMemory.dtcs[0].code,'480A12');
+ fs.rmSync(dir,{recursive:true,force:true});
+ console.log('mgu-ai-agent vehicle data tests passed');
+});
+setTimeout(()=>{
+ const req=JSON.parse(fs.readFileSync(path.join(dir,'oap','oap_12211','data','bmw-vehicle-request.json'),'utf8'));
+ assert.strictEqual(req.type,'faultMemory');
+ write(12211,{schema:1,app:'vehicle_data',mileage:{km:143400},faultMemory:{requestId:req.id,readAt:'x',error:null,ecus:[{ecu:18,ok:true,count:1}],dtcs:[{ecu:18,code:'480A12',status:9}]}});
+},1500);

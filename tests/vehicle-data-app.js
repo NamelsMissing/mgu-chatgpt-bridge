@@ -8,14 +8,25 @@ const root = path.resolve(__dirname, '..');
 const spec = JSON.parse(fs.readFileSync(path.join(root, 'apps/vehicle_data/app.json'), 'utf8'));
 const src = fs.readFileSync(path.join(root, 'apps/vehicle_data/main.js'), 'utf8');
 const V = require('../apps/vehicle_data/vehicle_snapshot.js');
+const Module = require('module');
+const resolve0 = Module._resolveFilename;
+Module._resolveFilename = function (request, parent, ...rest) {
+    if (/^\.\/kit\//.test(request) && parent && /apps[\\/]vehicle_data/.test(parent.filename)) return require.resolve('../kit/runtime/' + request.slice(6));
+    return resolve0.call(this, request, parent, ...rest);
+};
+const F = require('../apps/vehicle_data/vehicle_faults.js');
+const { Diag } = require('../kit/runtime/diag');
 
 // Read-only: no setter flags, no CBS reset, no UDS transport.
 for (const [iface, fields] of Object.entries(spec.signals)) {
     for (const [k, v] of Object.entries(fields)) if (!k.startsWith('_')) assert.ok(!/w/.test(v), iface + '.' + k + ' must not be writable');
 }
 assert.ok(!('cBSReset' in spec.signals['de.bmw.infotainment.ConditionBasedServicesLegacy']));
-assert.ok(!Object.keys(spec.signals).some((i) => /Tasu/.test(i)), 'no UDS transport');
 assert.ok(!/signals\.set\(|cBSReset|sendTasuRequest/.test(src), 'nothing is written to the car');
+// Diagnostics: only the two read services, enforced by ReadOnlyDiag.
+const calls = src.match(/\.(functional|physical|send)\(\s*(0x[0-9A-Fa-f]+|[A-Za-z_.]+)/g) || [];
+assert.deepStrictEqual(calls.map((c) => c.replace(/\s+/g, '')), ['.send(target', '.functional(0x19'], 'only the guarded send and the 0x19 read');
+assert.ok(/if \(sid !== 0x19 && sid !== 0x22\) throw/.test(src) && /data\[0\] !== 0x02/.test(src));
 assert.strictEqual(spec.mguAppStartType, 'autostart');
 assert.ok(/AUTOSTART_APPS = \("vehicle_data",\)/.test(fs.readFileSync(path.join(root, 'tools/build_store_app.py'), 'utf8')));
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, 'mgu-repo.json'), 'utf8')).components.find((c) => c.id === 'vehicle_data').build.python, 'tools/build_store_app.py');
@@ -80,4 +91,62 @@ doc = JSON.parse(fs.readFileSync(path.join(dir, V.FILE), 'utf8'));
 assert.strictEqual(doc.cbs[0].label, 'Motoröl'); assert.strictEqual(doc.serviceHistory.status, 'E_OK');
 assert.ok(!fs.existsSync(path.join(dir, V.FILE + '.tmp')));
 fs.rmSync(dir, { recursive: true, force: true });
-console.log('vehicle_data: read-only manifest, mileage, CBS, service history and snapshot passed');
+// ReadOnlyDiag refuses anything but 0x19 02 and 0x22 (class pulled out of main.js and run).
+const roSrc = src.slice(src.indexOf('class ReadOnlyDiag'), src.indexOf('mgu.run('));
+const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag);
+(async () => {
+    const sent = [];
+    const d = new ReadOnlyDiag({ call: async (p, m, args) => { sent.push(args.serviceID); return 'NO_ERROR'; } }, { info() {}, warn() {} });
+    d.p = {}; d.quiet = true;
+    for (const [sid, data] of [[0x14, [0xFF, 0xFF, 0xFF]], [0x2E, [0xD0, 0x74, 1]], [0x31, [1, 2, 3]], [0x19, [0x01, 0xFF]], [0x10, [0x03]]]) {
+        await assert.rejects(d.send(0x12, sid, data), /only reads/, 'refused 0x' + sid.toString(16));
+    }
+    assert.strictEqual(await d.send(0xDF, 0x19, [0x02, 0x0C]), 'NO_ERROR');
+    assert.strictEqual(await d.send(0x12, 0x22, [0x44, 0xBE]), 'NO_ERROR');
+    assert.deepStrictEqual(sent, [0x19, 0x22], 'nothing refused reached the transport');
+
+    // Check-control messages
+    let t = 1000;
+    const f = new F.FaultState(() => t);
+    assert.strictEqual(f.ccEvent({ ccmId: 0, activeState: 'AKTIV' }), null);
+    f.ccEvent({ ccmId: 220, reason: 'CCM_REQUESTED_BY_ECU', requestorDiagAddr: 0x40, timeStamp_s: 5, activeState: 'AKTIV' });
+    t = 2000; f.ccEvent({ ccmId: 220, reason: 2, requestorDiagAddr: 0x40, activeState: 0 });
+    f.ccEvent({ ccmId: 39, reason: 0, requestorDiagAddr: 0x12, activeState: 'AKTIV' });
+    assert.ok(f.needsText(220));
+    assert.deepStrictEqual(f.ccText({ cCMessageWithSymbol: { cCMessage: { cCIdentifier: 220, cCName: 'Kühlmittelstand zu niedrig\u0000', additionalDescription: 'Kühlmittel nachfüllen.' } } }), { id: 220, text: 'Kühlmittelstand zu niedrig', description: 'Kühlmittel nachfüllen.' });
+    assert.ok(F.decodeCcText({ cCMessageStruct: { cCIdentifier: 39, cCName: 'Motorstörung' } }));
+    f.ccText({ requestedCCMessage: { cCMessageStruct: { cCIdentifier: 39, cCName: 'Motorstörung' } } });
+    let doc = f.document();
+    assert.deepStrictEqual(doc.checkControl.active.map((c) => [c.id, c.text, c.ecu]), [[220, 'Kühlmittelstand zu niedrig', 0x40], [39, 'Motorstörung', 0x12]]);
+    assert.strictEqual(doc.checkControl.active[0].since, new Date(1000).toISOString(), 'repeated AKTIV keeps the first time');
+    t = 3000; f.ccEvent({ ccmId: 220, activeState: 'INAKTIV' });
+    doc = f.document();
+    assert.deepStrictEqual(doc.checkControl.active.map((c) => c.id), [39]);
+    assert.deepStrictEqual(doc.checkControl.events.map((e) => [e.id, e.active]), [[220, true], [39, true], [220, false]]);
+
+    // Tyres (mbar and degC as the catalog's field names say)
+    const w = f.setTyres({ tpmsInternalLastPositionId1: 'FRONT_LEFT', tpmsInternalLastPressureMbarId1: 2450, tpmsInternalLastTargetPressureMbarId1: 2500, tpmsInternalLastTemperatureDegCId1: 18, tpmsInternalLastBatteryStatusId1: 11,
+        tpmsInternalLastPositionId2: 1, tpmsInternalLastPressureMbarId2: 65535, tpmsInternalLastPositionId3: 'SIGNAL_UNBEFUELLT', tpmsInternalLastPositionId4: 3, tpmsInternalLastPressureMbarId4: 2210, tpmsInternalLastTargetPressureMbarId4: 2700 });
+    assert.deepStrictEqual(w.map((x) => [x.position, x.pressureBar, x.targetBar, x.temperatureC, x.battery]),
+        [['FRONT_LEFT', 2.45, 2.5, 18, 'OK'], ['FRONT_RIGHT', null, null, null, null], ['REAR_RIGHT', 2.21, 2.7, null, null]]);
+
+    // Fault memory: 59 02 <mask> then 4-byte records
+    const replies = new Map([[0x12, [0x59, 0x02, 0xFF, 0x48, 0x0A, 0x12, 0x09, 0x02, 0x1A, 0x13, 0x08]], [0x40, [0x59, 0x02, 0xFF]], [0x63, [0x7F, 0x19, 0x22]]]);
+    const r = f.setDtc('req-1', replies, [0x02, 0x0C], null);
+    assert.deepStrictEqual(r.dtcs.map((d) => [d.address, d.code, d.label, d.active]), [['0x12', '021A13', 'STORED', false], ['0x12', '480A12', 'ACTIVE', true]]);
+    assert.deepStrictEqual(r.ecus.map((e) => [e.address, e.ok, e.count, e.nrc]), [['0x12', true, 2, null], ['0x40', true, 0, null], ['0x63', false, 0, '0x22']]);
+    assert.strictEqual(f.setDtc('req-2', null, [0x02, 0x0C], new Error('transport refused: BUSY')).error, 'Error: transport refused: BUSY');
+
+    // DPF values and the combined snapshot
+    f.setDpf('soot', 12.34567); f.setDpf('ash', NaN);
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'vd2-'));
+    const s2 = new V.VehicleSnapshot({ dir: dir2, version: '0.2.0', now: () => 5000 });
+    s2.extra = () => f.document();
+    assert.ok(s2.flush(true));
+    const d2 = JSON.parse(fs.readFileSync(path.join(dir2, V.FILE), 'utf8'));
+    assert.strictEqual(d2.dpf.soot, 12.346); assert.ok(!('ash' in d2.dpf));
+    assert.strictEqual(d2.faultMemory.requestId, 'req-2'); assert.strictEqual(d2.tyres.wheels.length, 3);
+    assert.strictEqual(d2.checkControl.active[0].id, 39);
+    fs.rmSync(dir2, { recursive: true, force: true });
+    console.log('vehicle_data: read-only manifest and diagnostics, mileage, CBS, service history, check-control, tyres, fault memory, DPF and snapshot passed');
+})().catch((e) => { console.error(e); process.exitCode = 1; });
