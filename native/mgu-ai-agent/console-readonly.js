@@ -31,16 +31,33 @@ function textFile(p){var b=file(p,256*1024);if(b.indexOf(0)>=0)throw Error('Bina
 function directory(p){var f=allowed(p);if(!fs.statSync(f).isDirectory())throw Error('Not a directory');return f;}
 function cmd(b,args){try{return cp.execFileSync(b,args,{timeout:5000,encoding:'utf8',maxBuffer:50000}).slice(0,32000);}catch(e){return '[unavailable] '+String(e.message).slice(0,200);}}
 function first(paths){for(var i=0;i<paths.length;i++)if(fs.existsSync(paths[i]))return paths[i];return paths[0];}
+function validUnit(unit){return ['mgu-ai-agent.service','mgu-chatgpt-bridge.service','oapcontroller.service'].indexOf(unit)>=0;}
 function run(line){
- var t=tokens(line),kind=t.shift(),out='',f,parts;
+ var t=tokens(line),kind=t.shift(),out='',err='',exitCode=0,f,parts;
+ function system(bin,args){
+  var r=cp.spawnSync(bin,args,{timeout:5000,encoding:'utf8',maxBuffer:50000});
+  out=r.stdout||'';err=r.stderr||'';
+  if(r.error)err+='['+String(r.error.code||r.error.message)+']';
+  exitCode=r.status===null?1:r.status;
+ }
  switch(kind){
- case 'help':out='help, pwd, uname -a, uptime, ip -4 addr, ip -4 route, ps, systemctl --failed, ls [-la] DIR, cat FILE, head [-n N] FILE, tail [-n N] FILE, grep [-niE] TERM FILE, find DIR TERM, strings FILE TERM, stat PATH, sha256sum FILE';break;
+ case 'help':out='help, pwd, uname -a, uptime, ip -4 addr, ip -4 route, ps, systemctl --failed, systemctl status UNIT, systemctl is-active UNIT, journalctl -u UNIT, ls [-la] DIR, cat FILE, head [-n N] FILE, tail [-n N] FILE, grep [-niE] TERM FILE, find DIR TERM, strings FILE TERM, stat PATH, sha256sum FILE';break;
  case 'pwd':if(t.length)throw Error('Usage: pwd');out='/';break;
  case 'uname':if(t.length>1||t[0]&&t[0]!=='-a')throw Error('Usage: uname -a');out=cmd('/bin/uname',['-a']);break;
  case 'uptime':if(t.length)throw Error('Usage: uptime');out=cmd(first(['/usr/bin/uptime','/bin/uptime']),[]);break;
  case 'ip':if(t.length!==2||t[0]!=='-4'||['addr','route'].includes(t[1])===false)throw Error('Usage: ip -4 addr/route');out=cmd(first(['/sbin/ip','/usr/sbin/ip','/bin/ip']),t);break;
  case 'ps':if(t.length)throw Error('Usage: ps');out=cmd(first(['/bin/ps','/usr/bin/ps']),[]);break;
- case 'systemctl':if(t.length!==1||t[0]!=='--failed')throw Error('Only systemctl --failed');out=cmd('/bin/systemctl',['--failed','--no-pager','--plain']);break;
+ case 'systemctl':
+  if(t.length===1&&t[0]==='--failed')system('/bin/systemctl',['--failed','--no-pager','--plain']);
+  else{
+   if(t.length!==2||['status','is-active'].indexOf(t[0])<0||!validUnit(t[1]))throw Error('Usage: systemctl status|is-active UNIT');
+   system('/bin/systemctl',['--no-pager','--lines=30',t[0],t[1]]);
+  }
+  break;
+ case 'journalctl':
+  if(t.length!==2||t[0]!=='-u'||!validUnit(t[1]))throw Error('Usage: journalctl -u UNIT');
+  system(first(['/bin/journalctl','/usr/bin/journalctl']),['--no-pager','-n','70','-u',t[1]]);
+  break;
  case 'ls':
   if(t[0]==='-la'||t[0]==='-l')t.shift();if(t.length!==1)throw Error('Usage: ls [-la] DIR');
   f=directory(t[0]);out=fs.readdirSync(f).slice(0,180).map(function(x){var s=fs.lstatSync(path.join(f,x));return (s.isDirectory()?'d':s.isSymbolicLink()?'l':'-')+' '+s.size+' '+x;}).join('\n');break;
@@ -54,11 +71,13 @@ function run(line){
   var terms=t[0].toLowerCase().split('|').filter(Boolean);if(terms.length>10)throw Error('Too many terms');
   out=textFile(t[1]).split('\n').map(function(x,i){return terms.some(function(y){return x.toLowerCase().indexOf(y)>=0;})?(i+1)+': '+x:null;}).filter(Boolean).slice(0,180).join('\n');break;
  case 'find':
+  var onlyFiles=t[1]==='-type'&&t[2]==='f';if(onlyFiles)t.splice(1,2);
+  if(t[1]==='-name'&&t[t.length-1]==='-print')t.pop();
+  var exact=t[1]==='-name';if(exact)t.splice(1,1);
   if(t.length!==2||!t[1]||t[1].length>80)throw Error('Usage: find DIR TERM');
   var needle=t[1].replace(/\*/g,'').toLowerCase();if(!needle)throw Error('Search term required');
   var queue=[[directory(t[0]),0]],found=[],count=0;
-  while(queue.length&&count<1800&&found.length<180){var d=queue.shift(),names=fs.readdirSync(d[0]);for(var k=0;k<names.length&&count<1800;k++){count++;var x=names[k],full=path.join(d[0],x);if(x.toLowerCase().indexOf(needle)>=0)found.push(full);
-   try{var info=fs.lstatSync(full);if(info.isDirectory()&&!info.isSymbolicLink()&&d[1]<3)queue.push([full,d[1]+1]);}catch(e){}
+  while(queue.length&&count<1800&&found.length<180){var d=queue.shift(),names=fs.readdirSync(d[0]);for(var k=0;k<names.length&&count<1800;k++){count++;var x=names[k],full=path.join(d[0],x);try{var info=fs.lstatSync(full);if((exact?x===t[1]:x.toLowerCase().indexOf(needle)>=0)&&(!onlyFiles||info.isFile()))found.push(full);if(info.isDirectory()&&!info.isSymbolicLink()&&d[1]<3)queue.push([full,d[1]+1]);}catch(e){}
    if(found.length>=180)break;
   }}out=found.join('\n')+'\n[read-only search; max depth 4, 180 matches]';break;
  case 'strings':
@@ -72,6 +91,6 @@ function run(line){
  case 'sha256sum':if(t.length!==1)throw Error('Usage: sha256sum FILE');out=crypto.createHash('sha256').update(file(t[0],8*1024*1024)).digest('hex')+'  '+t[0];break;
  default:throw Error('Command not permitted. Type help for read-only commands.');
  }
- return {command:line,stdout:String(out).slice(0,32000),exitCode:0,readOnly:true,at:new Date().toISOString()};
+ return {command:line,stdout:String(out).slice(0,32000),stderr:err.slice(0,32000),exitCode:exitCode,readOnly:true,at:new Date().toISOString()};
 }
 module.exports={run:run,tokens:tokens};

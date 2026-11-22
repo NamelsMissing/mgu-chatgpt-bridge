@@ -10,39 +10,67 @@ var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-function vehicleFile(){
- var best=null;
- try{fs.readdirSync(OAP_APPS).forEach(function(d){if(!/^oap_\d+$/.test(d))return;var f=path.join(OAP_APPS,d,'data',VEHICLE_FILE);try{var st=fs.statSync(f);if(st.isFile()&&st.size<1024*1024&&(!best||st.mtimeMs>best.mtime))best={file:f,dir:path.dirname(f),mtime:st.mtimeMs};}catch(e){}});}catch(e){}
+var VEHICLE_STALE_MS=90000;
+function vehicleSnapshot(){
+ var dirs,best=null,installed=false,problem=null;
+ try{dirs=fs.readdirSync(OAP_APPS);}catch(e){return {state:'storage_unavailable',reason:'OAP-Verzeichnis: '+e.code};}
+ dirs.forEach(function(d){
+  if(!/^oap_\d+$/.test(d))return;
+  var root=path.join(OAP_APPS,d),dir=path.join(root,'data'),file=path.join(dir,VEHICLE_FILE);
+  try{if(JSON.parse(fs.readFileSync(path.join(root,'source/package.json'),'utf8')).name==='vehicle_data')installed=true;}catch(e){}
+  try{
+   var st=fs.statSync(file);
+   if(!st.isFile()||st.size>=1024*1024){problem='Vehicle Data file unreadable (type or size)';return;}
+   var doc=JSON.parse(fs.readFileSync(file,'utf8'));
+   if(!doc||doc.schema!==1||doc.app!=='vehicle_data'){problem='Unknown Vehicle Data format';return;}
+   if(!best||st.mtimeMs>best.mtime)best={dir:dir,mtime:st.mtimeMs,doc:doc,appId:d};
+  }catch(e){if(e.code!=='ENOENT')problem='Vehicle Data file unreadable'+(e.code?' ('+e.code+')':'');}
+ });
+ if(!best)return {state:problem?'snapshot_error':installed?'no_snapshot':'not_detected',
+  reason:problem||(installed?'Vehicle Data installiert, aber noch kein Snapshot verfügbar':'Vehicle Data im OAP-Verzeichnis nicht gefunden')};
+ var beat=Date.parse(best.doc.heartbeatAt);
+ best.state=!Number.isFinite(beat)?'unknown':Math.abs(Date.now()-beat)>VEHICLE_STALE_MS?'stale':'running';
  return best;
 }
-function vehicleData(){
- var best=vehicleFile();
- if(!best)return {status:'unavailable',reason:'Vehicle Data app not installed or not started yet'};
- var doc;try{doc=JSON.parse(fs.readFileSync(best.file,'utf8'));}catch(e){return {status:'unavailable',reason:'Vehicle Data file unreadable'};}
- if(!doc||doc.schema!==1||doc.app!=='vehicle_data')return {status:'unavailable',reason:'Unknown Vehicle Data format'};
+function vehicleData(best){
+ best=best||vehicleSnapshot();
+ if(!best.doc)return {status:'unavailable',appState:best.state,reason:best.reason};
+ var doc=best.doc;
+ var array=function(v){return Array.isArray(v)?v:[];};
  var m=doc.mileage,km=m&&Number.isInteger(m.km)&&m.km>0&&m.km<2000000?m.km:null;
- return {status:km!==null||(doc.cbs&&doc.cbs.length)||doc.serviceHistory?'ok':'waiting',source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
+ return {status:km!==null||array(doc.cbs).length||doc.serviceHistory||doc.dpf?'ok':'waiting',appState:best.state,appId:best.appId,heartbeatAt:doc.heartbeatAt||null,source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
   mileageKm:km,mileageAt:m?m.at:null,mileageSource:m?m.source:null,unverified:true,
-  cbs:Array.isArray(doc.cbs)?doc.cbs.slice(0,20).map(function(c){return {scope:c.scope,label:c.label,remainingKm:c.remainingKm,dueDate:c.dueDate,status:c.status,at:c.at};}):[],
-  serviceHistory:doc.serviceHistory?{status:doc.serviceHistory.status,readAt:doc.serviceHistory.readAt,sets:(doc.serviceHistory.sets||[]).slice(0,60)}:null,
+  cbs:Array.isArray(doc.cbs)?doc.cbs.slice(0,20).filter(Boolean).map(function(c){return {scope:c.scope,label:c.label,remainingKm:c.remainingKm,dueDate:c.dueDate,status:c.status,at:c.at};}):[],
+  serviceHistory:doc.serviceHistory?{status:doc.serviceHistory.status,readAt:doc.serviceHistory.readAt,sets:array(doc.serviceHistory.sets).slice(0,60)}:null,
   signals:doc.signals||{},
-  checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{active:(doc.checkControl.active||[]).slice(0,50),events:(doc.checkControl.events||[]).slice(-50)}:null,
+  checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{active:array(doc.checkControl.active).slice(0,50),events:array(doc.checkControl.events).slice(-50)}:null,
   tyres:doc.tyres&&Array.isArray(doc.tyres.wheels)?{at:doc.tyres.at,wheels:doc.tyres.wheels.slice(0,5).map(function(w){return {position:w.position,pressureBar:w.pressureBar,targetBar:w.targetBar,temperatureC:w.temperatureC,battery:w.battery};}),unverified:true}:null,
-  faultMemory:doc.faultMemory&&typeof doc.faultMemory==='object'?{requestId:doc.faultMemory.requestId,readAt:doc.faultMemory.readAt,error:doc.faultMemory.error,ecus:(doc.faultMemory.ecus||[]).slice(0,120),dtcs:(doc.faultMemory.dtcs||[]).slice(0,600)}:null,
+  faultMemory:doc.faultMemory&&typeof doc.faultMemory==='object'?{requestId:doc.faultMemory.requestId,readAt:doc.faultMemory.readAt,error:doc.faultMemory.error,ecus:array(doc.faultMemory.ecus).slice(0,120),dtcs:array(doc.faultMemory.dtcs).slice(0,600)}:null,
   dpf:doc.dpf&&typeof doc.dpf==='object'?doc.dpf:null};
 }
 // Ask the Vehicle Data app for a fresh fault-memory read (UDS 0x19, read-only) and wait for it.
+var faultReadPending=false;
 function readFaultMemory(cb){
- var best=vehicleFile();
- if(!best)return cb({status:503,body:{error:'Vehicle Data app not installed or not started yet'}});
- var id=crypto.randomBytes(12).toString('hex'),req=path.join(best.dir,'bmw-vehicle-request.json'),tries=0;
- try{fs.writeFileSync(req,JSON.stringify({id:id,type:'faultMemory',at:new Date().toISOString()}),{mode:420});}catch(e){return cb({status:500,body:{error:'Request could not be handed to Vehicle Data'}});}
+ var best=vehicleSnapshot();
+ if(!best.doc||best.state==='stale')return cb({status:503,body:{code:best.state,error:best.reason||'Vehicle Data meldet keinen aktuellen Heartbeat'}});
+ if(faultReadPending)return cb({status:409,body:{code:'busy',error:'Eine Fehlerspeicherabfrage läuft bereits'}});
+ var id=crypto.randomBytes(12).toString('hex'),req=path.join(best.dir,'bmw-vehicle-request.json'),tmp=req+'.'+id,tries=0;
+ try{
+  fs.writeFileSync(tmp,JSON.stringify({id:id,type:'faultMemory',at:new Date().toISOString()}),{mode:420,flag:'wx'});
+  fs.renameSync(tmp,req);
+ }catch(e){
+  try{fs.unlinkSync(tmp);}catch(ignore){}
+  return cb({status:502,body:{code:'request_ipc',error:'Vehicle Data IPC: '+(e.code||'write failed')}});
+ }
+ faultReadPending=true;
  var t=setInterval(function(){
   tries++;
-  var v=vehicleData(),fm=v.faultMemory;
-  if(fm&&fm.requestId===id){clearInterval(t);return cb({status:fm.error?502:200,body:{faultMemory:fm}});}
-  if(tries>=90){clearInterval(t);cb({status:504,body:{error:'Vehicle Data did not answer within 90 s (car asleep or app not running)'}});}
+  var current=vehicleSnapshot(),fm=vehicleData(current).faultMemory;
+  if(current.state==='stale')return finish({status:503,body:{code:'stale',error:'Vehicle Data hat während der Diagnose aufgehört zu antworten'}});
+  if(fm&&fm.requestId===id)return finish({status:fm.error?502:200,body:{error:fm.error||null,faultMemory:fm}});
+  if(tries>=90)finish({status:504,body:{code:'diagnostic_timeout',error:'Vehicle Data hat innerhalb von 90 s nicht geantwortet'}});
  },1000);
+ function finish(result){clearInterval(t);faultReadPending=false;cb(result);}
 }
 var PRESETS=['system','network','audio','services','storage','bridge','recent_logs','vehicle'];
 function mkdir(d){if(!fs.existsSync(d))fs.mkdirSync(d,0o700);}
@@ -70,7 +98,7 @@ var full=path.resolve(input),real=fs.realpathSync(full);if(!ALLOWED.some(functio
 var parts=full.split('/').filter(Boolean),p='';parts.forEach(function(seg){p+='/'+seg;if(fs.lstatSync(p).isSymbolicLink())throw Error('Symlink traversal denied');});
 return real;}
 function listFiles(p){var real=pathAllowed(p),s=fs.statSync(real);if(!s.isDirectory())throw Error('Not a directory');return {path:real,entries:fs.readdirSync(real).slice(0,200).map(function(name){try{var stat=fs.lstatSync(path.join(real,name));return {name:name,kind:stat.isSymbolicLink()?'symlink':stat.isDirectory()?'directory':'file',bytes:stat.size};}catch(e){return {name:name,kind:'unavailable'};}})};}
-function fileContents(p){var real=pathAllowed(p),fd=fs.openSync(real,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{var s=fs.fstatSync(fd);if(!s.isFile()||s.size>8*1024*1024)throw Error('Only regular files up to 8 MiB');var b=Buffer.alloc(s.size),got=0;while(got<b.length){var n=fs.readSync(fd,b,got,b.length-got,got);if(!n)break;got+=n;}return b.slice(0,got);}finally{fs.closeSync(fd);}}
+function fileContents(p){var real=pathAllowed(p),fd=fs.openSync(real,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{var s=fs.fstatSync(fd);if(!s.isFile()||s.size>8*1024*1024)throw Error('Only regular files up to 8 MiB');var b=Buffer.alloc(s.size),got=0;while(got<b.length){var n=fs.readSync(fd,b,got,b.length-got,got);if(!n)throw Error('File changed during read');got+=n;}return b.slice(0,got);}finally{fs.closeSync(fd);}}
 var latest={at:null,message:'Bereit zur sicheren Kopplung',lastDiagnostic:null,paired:false};
 var pair=null;
 var tsLogin={url:'',started:0,child:null,error:''};
@@ -145,16 +173,30 @@ function beginPair(){
  pair={code:crypto.randomBytes(16).toString('hex'),expires:Date.now()+120000,ip:ip,origin:origin};
  latest.message='BMW-AI-QR-Code scannen und Kopplung auf dem Pi bestaetigen.';
 }
-function pairingInfo(){if(pair&&Date.now()>=pair.expires)pair=null;
- if(!pair)return {pairUrl:'',pairExpiresAt:null,tailIP:tailIP()};
+function pairingInfo(knownIP){if(pair&&Date.now()>=pair.expires)pair=null;
+ if(!pair)return {pairUrl:'',pairExpiresAt:null,tailIP:typeof knownIP==='string'?knownIP:tailIP()};
  return {pairUrl:pair.origin+'/pair?ip='+encodeURIComponent(pair.ip)+'&code='+encodeURIComponent(pair.code),pairExpiresAt:new Date(pair.expires).toISOString(),tailIP:pair.ip};
 }
 function claimPair(code){
  if(typeof code!=='string'||!/^[0-9a-f]{32}$/.test(code)||!pair||Date.now()>=pair.expires||!constantEq(code,pair.code))return null;
  pair=null;latest.paired=true;latest.message='MGU mit dem Pi gekoppelt';emitUI();return cfg().token;
 }
-function appDataDirs(){var root='/var/opt/public/oap',result=[];try{fs.readdirSync(root).forEach(function(d){if(!/^oap_\d+$/.test(d))return;var dir=path.join(root,d);try{var pkg=JSON.parse(fs.readFileSync(path.join(dir,'source/package.json'),'utf8'));if(pkg.name==='mgu_ai_assistant'||pkg.name==='mgu_chatgpt_bridge')result.push(path.join(dir,'data'));}catch(e){}});}catch(e){}return result;}
-function emitUI(){var value={version:'0.2.5',paired:!!latest.paired,tailscale:tsNetworkStatus(),pairing:pairingInfo(),webConsoleUrl:latest.webConsoleUrl||'',at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:bridgeInfo()};appDataDirs().forEach(function(dir){try{var f=path.join(dir,'bmw-ai-status.json'),tmp=f+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value),{mode:0o644});fs.renameSync(tmp,f);}catch(e){}});}
+function appDataDirs(){var root=OAP_APPS,result=[];try{fs.readdirSync(root).forEach(function(d){if(!/^oap_\d+$/.test(d))return;var dir=path.join(root,d);try{var pkg=JSON.parse(fs.readFileSync(path.join(dir,'source/package.json'),'utf8'));if(pkg.name==='mgu_ai_assistant'||pkg.name==='mgu_chatgpt_bridge')result.push(path.join(dir,'data'));}catch(e){}});}catch(e){}return result;}
+var uiBridge=null,uiBridgeAt=0;
+function emitUI(){
+ var dirs=appDataDirs();if(!dirs.length)return;
+ var network=tsNetworkStatus();
+ if(Date.now()-uiBridgeAt>=30000){uiBridge=bridgeInfo();uiBridgeAt=Date.now();}
+ var value={version:'0.2.6',paired:!!latest.paired,tailscale:network,pairing:pairingInfo(network.tailIP),
+  webConsoleUrl:latest.webConsoleUrl||'',at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,
+  remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:uiBridge};
+ dirs.forEach(function(dir){
+  try{
+   var f=path.join(dir,'bmw-ai-status.json'),tmp=f+'.tmp';
+   fs.writeFileSync(tmp,JSON.stringify(value),{mode:0o644});fs.renameSync(tmp,f);
+  }catch(e){}
+ });
+}
 function localRequests(){appDataDirs().forEach(function(dir){var f=path.join(dir,'bmw-ai-request.json');try{if(!fs.existsSync(f))return;var b=fs.readFileSync(f,'utf8');fs.unlinkSync(f);if(b.length>1000)return;var d=JSON.parse(b);if(d.action==='diagnostic'&&['system','network','audio','bridge'].indexOf(d.preset)>=0){var result=diag(d.preset);latest.lastDiagnostic={preset:d.preset,at:result.at,preview:JSON.stringify(result.values).slice(0,350)};fs.writeFileSync(path.join(DATA,'last-local-diagnostic.json'),JSON.stringify(result),{mode:0o600});}if(d.action==='network-connect')connectTailscale();if(d.action==='refresh'){latest.message='Status aktualisiert';}if(d.action==='pair')beginPair();if(d.action==='console-link'){
  var origin=String(cfg().piOrigin||'').replace(/\/+$/,'')||autoPiOrigin();
  // Public QR shows only a URL. The protected terminal still requires Pi login and Tailscale.
@@ -169,12 +211,12 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
    if(!deviceToken)return json(res,403,{error:'Pairing code invalid or expired'});
    return json(res,200,{token:deviceToken});
  }
- if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;emitUI();return json(res,200,{online:true,at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:vehicleData().status==='ok',vehicle:vehicleData(),capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
+ if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;var vehicle=vehicleData();return json(res,200,{online:true,at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:vehicle.appState==='running'&&vehicle.status==='ok',vehicle:vehicle,capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
  if(req.method==='POST'&&url==='/v1/vehicle/fault-memory')return readFaultMemory(function(r){json(res,r.status,r.body);});
  if(req.method==='POST'&&url==='/v1/console')return json(res,200,readOnlyConsole.run(b.command));
  if(req.method==='POST'&&url==='/v1/diagnostics'){var d=diag(b.preset);latest.lastDiagnostic={preset:d.preset,at:d.at,preview:JSON.stringify(d.values).slice(0,350)};emitUI();return json(res,200,d);}
  if(req.method==='POST'&&url==='/v1/files/list')return json(res,200,listFiles(b.path));
- if(req.method==='POST'&&url==='/v1/files/read'){var data=fileContents(b.path);res.writeHead(200,{'content-type':'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff'});return res.end(data);}
+ if(req.method==='POST'&&url==='/v1/files/read'){var data=fileContents(b.path);res.writeHead(200,{'content-length':data.length,'content-type':'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff'});return res.end(data);}
  if(req.method==='POST'&&url==='/v1/notify'){latest.message=String(b.text||'').slice(0,280);latest.at=new Date().toISOString();emitUI();return json(res,200,{ok:true});}
  if(req.method==='POST'&&url==='/v1/actions')return json(res,501,{error:'Vehicle control adapter not implemented or verified. Nothing executed.',requested:b.action});
  return json(res,404,{error:'Not found'});

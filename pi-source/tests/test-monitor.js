@@ -15,13 +15,14 @@ const session=crypto.randomBytes(32).toString('base64url');
 const iso=ms=>new Date(Date.now()+ms).toISOString();
 
 (async()=>{
- let vehicle={status:'ok',mileageKm:120000,cbs:[],serviceHistory:null,checkControl:{active:[],events:[]},tyres:null,dpf:null,faultMemory:null};
- let mguUp=true,faultReply=null;
+ let vehicle={status:'ok',appState:'running',mileageAt:iso(0),mileageSource:'SecureMileage',mileageKm:120000,cbs:[],serviceHistory:null,checkControl:{active:[],events:[]},tyres:null,dpf:null,faultMemory:null};
+ let mguUp=true,faultReply=null,faultUnavailable=false;
  const mgu=http.createServer((req,res)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
   const j=(c,d)=>{res.writeHead(c,{'content-type':'application/json'});res.end(JSON.stringify(d));};
   if(!mguUp){res.destroy();return;}
   if(req.url==='/v1/status')return j(200,{online:true,vehicle});
-  if(req.url==='/v1/vehicle/fault-memory')return j(200,{faultMemory:faultReply});
+  if(req.url==='/v1/vehicle/fault-memory'&&faultUnavailable)return j(503,{code:'no_snapshot',error:'Snapshot fehlt'});
+  if(req.url==='/v1/vehicle/fault-memory')return j(faultReply.error?502:200,{error:faultReply.error,faultMemory:faultReply});
   j(404,{});
  });});
  const pushes=[];
@@ -39,7 +40,12 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   // ----- Abfrage im Hintergrund -----
   let poll=await server.pollOnce();assert.equal(poll.ok,true);
   assert.equal((await api('GET','/vehicle')).data.mileage.km,120000);
-  mguUp=false;poll=await server.pollOnce();assert.equal(poll.ok,false);assert.ok(poll.lastOk,'last success is kept');mguUp=true;
+  mguUp=false;poll=await server.pollOnce();assert.equal(poll.ok,false);assert.ok(poll.lastOk,'last success is kept');
+  assert.equal((await api('GET','/vehicle')).data.live.stale,true);
+  mguUp=true;poll=await server.pollOnce();assert.equal(poll.ok,true);
+  vehicle.mileageAt=iso(-15*60000);vehicle.mileageKm=130000;
+  await server.pollOnce();
+  assert.equal((await api('GET','/vehicle')).data.mileage.km,120000);
 
   // ----- Check-Control -----
   vehicle.checkControl={active:[{id:220,text:'Kühlmittelstand zu niedrig',description:'Kühlmittel nachfüllen.',ecu:0x12,since:iso(-60000)}],
@@ -67,15 +73,22 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   assert.equal(f.faultMemory.earlier[0].code,'480A12','codes no longer reported are kept as earlier');
   assert.equal(pushes.length,before+1);assert.match(pushes[pushes.length-1].message,/BDC_BODY3 Karosserie: 801234/);
   faultReply={requestId:'r3',readAt:iso(2000),error:'busy',ecus:[],dtcs:[]};
-  f=(await api('POST','/faults/read')).data;
+  assert.equal((await api('POST','/faults/read')).status,502);
+  f=(await api('GET','/faults')).data;
   assert.equal(f.faultMemory.lastAttempt.error,'busy');assert.equal(f.faultMemory.latest.dtcs[0].code,'801234','a failed read does not hide the last result');
   // Freigabe-Auftrag für Chat/Claude
   const job=server.jobFor('faults',{},null,'Fehlerspeicher','claude');
   faultReply={requestId:'r4',readAt:iso(3000),error:null,ecus:[],dtcs:[]};
   await server.runJob(job);assert.equal(job.status,'done');
 
+  faultUnavailable=true;
+  const unavailable=await api('POST','/faults/read');
+  assert.equal(unavailable.status,503);
+  assert.match(unavailable.data.error,/Snapshot fehlt/);
+  faultUnavailable=false;
+
   // ----- Reifen -----
-  vehicle.tyres={wheels:[{position:'FRONT_LEFT',pressureBar:2.45,targetBar:2.5,temperatureC:18},{position:'REAR_RIGHT',pressureBar:2.1,targetBar:2.7,temperatureC:17}]};
+  vehicle.tyres={at:iso(0),wheels:[{position:'FRONT_LEFT',pressureBar:2.45,targetBar:2.5,temperatureC:18},{position:'REAR_RIGHT',pressureBar:2.1,targetBar:2.7,temperatureC:17}]};
   await server.pollOnce();await wait(50);
   let v=(await api('GET','/vehicle')).data;
   assert.deepEqual(v.tyres.wheels.map(w=>[w.name,w.p,w.low]),[['vorne links',2.45,false],['hinten rechts',2.1,true]]);
@@ -86,7 +99,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   // ----- DPF: Regeneration erkennen -----
   vehicle.dpf={at:iso(0),soot:24.5,ash:31.2,distance:410,regenCount:211};
   await server.pollOnce();
-  vehicle.dpf={at:iso(600000),soot:3.1,ash:31.2,distance:12,regenCount:212};
+  vehicle.dpf={at:iso(1000),soot:3.1,ash:31.2,distance:12,regenCount:212};
   await server.pollOnce();
   v=(await api('GET','/vehicle')).data;
   assert.equal(v.dpf.regens.length,1);assert.equal(v.dpf.regens[0].distanceBefore,410);assert.equal(v.dpf.latest.soot,3.1);

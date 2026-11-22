@@ -6,6 +6,12 @@ process.env.MGU_AI_OAP_APPS=path.join(dir,'oap');process.env.MGU_AI_CONFIG=path.
 const agent=require('../native/mgu-ai-agent/agent.js');
 fs.mkdirSync(path.join(dir,'oap'),{recursive:true});
 assert.strictEqual(agent.vehicleData().status,'unavailable');
+assert.strictEqual(agent.vehicleData().appState,'not_detected');
+const manifestDir=path.join(dir,'oap','oap_12211','source');
+fs.mkdirSync(manifestDir,{recursive:true});
+fs.writeFileSync(path.join(manifestDir,'package.json'),JSON.stringify({name:'vehicle_data'}));
+assert.strictEqual(agent.vehicleData().appState,'no_snapshot');
+agent.readFaultMemory(r=>assert.strictEqual(r.status,503));
 const write=(uid,doc)=>{const d=path.join(dir,'oap','oap_'+uid,'data');fs.mkdirSync(d,{recursive:true});fs.writeFileSync(path.join(d,'bmw-vehicle-data.json'),typeof doc==='string'?doc:JSON.stringify(doc));};
 write(12210,'{broken');
 assert.match(agent.vehicleData().reason,/unreadable/);
@@ -17,21 +23,26 @@ assert.deepStrictEqual(v.cbs[0],{scope:'OELSERVICE',label:'Motoröl',remainingKm
 assert.strictEqual(v.serviceHistory.sets[0].km,136200);
 write(12212,{schema:1,app:'other',mileage:{km:5}});
 const later=new Date(Date.now()+5000);fs.utimesSync(path.join(dir,'oap','oap_12212','data','bmw-vehicle-data.json'),later,later);
-assert.match(agent.vehicleData().reason,/Unknown/,'newest file wins and must be ours');
+assert.equal(agent.vehicleData().mileageKm,143350,'invalid newer snapshot must not hide valid vehicle data');
 fs.rmSync(path.join(dir,'oap','oap_12212'),{recursive:true});
 write(12211,{schema:1,app:'vehicle_data',mileage:{km:99999999}});
 assert.strictEqual(agent.vehicleData().mileageKm,null,'implausible value dropped');
 assert.strictEqual(agent.vehicleData().status,'waiting');
+write(12211,{schema:1,app:'vehicle_data',heartbeatAt:new Date(Date.now()-120000).toISOString()});
+assert.strictEqual(agent.vehicleData().appState,'stale');
+agent.readFaultMemory(r=>{assert.strictEqual(r.status,503);assert.strictEqual(r.body.code,'stale');});
 // New data passes through; fault-memory request goes to the app's data directory.
-write(12211,{schema:1,app:'vehicle_data',mileage:{km:143400},checkControl:{active:[{id:220,text:'Kühlmittelstand zu niedrig',ecu:64}],events:[]},
+write(12211,{schema:1,app:'vehicle_data',mileage:{km:143400},heartbeatAt:new Date().toISOString(),checkControl:{active:[{id:220,text:'Kühlmittelstand zu niedrig',ecu:64}],events:[]},
  tyres:{wheels:[{position:'FRONT_LEFT',pressureBar:2.45,targetBar:2.5,temperatureC:18,battery:'OK',rawPressure:2450}]},dpf:{soot:12.3},faultMemory:{requestId:'start',dtcs:[],ecus:[]}});
 const v2=agent.vehicleData();
+assert.strictEqual(v2.appState,'running');
 assert.strictEqual(v2.checkControl.active[0].text,'Kühlmittelstand zu niedrig');assert.strictEqual(v2.tyres.wheels[0].rawPressure,undefined);assert.strictEqual(v2.dpf.soot,12.3);
 agent.readFaultMemory(r=>{
  assert.strictEqual(r.status,200);assert.strictEqual(r.body.faultMemory.dtcs[0].code,'480A12');
  fs.rmSync(dir,{recursive:true,force:true});
  console.log('mgu-ai-agent vehicle data tests passed');
 });
+agent.readFaultMemory(r=>assert.strictEqual(r.status,409));
 setTimeout(()=>{
  const req=JSON.parse(fs.readFileSync(path.join(dir,'oap','oap_12211','data','bmw-vehicle-request.json'),'utf8'));
  assert.strictEqual(req.type,'faultMemory');

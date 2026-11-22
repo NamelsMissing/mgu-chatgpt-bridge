@@ -247,6 +247,7 @@
       <h3>Fehlerspeicher der Steuergeräte</h3>
       <button id="faultRead">Jetzt auslesen</button>
     </div>
+    <p class="hint" id="faultConnection"></p>
     <p class="hint" id="faultInfo">Wird bei jedem Fahrzeugstart einmal ausgelesen.</p>
     <div id="faultList"></div>
     <details>
@@ -354,7 +355,7 @@
     <div class="console-connection"><span id="consoleDot" class="console-dot"></span><span id="consoleConnectionText">MGU prüfen ...</span><button type="button" id="consoleRefreshConnection" class="console-utility" title="Verbindung erneut prüfen">↻</button></div>
   </div>
   <div class="console-terminal">
-    <div class="console-terminal-bar"><span class="console-terminal-lights" aria-hidden="true"><i></i><i></i><i></i></span><strong>mgu · Terminal</strong><span class="console-mode">READ ONLY</span></div>
+    <div class="console-terminal-bar"><span class="console-terminal-lights" aria-hidden="true"><i></i><i></i><i></i></span><strong>mgu · Terminal</strong><span class="console-mode" id="consoleMode">Lesemodus</span></div>
     <div id="consoleOutput" class="terminal-output" role="log" aria-label="MGU-Terminalausgabe" aria-live="polite" aria-relevant="additions text"></div>
     <div id="consoleApproval" class="console-approval" hidden>
       <div class="console-approval-top"><strong>Ausführung bestätigen</strong><span>Einmalige Freigabe</span></div>
@@ -364,9 +365,15 @@
     </div>
     <form id="consoleCommandForm" class="console-command-form" autocomplete="off">
       <label class="console-input-label" for="consoleInput">BEFEHL EINGEBEN</label>
-      <div class="console-command-row"><span class="console-prompt" aria-hidden="true">mgu $</span><input id="consoleInput" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="z. B. ls /etc/cinemo" aria-label="MGU-Befehl eingeben"><button id="consoleSend" type="submit">Ausführen</button></div>
-      <div class="console-command-help">Enter = anfragen · ↑ / ↓ = Verlauf · Jede Ausführung braucht deine Freigabe</div>
+      <div class="console-command-row"><span class="console-prompt" aria-hidden="true">mgu $</span><textarea id="consoleInput" rows="3" maxlength="16000" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="z. B. ls /etc/cinemo" aria-label="MGU-Befehl eingeben"></textarea><button id="consoleSend" type="submit">Ausführen</button></div>
+      <div class="console-command-help">Strg / ⌘ + Enter zum Anfragen · Alt + ↑ / ↓ für den Verlauf</div>
     </form>
+  </div>
+  <div class="toolbar">
+    <input id="expertPassword" type="password" autocomplete="current-password" placeholder="Pi-Passwort" aria-label="Pi-Passwort zur SSH-Freigabe">
+    <button id="expertToggle" type="button">Expertenmodus freigeben</button>
+    <button id="expertAbort" type="button" disabled>SSH abbrechen</button>
+    <button id="copyCommand" type="button">Befehl kopieren</button>
   </div>
   <p id="consoleResult" class="console-result hint" role="status"></p>
   <div class="console-shortcuts">
@@ -398,13 +405,25 @@
     <h3>MGU durchsuchen</h3>
     <div id="mguRoots" class="chip-row"></div>
     <div class="toolbar">
-      <select id="mguSearchRoot" aria-label="Suchen in"></select>
+      <input id="mguPathInput" type="text" placeholder="/var/log/" aria-label="Absoluter MGU-Pfad" autocapitalize="off" spellcheck="false">
+      <button id="mguOpen">Pfad öffnen</button>
+      <button id="mguParent">Übergeordneter Ordner</button>
+    </div>
+    <div class="toolbar">
+      <select id="mguFavorites" aria-label="Pfadfavoriten"><option value="">Favoriten</option></select>
+      <button id="favoriteAdd">Speichern</button>
+      <button id="favoriteRename">Umbenennen</button>
+      <button id="favoriteDelete">Löschen</button>
+    </div>
+    <div class="toolbar">
       <input type="search" id="mguSearchTerm" placeholder="Dateiname enthält …" autocapitalize="off" autocorrect="off" spellcheck="false">
       <button id="mguSearch">Suchen</button>
+      <label><input id="mguRecursive" type="checkbox"> Rekursiv</label>
+      <select id="mguSort" aria-label="Sortieren"><option value="name">Name</option><option value="bytes">Größe</option><option value="mtime">Änderungsdatum</option><option value="kind">Typ</option></select>
     </div>
     <div id="mguCrumbs" class="crumbs"></div>
     <div id="mguListing" class="file-list"><p class="hint">Ordner oben wählen.</p></div>
-    <p class="hint">Lesen, Suchen und Herunterladen im Browser führst du selbst aus; dafür ist keine Freigabe nötig. Geholte Dateien landen in der Bibliothek auf dem Pi.</p>
+    <p class="hint">Browser-Downloads werden direkt übertragen. „Auf Pi speichern“ legt eine Kopie in der Bibliothek ab.</p>
   </div>
 
   <div class="panel">
@@ -436,6 +455,20 @@
 
 <!-- ===== System ===== -->
 <section id="system" class="tab" hidden>
+  <div class="panel">
+    <h2>Verbindungen</h2>
+    <div class="toolbar"><button id="connectionRefresh">Aktualisieren</button><button id="sshProbe">SSH prüfen</button></div>
+    <pre id="connectionStatus" role="status"></pre>
+    <details id="connectionLogPanel">
+      <summary>Live-Diagnoselog</summary>
+      <div class="toolbar">
+        <button id="connectionLogCopy">Kopieren</button><button id="connectionLogClear">Leeren</button>
+        <button id="connectionLogText">TXT</button><button id="connectionLogJson">JSON</button>
+        <label><input id="connectionLogScroll" type="checkbox" checked> Automatisch scrollen</label>
+      </div>
+      <pre id="connectionLog" class="terminal-output"></pre>
+    </details>
+  </div>
   <h2>Raspberry-Pi-Updates</h2>
   <p class="hint">Nur ZIP-Pakete mit einer geprüften BMW-AI-Herausgebersignatur können installiert werden. Vorher wird ein Backup erstellt; bei fehlgeschlagenem Health-Test erfolgt ein Rollback. Die Anmeldedaten, Chats und Fahrzeugkopplung werden nicht ersetzt.</p>
   <div class="panel">

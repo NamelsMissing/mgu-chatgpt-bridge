@@ -21,7 +21,7 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
  const mgu=http.createServer((req,res)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
   const b=raw?JSON.parse(raw):{};calls.push(req.url+' '+(b.path||b.command||''));
   const json=(c,d)=>{res.writeHead(c,{'content-type':'application/json'});res.end(JSON.stringify(d));};
-  if(req.url==='/v1/status')return json(200,{online:true,host:'mgu',vehicle:mileage===null?{status:'unavailable'}:Object.assign({status:'ok',mileageKm:mileage},extra)});
+  if(req.url==='/v1/status')return json(200,{online:true,host:'mgu',vehicle:mileage===null?{status:'unavailable'}:Object.assign({status:'ok',appState:'running',mileageAt:new Date().toISOString(),mileageSource:'SecureMileage',mileageKm:mileage},extra)});
   if(req.url==='/v1/files/list'){
    if(b.path==='/var/log/oap')return json(200,{path:'/var/log/oap',entries:[...Object.keys(files).filter(f=>f.startsWith('/var/log/oap/')).map(f=>({name:path.basename(f),kind:'file',bytes:files[f].length})),{name:'state',kind:'directory',bytes:0}]});
    if(b.path==='/usr/lib/oap-mainapp')return json(200,{path:b.path,entries:[{name:'dsp.conf',kind:'file',bytes:7}]});

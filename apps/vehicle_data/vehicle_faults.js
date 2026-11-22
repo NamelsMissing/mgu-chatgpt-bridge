@@ -110,7 +110,7 @@ class FaultState {
         this.dtc = { requestId: requestId || null, readAt: this.now(), error: error ? String(error).slice(0, 200) : null, ecus: r.ecus, dtcs: r.dtcs };
         return this.dtc;
     }
-    setDpf(name, value) { if (Number.isFinite(value)) { this.dpf[name] = Math.round(value * 1000) / 1000; this.dpfAt = this.now(); } }
+    setDpf(name, value) { if (Number.isFinite(value)) { this.dpf[name] = Math.round(value * 1000) / 1000; this.dpfAt = this.now(); this.dpfTimes = this.dpfTimes || {}; this.dpfTimes[name] = new Date(this.dpfAt).toISOString(); } }
     document() {
         const iso = (t) => (t ? new Date(t).toISOString() : null);
         const withText = (c) => Object.assign({}, c, this.ccTexts.get(c.id) || { text: null, description: '' });
@@ -121,7 +121,7 @@ class FaultState {
             },
             tyres: this.tyres ? { at: iso(this.tyresAt), wheels: this.tyres, unverified: true } : null,
             faultMemory: this.dtc ? Object.assign({}, this.dtc, { readAt: iso(this.dtc.readAt) }) : null,
-            dpf: this.dpfAt ? Object.assign({ at: iso(this.dpfAt) }, this.dpf) : null,
+            dpf: this.dpfAt ? Object.assign({ at: iso(this.dpfAt), fieldTimes: this.dpfTimes }, this.dpf) : null,
         };
     }
 }

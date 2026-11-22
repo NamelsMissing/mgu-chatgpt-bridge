@@ -9,8 +9,9 @@ const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const siwc=require('./siwc');
+const ssh=require('./mgu-ssh');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.8.0'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.9.0'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -81,7 +82,7 @@ const tools=[
  {type:'function',name:'run_diagnostic',description:'Read-only diagnostic preset requiring approval; no arbitrary shell.',parameters:{type:'object',properties:{preset:{type:'string',enum:['system','network','audio','services','storage','bridge','recent_logs','vehicle']},reason:{type:'string'}},required:['preset','reason'],additionalProperties:false},strict:true},
  {type:'function',name:'list_mgu_files',description:'List a whitelisted directory on the MGU after approval.',parameters:{type:'object',properties:{path:{type:'string'},reason:{type:'string'}},required:['path','reason'],additionalProperties:false},strict:true},
  {type:'function',name:'download_mgu_file',description:'Download a single whitelisted MGU file after approval. Never request secrets.',parameters:{type:'object',properties:{path:{type:'string'},reason:{type:'string'}},required:['path','reason'],additionalProperties:false},strict:true},
- {type:'function',name:'run_console_readonly',description:'Ask permission to run one exact read-only command on MGU (ls, grep, find, strings, cat, head, tail etc). Never use shell operators. For DSP investigation: first inspect /etc/cinemo or /usr/lib/oap-mainapp paths. Each command requires user approval.',parameters:{type:'object',properties:{command:{type:'string'},reason:{type:'string'}},required:['command','reason'],additionalProperties:false},strict:true},
+ {type:'function',name:'run_console_readonly',description:'Ask permission to run one exact read-only command on MGU (ls, grep, find, strings, cat, head, tail etc). Never use shell operators. Use systemctl status or is-active and journalctl -u for mgu-ai-agent.service, mgu-chatgpt-bridge.service or oapcontroller.service. For DSP investigation: first inspect /etc/cinemo or /usr/lib/oap-mainapp paths. Each command requires user approval.',parameters:{type:'object',properties:{command:{type:'string'},reason:{type:'string'}},required:['command','reason'],additionalProperties:false},strict:true},
  {type:'function',name:'request_vehicle_action',description:'Propose a supported comfort action; not executed until explicitly approved AND implemented by a verified adapter. Safety critical controls are unavailable.',parameters:{type:'object',properties:{action:{type:'string',enum:['steering_heat_on','steering_heat_off','driver_seat_heat_on','driver_seat_heat_off','ambient_restore']},reason:{type:'string'}},required:['action','reason'],additionalProperties:false},strict:true}
 ];
 const presetList=['system','network','audio','services','storage','bridge','recent_logs','vehicle'];
@@ -104,7 +105,35 @@ async function openAI(input,useTools=true){
 }
 function outText(result){return(result.output||[]).filter(x=>x.type==='message').flatMap(x=>x.content||[]).filter(x=>x.type==='output_text').map(x=>x.text).join('\n').trim()||String(result.output_text||'').trim();}
 function toolToJob(t,conversationId){let args;try{args=JSON.parse(t.arguments||'{}');}catch(e){throw Error('Model sent invalid tool arguments');}const spec={get_vehicle_status:['status',{}],run_diagnostic:['diagnostic',{preset:args.preset}],list_mgu_files:['list',{path:args.path}],download_mgu_file:['download',{path:args.path}],request_vehicle_action:['action',{action:args.action}],run_console_readonly:['console',{command:args.command}]}[t.name];if(!spec)throw Error('Unrecognized model tool');return jobFor(spec[0],spec[1],conversationId,args.reason||t.name);}
-async function mguRequest(method,endpoint,content,timeoutMs){const dest=st.mguConnection||{url:MGU,token:DEVICE_TOKEN};if(!dest.url||!dest.token||dest.token.startsWith('REPLACE_'))throw Error('MGU connection not configured');const res=await fetch(dest.url+endpoint,{method,headers:{authorization:'Bearer '+dest.token,'content-type':'application/json'},body:content?JSON.stringify(content):undefined,signal:AbortSignal.timeout(timeoutMs||15000)});if(!res.ok){const msg=(await res.text().catch(()=>''));throw Error('MGU HTTP '+res.status+' '+msg.slice(0,120));}return res;}
+const diagnosticLog=[];
+function logTransport(endpoint,status,outcome,component='MGU-Agent'){
+  diagnosticLog.push({at:now(),component,endpoint,status,outcome});
+  if(diagnosticLog.length>200)diagnosticLog.shift();
+}
+async function mguRequest(method,endpoint,content,timeoutMs){
+  const dest=st.mguConnection||{url:MGU,token:DEVICE_TOKEN};
+  if(!dest.url||!dest.token||dest.token.startsWith('REPLACE_'))throw Error('MGU-Verbindung nicht konfiguriert');
+  let res;
+  try{
+    res=await fetch(dest.url+endpoint,{method,headers:{authorization:'Bearer '+dest.token,'content-type':'application/json'},
+      body:content?JSON.stringify(content):undefined,signal:AbortSignal.timeout(timeoutMs||15000)});
+  }catch(e){
+    const timeout=e.name==='TimeoutError'||e.name==='AbortError';
+    logTransport(endpoint,null,timeout?'Timeout':'Verbindungsfehler');
+    throw Object.assign(Error(timeout?'Zeitüberschreitung beim MGU-Agenten':'MGU-Agent nicht erreichbar'),{status:timeout?504:502});
+  }
+  if(!res.ok){
+    const data=await res.json().catch(()=>null);
+    const detail=str(data&&data.error,200);
+    const codes={not_detected:'Vehicle Data nicht gefunden',no_snapshot:'Snapshot fehlt',stale:'Heartbeat veraltet',
+      snapshot_error:'Snapshot fehlerhaft',storage_unavailable:'OAP-Verzeichnis nicht erreichbar',
+      request_ipc:'Lokale Übergabe fehlgeschlagen',diagnostic_timeout:'Diagnose-Timeout',busy:'Abfrage läuft'};
+    logTransport(endpoint,res.status,codes[data&&data.code]||'HTTP-Fehler');
+    throw Object.assign(Error('MGU HTTP '+res.status+(detail?' · '+detail:'')),{status:res.status,upstream:data});
+  }
+  logTransport(endpoint,res.status,'Antwort empfangen');
+  return res;
+}
 async function runJob(j){if(j.status!=='pending')throw Error('Job already reviewed');if(Date.parse(j.expiresAt)<Date.now()){j.status='expired';save();throw Error('Approval window expired');}j.status='running';j.approvedAt=now();audit('job_approved',j.type+' '+j.id);
  try{
  let result;
@@ -252,6 +281,10 @@ function serviceDue(item,cur,rate){
   return {id:item.id,name:item.name,intervalMonths:item.intervalMonths||0,intervalKm:item.intervalKm||0,override:override||null,
     lastDone:last?{entryId:last.id,date:last.date,km:last.km}:null,dueDate,dueKm,daysLeft,kmLeft,estimatedKmDate:kmDate,firstBy,status};
 }
+function wasRecent(at,ms){
+  const age=Date.now()-Date.parse(at);
+  return Number.isFinite(age)&&age>=-10000&&age<=ms;
+}
 function vehicleView(){
   const cur=currentMileage(),rate=kmPerDay(),order={overdue:0,soon:1,unknown:2,ok:3};
   return {today:today(),mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
@@ -260,14 +293,15 @@ function vehicleView(){
     due:Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate)).sort((a,b)=>order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9'))),
     items:Object.values(st.vehicle.items),
     entries:Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0)),
-    live:st.vehicle.live?Object.assign({},st.vehicle.live,{serviceHistory:st.vehicle.live.serviceHistory?Object.assign({},st.vehicle.live.serviceHistory,
+    live:st.vehicle.live?Object.assign({},st.vehicle.live,{
+      stale:st.vehicle.live.mileageAvailable!==true||M.poll.ok!==true||M.poll.appState!=='running'||!wasRecent(M.poll.heartbeatAt,90000)||!wasRecent(st.vehicle.live.mileageAt,7*60000),serviceHistory:st.vehicle.live.serviceHistory?Object.assign({},st.vehicle.live.serviceHistory,
       {sets:st.vehicle.live.serviceHistory.sets.map(x=>Object.assign({},x,{imported:!!(x.date&&historyEntryFor(x))}))}):null}):null};
 }
-function addMileage(km,date,source){
+function addMileage(km,date,source,measuredAt,mileageSource){
   const d=checkDate(date||today(),'Datum'),k=checkInt(km,'Kilometerstand',2000000);
   const before=mileagePoints().filter(p=>p.date<=d).pop();
   if(source==='manual'&&before&&k<before.km)throw Error('Kleiner als der Stand vom '+before.date+' ('+before.km.toLocaleString('de-DE')+' km)');
-  const rec={id:uid(),date:d,km:k,source,at:now()};
+  const rec={id:uid(),date:d,km:k,source,at:measuredAt||now(),mileageSource:mileageSource||undefined};
   st.vehicle.mileage.push(rec);
   if(st.vehicle.mileage.length>1000)st.vehicle.mileage.splice(0,st.vehicle.mileage.length-1000);
   save();return rec;
@@ -277,9 +311,9 @@ function noteVehicleMileage(status){
   const v=status&&status.vehicle;
   noteVehicleLive(v);
   const km=v&&v.mileageKm;
-  if(!Number.isInteger(km)||km<=0||km>2000000)return;
+  if(!Number.isInteger(km)||km<=0||km>2000000||v.appState==='stale'||!wasRecent(v.mileageAt,7*60000))return;
   const cur=currentMileage();if(cur&&(km<cur.km||(cur.date===today()&&cur.km===km)))return;
-  addMileage(km,today(),'vehicle');
+  addMileage(km,v.mileageAt.slice(0,10),'vehicle',v.mileageAt,v.mileageSource);
 }
 // Servicebedarf (CBS) und Servicehistorie, wie sie die App "Vehicle Data" auf der MGU liest.
 const str=(v,max)=>typeof v==='string'?v.slice(0,max):null;
@@ -288,12 +322,20 @@ const isoDay=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?v:null;
 function noteVehicleLive(v){
   if(!v||(v.status!=='ok'&&v.status!=='waiting'))return;
   const h=v.serviceHistory&&typeof v.serviceHistory==='object'?v.serviceHistory:null;
-  const live={at:now(),source:str(v.source,60),writtenAt:str(v.writtenAt,40),unverified:v.unverified!==false,
-    mileageKm:int(v.mileageKm,2000000),mileageAt:str(v.mileageAt,40),
-    cbs:(Array.isArray(v.cbs)?v.cbs:[]).slice(0,20).map(c=>({scope:str(c&&c.scope,40),label:str(c&&c.label,60)||'Service',remainingKm:int(c&&c.remainingKm,65534),dueDate:isoDay(c&&c.dueDate)})),
+  const live={at:str(v.writtenAt,40),source:str(v.source,60),writtenAt:str(v.writtenAt,40),unverified:v.unverified!==false,
+    mileageKm:int(v.mileageKm,2000000),mileageAt:str(v.mileageAt,40),mileageSource:str(v.mileageSource,60),
+    cbs:(Array.isArray(v.cbs)?v.cbs:[]).slice(0,20).map(c=>({scope:str(c&&c.scope,40),label:str(c&&c.label,60)||'Service',remainingKm:int(c&&c.remainingKm,65534),at:str(c&&c.at,40),dueDate:isoDay(c&&c.dueDate)})),
     serviceHistory:h?{status:str(h.status,40),readAt:str(h.readAt,40),sets:(Array.isArray(h.sets)?h.sets:[]).slice(0,60).map(x=>({date:isoDay(x&&x.date),km:int(x&&x.km,2000000),dealer:str(x&&x.dealer,40)||'',status:str(x&&x.status,40),
       services:(Array.isArray(x&&x.services)?x.services:[]).slice(0,30).map(e=>({scope:str(e&&e.scope,40),label:str(e&&e.label,60)||'Service',status:str(e&&e.status,40)}))}))}:null};
-  const before=JSON.stringify(Object.assign({},st.vehicle.live||{},{at:null}));
+  const previous=st.vehicle.live;
+  if(previous&&Number.isInteger(previous.mileageKm)&&(live.mileageKm===null||live.mileageKm<previous.mileageKm||
+    !Number.isFinite(Date.parse(live.mileageAt))||Date.parse(live.mileageAt)<Date.parse(previous.mileageAt))){
+    live.mileageAvailable=false;
+    for(const k of ['mileageKm','mileageAt','mileageSource'])live[k]=previous[k];
+  }
+  if(live.mileageAvailable===undefined)live.mileageAvailable=Number.isInteger(live.mileageKm)&&wasRecent(live.mileageAt,7*60000);
+  if(previous&&!live.serviceHistory)live.serviceHistory=previous.serviceHistory||null;
+  const before=JSON.stringify(Object.assign({},previous||{},{at:null}));
   st.vehicle.live=live;
   if(JSON.stringify(Object.assign({},live,{at:null}))!==before)save();
   try{noteCheckControl(v.checkControl);noteTyres(v.tyres);noteDpf(v.dpf);noteFaultMemory(v.faultMemory);}catch(e){audit('monitor_error',String(e.message||e).slice(0,160));}
@@ -348,7 +390,7 @@ function saveServiceEntry(d){
 // Der Pi fragt die MGU regelmäßig ab (nur lesen, wie /api/v1/status). Daraus entstehen
 // Kilometer-, Reifen- und DPF-Verlauf, Check-Control-Verlauf und Fehlerspeicher-Historie.
 // Benachrichtigungen gehen per ntfy (https://ntfy.sh oder eigener Server) an dein Handy.
-const POLL_OK_MS=2*60000,POLL_IDLE_MS=10*60000;
+const POLL_OK_MS=60000,POLL_MAX_RETRY_MS=5*60000;
 // Steuergeräte laut SVT des G21 (Adresse -> Basisvariante, Funktion). Andere Fahrzeuge: nur Adresse.
 const ECU_NAMES={0x01:'ACSM5 Airbag',0x02:'BAT Batteriesensor',0x06:'ICAM4 Kamera',0x0B:'SCR2 AdBlue',0x0D:'HKFM2 Heckklappe',0x10:'BDC_GW3 Gateway',
   0x12:'DME/DDE Motor',0x18:'EGS7 Getriebe',0x29:'DSC Bremsregelung',0x2C:'USS Parksensoren',0x30:'EPS3 Lenkung',0x37:'RAM Audio',0x39:'DSC_VIP_IB4',
@@ -406,10 +448,10 @@ function noteCheckControl(cc){
     const cur=M.cc.active[id];
     if(e.active===false){if(cur){delete M.cc.active[id];M.cc.events.push({id,active:false,text:text||cur.text,ecu,at:str(e.at,40)||now()});}return;}
     if(!cur){
-      M.cc.active[id]={id,text,description,ecu,since:str(e.since||e.at,40)||now(),lastSeen:now()};
+      M.cc.active[id]={id,text,description,ecu,since:str(e.since||e.at,40)||now(),lastSeen:str(e.lastSeen||e.at||e.since,40)};
       M.cc.events.push({id,active:true,text,ecu,at:str(e.since||e.at,40)||now()});
       notify('cc','cc:'+id,'BMW: '+(text||'Check-Control-Meldung '+id),(description||'')+(ecu!==null?' ('+ecuName(ecu)+')':''),{priority:4,tags:['warning','car']});
-    }else{cur.lastSeen=now();if(text&&!cur.text)cur.text=text;if(description&&!cur.description)cur.description=description;}
+    }else{cur.lastSeen=str(e.lastSeen||e.at||e.since,40)||cur.lastSeen;if(text&&!cur.text)cur.text=text;if(description&&!cur.description)cur.description=description;}
   };
   for(const e of Array.isArray(cc.events)?cc.events.slice(-50):[]){const k=e&&e.id+'@'+e.at+'@'+e.active;if(!k||seen.has(k))continue;seen.add(k);M.cc.seen.push(k);apply(e,true);}
   for(const a of Array.isArray(cc.active)?cc.active.slice(0,50):[])apply(Object.assign({},a,{active:true}),false);
@@ -424,7 +466,7 @@ function noteFaultMemory(fm){
     ecus:(Array.isArray(fm.ecus)?fm.ecus:[]).slice(0,120).map(e=>({ecu:int(e.ecu,255),ok:e.ok===true,nrc:str(e.nrc,8),count:int(e.count,999)})),
     dtcs:(Array.isArray(fm.dtcs)?fm.dtcs:[]).slice(0,600).filter(d=>/^[0-9A-F]{6}$/.test(String(d&&d.code))).map(d=>({ecu:int(d.ecu,255),code:d.code,status:int(d.status,255),label:str(d.label,20),active:d.active===true}))};
   M.faults.reads.push(read);trim(M.faults.reads,30);
-  if(read.error)return read;
+  if(read.error){save();return read;}
   const fresh=[];
   for(const d of read.dtcs){
     const key=d.ecu+':'+d.code,k=M.faults.known[key];
@@ -439,25 +481,38 @@ function faultsView(){
   const latest=[...M.faults.reads].reverse().find(r=>!r.error)||null,last=M.faults.reads[M.faults.reads.length-1]||null;
   const inLatest=new Set(latest?latest.dtcs.map(d=>d.ecu+':'+d.code):[]);
   const name=x=>Object.assign({},x,{ecuName:ecuName(x.ecu)});
-  return {checkControl:{active:Object.values(M.cc.active).map(name).sort((a,b)=>String(b.since).localeCompare(String(a.since))),events:[...M.cc.events].reverse().slice(0,60).map(name)},
+  return {diagnosis:{running:faultReadBusy,poll:M.poll,lastSuccess:latest&&latest.readAt},checkControl:{active:Object.values(M.cc.active).map(name).sort((a,b)=>String(b.since).localeCompare(String(a.since))),events:[...M.cc.events].reverse().slice(0,60).map(name)},
     faultMemory:{lastAttempt:last?{readAt:last.readAt,error:last.error}:null,latest:latest?Object.assign({},latest,{ecus:latest.ecus.map(name),dtcs:latest.dtcs.map(d=>Object.assign(name(d),{firstSeen:(M.faults.known[d.ecu+':'+d.code]||{}).firstSeen,isNew:(M.faults.known[d.ecu+':'+d.code]||{}).firstSeen===latest.readAt&&M.faults.reads.filter(r=>!r.error).length>1}))}):null,
       earlier:Object.values(M.faults.known).filter(k=>!inLatest.has(k.ecu+':'+k.code)).map(name).sort((a,b)=>String(b.lastSeen).localeCompare(String(a.lastSeen))).slice(0,100),
       reads:[...M.faults.reads].reverse().slice(0,10).map(r=>({readAt:r.readAt,error:r.error,count:r.dtcs.length,ecus:r.ecus.length}))},
     note:'Fehlercodes ohne Klartext: Die Texte stehen in den Steuergeräte-Beschreibungen (PRG), die hier nicht vorliegen.'};
 }
+let faultReadBusy=false;
 async function readFaultMemoryNow(){
-  const r=await(await mguRequest('POST','/v1/vehicle/fault-memory',{},100000)).json();
-  noteFaultMemory(r.faultMemory);return r.faultMemory;
+  if(faultReadBusy)throw Object.assign(Error('Eine Fehlerspeicherabfrage läuft bereits'),{status:409});
+  faultReadBusy=true;
+  try{
+    const r=await(await mguRequest('POST','/v1/vehicle/fault-memory',{},100000)).json();
+    if(!r.faultMemory||r.faultMemory.error)throw Object.assign(Error(r.faultMemory?.error||'Ungültige Diagnoseantwort'),{status:502,upstream:r});
+    noteFaultMemory(r.faultMemory);
+    return r.faultMemory;
+  }catch(e){
+    noteFaultMemory(e.upstream&&e.upstream.faultMemory||{readAt:now(),error:e.message});
+    throw e;
+  }finally{faultReadBusy=false;}
 }
 
 // ----- Reifen -----
 function noteTyres(t){
-  if(!t||!Array.isArray(t.wheels))return;
+  if(!t||!Array.isArray(t.wheels)||!wasRecent(t.at,3*60000))return;
   const wheels=t.wheels.slice(0,5).map(w=>({position:str(w.position,20),p:Number.isFinite(w.pressureBar)?w.pressureBar:null,target:Number.isFinite(w.targetBar)?w.targetBar:null,temp:int(w.temperatureC,250),battery:str(w.battery,20)})).filter(w=>w.position);
   if(!wheels.length)return;
   const last=M.tyres[M.tyres.length-1];
   const changed=!last||wheels.some(w=>{const o=last.wheels.find(x=>x.position===w.position);return !o||o.p===null||w.p===null?o?o.p!==w.p:true:Math.abs(o.p-w.p)>=0.05;});
-  if(changed||!last||Date.now()-Date.parse(last.at)>=60*60000){M.tyres.push({at:now(),wheels});trim(M.tyres,3000);save();}
+  if(last&&Date.parse(last.at)>=Date.parse(t.at))return;
+  const sample={at:t.at,wheels};
+  M.lastTyres=sample;
+  if(changed||!last||Date.parse(t.at)-Date.parse(last.at)>=60*60000){M.tyres.push(sample);trim(M.tyres,3000);save();}
   for(const w of wheels){
     if(w.p===null||w.p<0.5)continue;
     const limit=w.target?w.target*0.9:1.9;
@@ -466,26 +521,27 @@ function noteTyres(t){
 }
 const TYRE_NAMES={FRONT_LEFT:'vorne links',FRONT_RIGHT:'vorne rechts',REAR_LEFT:'hinten links',REAR_RIGHT:'hinten rechts',SPARE_TYRE:'Reserverad'};
 function tyresView(){
-  const last=M.tyres[M.tyres.length-1];if(!last)return null;
+  const last=M.lastTyres||M.tyres[M.tyres.length-1];if(!last)return null;
   const weekAgo=M.tyres.filter(s=>Date.parse(s.at)<=Date.parse(last.at)-7*86400000).pop()||M.tyres[0];
-  return {at:last.at,unverified:true,wheels:last.wheels.map(w=>{const o=weekAgo&&weekAgo.wheels.find(x=>x.position===w.position);
+  return {at:last.at,stale:!wasRecent(last.at,3*60000),unverified:true,wheels:last.wheels.map(w=>{const o=weekAgo&&weekAgo.wheels.find(x=>x.position===w.position);
     return Object.assign({},w,{name:TYRE_NAMES[w.position]||w.position,low:w.p!==null&&w.p<(w.target?w.target*0.9:1.9),change7d:o&&o.p!==null&&w.p!==null&&weekAgo!==last?Math.round((w.p-o.p)*100)/100:null,since:weekAgo!==last?weekAgo.at:null});}),
     history:M.tyres.slice(-200)};
 }
 
 // ----- Dieselpartikelfilter -----
 function noteDpf(d){
-  if(!d||typeof d!=='object')return;
+  if(!d||typeof d!=='object'||!wasRecent(d.at,8*60000))return;
   const num=v=>Number.isFinite(v)?v:null,cur=currentMileage();
-  const s={at:str(d.at,40)||now(),km:cur?cur.km:null,soot:num(d.soot),ash:num(d.ash),distance:num(d.distance),regenCount:num(d.regenCount),regenAverage:num(d.regenAverage),temperature:num(d.temperature),pressure:num(d.pressure)};
+  const s={at:d.at,fieldTimes:d.fieldTimes||{},km:cur?cur.km:null,soot:num(d.soot),ash:num(d.ash),distance:num(d.distance),regenCount:num(d.regenCount),regenAverage:num(d.regenAverage),temperature:num(d.temperature),pressure:num(d.pressure)};
   const last=M.dpf.samples[M.dpf.samples.length-1];
-  if(last&&last.at===s.at)return;
+  if(last&&Date.parse(last.at)>=Date.parse(s.at))return;
+  M.lastDpf=s;
   // Regeneration erkannt: Strecke seit der letzten Regeneration springt zurück oder der Zähler steigt.
   if(last&&((last.distance!==null&&s.distance!==null&&s.distance+20<last.distance)||(last.regenCount!==null&&s.regenCount!==null&&s.regenCount>last.regenCount)))
     {M.dpf.regens.push({at:s.at,km:s.km,distanceBefore:last.distance,sootBefore:last.soot});trim(M.dpf.regens,200);}
   if(!last||Date.now()-Date.parse(last.at)>=10*60000||M.dpf.regens.length&&M.dpf.regens[M.dpf.regens.length-1].at===s.at){M.dpf.samples.push(s);trim(M.dpf.samples,3000);save();}
 }
-function dpfView(){const last=M.dpf.samples[M.dpf.samples.length-1];return last?{latest:last,regens:[...M.dpf.regens].reverse().slice(0,30),history:M.dpf.samples.slice(-200)}:null;}
+function dpfView(){const last=M.lastDpf||M.dpf.samples[M.dpf.samples.length-1];return last?{latest:last,stale:!wasRecent(last.at,8*60000),regens:[...M.dpf.regens].reverse().slice(0,30),history:M.dpf.samples.slice(-200)}:null;}
 
 // ----- Service-Fälligkeiten melden -----
 function checkServiceNotifications(){
@@ -502,13 +558,22 @@ function checkServiceNotifications(){
 
 // ----- Hintergrundabfrage -----
 let pollTimer=null,pollBusy=false;
+M.poll=Object.assign({},M.poll,{ok:false,appState:'unknown'});
+let pollFailures=0;
+function recordMguStatus(s){
+  noteVehicleMileage(s);
+  const v=s.vehicle||{};
+  M.poll={at:now(),ok:true,error:null,lastOk:now(),vehicle:v.status,appState:v.appState||'unknown',
+    reason:v.reason||null,heartbeatAt:v.heartbeatAt||null,signals:v.signals||{},
+    lastData:v.status==='ok'&&v.writtenAt&&v.appState!=='stale'?v.writtenAt:M.poll.lastData||null};
+}
 async function pollOnce(){
   if(pollBusy)return M.poll;pollBusy=true;
   try{
     const s=await(await mguRequest('GET','/v1/status')).json();
-    noteVehicleMileage(s);
-    M.poll={at:now(),ok:true,error:null,lastOk:now(),vehicle:s.vehicle?s.vehicle.status:null};
-  }catch(e){M.poll=Object.assign({},M.poll,{at:now(),ok:false,error:String(e.message||e).slice(0,160)});}
+    recordMguStatus(s);
+    pollFailures=0;
+  }catch(e){pollFailures=Math.min(pollFailures+1,5);M.poll=Object.assign({},M.poll,{at:now(),ok:false,error:String(e.message||e).slice(0,160)});}
   finally{pollBusy=false;}
   try{checkServiceNotifications();}catch(e){}
   save();return M.poll;
@@ -518,7 +583,8 @@ function schedulePoll(){
   pollTimer=setTimeout(async()=>{
     if(st.mguConnection||(MGU&&DEVICE_TOKEN))await pollOnce();
     schedulePoll();
-  },M.poll.ok?POLL_OK_MS:POLL_IDLE_MS);
+  },M.poll.ok?POLL_OK_MS:Math.min(15000*2**pollFailures,POLL_MAX_RETRY_MS));
+  if(pollFailures)logTransport('/v1/status',null,'Wiederverbindung geplant (Versuch '+pollFailures+')');
   pollTimer.unref();
 }
 
@@ -530,20 +596,36 @@ function schedulePoll(){
 // (automatisch oder per Klick) auf den Pi geholt und nie ungefragt an Claude gegeben.
 const MGU_FILE_ROOTS=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 const LOG_NAME=/(?:\.(?:log|logs|txt|out|err|trace|dlt|journal)(?:\.\d+)?(?:\.gz)?|\.log\.\d+|_log)$/i;
+function absoluteMguPath(p){
+  if(typeof p!=='string'||p.length>4096||!p.startsWith('/')||/[\u0000-\u001f]/.test(p))throw Error('Ungültiger absoluter MGU-Pfad');
+  return path.posix.normalize(p).replace(/\/+$/,'')||'/';
+}
 function mguPath(p){
-  if(typeof p!=='string'||p.length>300||!p.startsWith('/')||/[\u0000-\u001f]/.test(p))throw Error('Ungültiger Pfad');
-  const n=path.posix.normalize(p).replace(/\/+$/,'')||'/';
+  const n=absoluteMguPath(p);
   if(!MGU_FILE_ROOTS.some(r=>n===r||n.startsWith(r+'/')))throw Error('Pfad außerhalb der freigegebenen Ordner');
   return n;
+}
+if(!Array.isArray(st.mguFavorites))st.mguFavorites=[];
+const expertSessions=new Map(),expertCommands=new Map(),downloadTickets=new Map();
+function expertUntil(key){
+  const end=expertSessions.get(key)||0;
+  if(end<=Date.now()){expertSessions.delete(key);return null;}
+  return new Date(end).toISOString();
+}
+let sshStatus={state:'unknown',at:null};
+function downloadHeaders(name){
+  return {'content-type':'application/octet-stream','content-disposition':"attachment; filename*=UTF-8''"+encodeURIComponent(name).replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16)),
+    'cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer'};
 }
 const isLogPath=p=>LOG_NAME.test(path.posix.basename(p))||p.startsWith('/var/log/');
 if(!st.logLibrary||typeof st.logLibrary!=='object')st.logLibrary={auto:false,found:{}};
 if(!st.logLibrary.found||typeof st.logLibrary.found!=='object')st.logLibrary.found={};
 
-async function fetchMguFile(p,kind){
-  const target=mguPath(p);
-  const res=await mguRequest('POST','/v1/files/read',{path:target});
-  const data=Buffer.from(await res.arrayBuffer());
+async function fetchMguFile(p,kind,direct=false){
+  const throughSsh=direct&&ssh.configured();
+  const target=throughSsh?absoluteMguPath(p):mguPath(p);
+  const data=throughSsh?await ssh.readSmall(target,8*1024*1024):
+    Buffer.from(await (await mguRequest('POST','/v1/files/read',{path:target})).arrayBuffer());
   if(data.length>8*1024*1024)throw Error('Datei größer als 8 MiB');
   const sha=hash(data);
   const same=Object.values(st.files).find(f=>f.mguPath===target&&f.sha256===sha&&fs.existsSync(path.join(UPLOADS,f.id)));
@@ -857,7 +939,7 @@ async function mcpCall(name,args,client){
       fault_memory_latest:(f=>f?{read_at:f.readAt,codes:f.dtcs.map(d=>({unit:d.ecuName,address:'0x'+d.ecu.toString(16),code:d.code,status:d.label,active:d.active,first_seen:d.firstSeen}))}:null)(faultsView().faultMemory.latest),
       tyres:(t=>t?{at:t.at,note:'Units from field names (mbar, degC), not yet confirmed',wheels:t.wheels.map(w=>({position:w.name,bar:w.p,target_bar:w.target,temp_c:w.temp,change_7d_bar:w.change7d}))}:null)(tyresView()),
       dpf:(d=>d?{latest:d.latest,regenerations:d.regens.slice(0,10)}:null)(dpfView()),
-      reported_by_vehicle:v.live?{note:'From the MGU app Vehicle Data; units not yet confirmed against the iDrive screen.',read_at:v.live.at,mileage_km:v.live.mileageKm,service_due:v.live.cbs,service_history:v.live.serviceHistory}:null,
+      reported_by_vehicle:v.live?{note:'From the MGU app Vehicle Data; units not yet confirmed against the iDrive screen.',read_at:v.live.mileageAt,mileage_source:v.live.mileageSource,stale:v.live.stale,mileage_km:v.live.mileageKm,service_due:v.live.cbs,service_history:v.live.serviceHistory}:null,
       recent_service:v.entries.slice(0,10).map(e=>({date:e.date,km:e.km,items:e.items.map(i=>st.vehicle.items[i]?st.vehicle.items[i].name:i),title:e.title,workshop:e.workshop,notes:e.notes})),
       note:'Owner-maintained records. Mileage source "vehicle" means reported by the MGU agent.'};
   }
@@ -1010,13 +1092,13 @@ async function mcpRoute(req,res,url){
   }
 }
 
-function route(req,res){const url=new URL(req.url,'http://localhost');const p=url.pathname;
+function route(req,res){const url=new URL(req.url,'http://localhost');const p=url.pathname,q=url.searchParams;
  noteOrigin(req);
  if(isMcpPath(p))return mcpRoute(req,res,url);
  // Alles andere, das über Tailscale Funnel (öffentliches Internet) ankommt, existiert nicht.
  if(req.headers['tailscale-funnel-request']!==undefined)return fail(res,404,'Not found');
  return (async()=>{
- if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:'0.8.0'});
+ if(req.method==='GET'&&p==='/health')return send(res,200,{ok:true,version:SERVER_VERSION});
  if(req.method==='POST'&&p==='/api/v1/login'){if(limited(req))return fail(res,429,'Too many attempts');const d=await body(req,4096);if(!timingPassword(d.password))return fail(res,401,'Invalid login');
   const remember=d.remember===true,days=remember?30:14;
   const t=crypto.randomBytes(32).toString('base64url');
@@ -1027,6 +1109,13 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
       :SESSION_COOKIE+'='+t+'; Path=/; Max-Age='+(30*86400)+'; Secure; HttpOnly; SameSite=Strict');
     return send(res,200,{remembered:true,expiresInDays:30});}
   return send(res,200,{token:t,expiresInDays:14,remembered:false});
+ }
+ if(req.method==='GET'&&p.startsWith('/mgu-download/')){
+  const id=p.slice('/mgu-download/'.length),ticket=downloadTickets.get(id);
+  downloadTickets.delete(id);
+  const session=ticket&&st.sessions[ticket.session];
+  if(!ticket||ticket.expires<Date.now()||!session||Date.parse(session.expires)<Date.now())return fail(res,403,'Download-Freigabe ungültig oder abgelaufen');
+  return await ssh.download(ticket.target,res,downloadHeaders(path.posix.basename(ticket.target)));
  }
  if(p.startsWith('/api/')){
   if(!auth(req))return fail(res,401,'Login required');
@@ -1048,11 +1137,11 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
    st.mguConnection={url:origin,token:pair.token,pairedAt:now()};save();audit('mgu_paired',ip);
    return send(res,200,{ok:true,host:device.host||ip,pairedAt:st.mguConnection.pairedAt});
   }
-  if(req.method==='POST'&&p==='/api/v1/logout'){delete st.sessions[hash(token(req))];save();
+  if(req.method==='POST'&&p==='/api/v1/logout'){const key=hash(token(req));delete st.sessions[key];expertSessions.delete(key);expertCommands.get(key)?.abort();save();
    res.setHeader('Set-Cookie',[SESSION_COOKIE+'=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict',SESSION_COOKIE_HTTP+'=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict']);
    audit('logout','owner');return send(res,200,{ok:true});}
   if(req.method==='GET'&&p==='/api/v1/config')return send(res,200,{model:MODEL,chatgptPlan:siwc.status(),openaiConfigured:siwc.status().permission||!!APIKEY,mguConfigured:!!st.mguConnection||(!!MGU&&!!DEVICE_TOKEN),features:{chat:true,voice:'iOS Speech framework',diagnostics:true,downloads:true,claudeMcp:true,vehicleActions:'locked pending verified ECU adapters'}});
-  if(req.method==='GET'&&p==='/api/v1/status'){let mgu=null,error=null;try{mgu=await(await mguRequest('GET','/v1/status')).json();noteVehicleMileage(mgu);}catch(e){error=e.message;}return send(res,200,{server:{online:true,at:now()},mgu,error});}
+  if(req.method==='GET'&&p==='/api/v1/status'){let mgu=null,error=null;try{mgu=await(await mguRequest('GET','/v1/status')).json();recordMguStatus(mgu);}catch(e){error=e.message;M.poll={...M.poll,ok:false,at:now(),error};}return send(res,200,{server:{online:true,at:now()},mgu,error});}
   // Only the authenticated owner can export. Files stay on this device until explicitly downloaded.
   if(req.method==='POST'&&p==='/api/v1/conversations/export'){
     const d=await body(req,12000);
@@ -1181,9 +1270,123 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
   const ve=/^\/api\/v1\/vehicle\/entries\/([0-9a-f-]{36})$/.exec(p);
   if(req.method==='DELETE'&&ve){if(!st.vehicle.entries[ve[1]])return fail(res,404,'Unbekannter Eintrag');delete st.vehicle.entries[ve[1]];save();audit('service_entry_deleted',ve[1]);return send(res,200,vehicleView());}
 
+  if(req.method==='GET'&&p==='/api/v1/connection'){
+    return send(res,200,{pi:'online',api:'reachable',agent:M.poll.ok&&wasRecent(M.poll.at,120000)? 'reachable':M.poll.at?'unreachable':'unknown',
+      ssh:ssh.configured()?sshStatus:{state:'not_configured'},poll:M.poll,diagnosis:faultsView().diagnosis});
+  }
+  if(p==='/api/v1/connection/log'){
+    if(req.method==='DELETE')diagnosticLog.length=0;
+    if(req.method==='GET'||req.method==='DELETE')return send(res,200,{entries:diagnosticLog});
+  }
+  if(req.method==='POST'&&p==='/api/v1/connection/ssh'){
+    if(!ssh.configured())return fail(res,503,'SSH-Zugang auf dem Pi nicht eingerichtet');
+    const tested=await ssh.execute('/bin/true','');
+    sshStatus={state:tested.exitCode===0?'authenticated':tested.timedOut?'timeout':'error',at:now()};
+    logTransport('/connection/ssh',tested.exitCode===0?200:null,sshStatus.state,'SSH');
+    return send(res,200,sshStatus);
+  }
+  if(p==='/api/v1/console/expert'){
+    const key=hash(token(req));
+    if(req.method==='GET')return send(res,200,{until:expertUntil(key),configured:ssh.configured()});
+    if(req.method==='POST'){
+      const d=await body(req,2048);
+      if(d.enabled===false){
+        expertSessions.delete(key);
+        expertCommands.get(key)?.abort();
+      }else{
+        if(limited(req))return fail(res,429,'Zu viele Versuche');
+        if(d.enabled!==true||!timingPassword(d.password))return fail(res,403,'Passwort oder Freigabe ungültig');
+        if(!ssh.configured())return fail(res,503,'SSH-Zugang auf dem Pi nicht eingerichtet');
+        for(const session of expertSessions.keys())expertUntil(session);
+        expertSessions.set(key,Date.now()+10*60000);
+      }
+      return send(res,200,{until:expertUntil(key),configured:ssh.configured()});
+    }
+  }
+  if(req.method==='POST'&&p==='/api/v1/console/expert/abort'){
+    const running=expertCommands.get(hash(token(req)));
+    if(running)running.abort();
+    return send(res,200,{cancelled:!!running});
+  }
+  if(req.method==='POST'&&p==='/api/v1/console/expert/run'){
+    const key=hash(token(req)),d=await body(req,48*1024);
+    if(!expertUntil(key)||d.confirmed!==true)return fail(res,403,'Expertenmodus und Freigabe für diesen Befehl erforderlich');
+    if(typeof d.command!=='string'||!d.command.trim()||d.command.length>16000||d.command.includes('\0'))return fail(res,400,'Ungültiger SSH-Befehl');
+    if(expertCommands.size)return fail(res,409,'Ein SSH-Befehl läuft bereits');
+    const controller=new AbortController(),abort=()=>controller.abort();
+    expertCommands.set(key,controller);
+    res.once('close',abort);
+    const digest=hash(d.command);
+    audit('ssh_expert_started',digest);
+    try{
+      const result=await ssh.runCommand(d.command,controller.signal);
+      logTransport('/console/expert/run',200,result.timedOut?'Timeout':result.cancelled?'Abgebrochen':'Exit '+result.exitCode,'SSH');
+      audit('ssh_expert_finished',digest+' exit='+result.exitCode+' cancelled='+result.cancelled+' timeout='+result.timedOut);
+      if(!res.destroyed)return send(res,200,result);
+    }finally{
+      res.off('close',abort);
+      expertCommands.delete(key);
+    }
+    return;
+  }
+  if(p==='/api/v1/mgu/favorites'){
+    if(req.method==='GET')return send(res,200,{favorites:st.mguFavorites});
+    if(req.method==='POST'||req.method==='DELETE'){
+      const d=await body(req,8192);
+      const favorite=st.mguFavorites.find(f=>f.id===d.id);
+      if(d.id&&!favorite||req.method==='DELETE'&&!favorite)return fail(res,404,'Favorit nicht gefunden');
+      if(req.method==='DELETE')st.mguFavorites=st.mguFavorites.filter(f=>f.id!==d.id);
+      else{
+        const name=typeof d.name==='string'?d.name.trim():'';
+        if(!name||name.length>100)return fail(res,400,'Favoritenname muss 1 bis 100 Zeichen lang sein');
+        if(favorite)favorite.name=name;
+        else{
+          if(st.mguFavorites.length>=100)return fail(res,409,'Höchstens 100 Favoriten');
+          st.mguFavorites.push({id:uid(),name,path:absoluteMguPath(d.path)});
+        }
+      }
+      save();return send(res,200,{favorites:st.mguFavorites});
+    }
+  }
+  if(req.method==='POST'&&p==='/api/v1/mgu/download-ticket'){
+    const d=await body(req,8192),target=absoluteMguPath(d.path);
+    if(!ssh.configured())return fail(res,503,'Große Direktdownloads benötigen SSH');
+    for(const [id,ticket] of downloadTickets)if(ticket.expires<Date.now())downloadTickets.delete(id);
+    if(downloadTickets.size>=20)return fail(res,429,'Zu viele offene Downloads');
+    const id=secret();
+    downloadTickets.set(id,{target,session:hash(token(req)),expires:Date.now()+15000});
+    return send(res,200,{url:'/mgu-download/'+id});
+  }
+  if(req.method==='GET'&&p==='/api/v1/mgu/download'){
+    const target=absoluteMguPath(q.get('path')),headers=downloadHeaders(path.posix.basename(target));
+    if(ssh.configured()){
+      try{
+        await ssh.download(target,res,headers);
+        logTransport('/mgu/download',200,'Übertragung abgeschlossen','SSH');
+      }catch(e){
+        logTransport('/mgu/download',e.status||null,'Übertragung fehlgeschlagen','SSH');
+        throw e;
+      }
+      return;
+    }
+    const result=await mguRequest('POST','/v1/files/read',{path:mguPath(target)});
+    const data=Buffer.from(await result.arrayBuffer());
+    res.writeHead(200,{...headers,'content-length':data.length});
+    return res.end(data);
+  }
   // ----- MGU-Dateibrowser (eigene Lesezugriffe, direkt) -----
   if(req.method==='GET'&&p==='/api/v1/mgu/roots')return send(res,200,{roots:MGU_FILE_ROOTS});
-  if(req.method==='POST'&&p==='/api/v1/mgu/browse'){const d=await body(req,2048);const listingResult=await(await mguRequest('POST','/v1/files/list',{path:mguPath(d.path)})).json();return send(res,200,listingResult);}
+  if(req.method==='POST'&&p==='/api/v1/mgu/browse'){
+    const d=await body(req,8192),target=absoluteMguPath(d.path);
+    if(ssh.configured()){
+      const offset=Number.isInteger(d.offset)&&d.offset>=0&&d.offset<10000?d.offset:0;
+      return send(res,200,await ssh.browse({path:target,offset,term:cleanText(d.term,100).toLowerCase(),recursive:d.recursive===true}));
+    }
+    const listingResult=await(await mguRequest('POST','/v1/files/list',{path:mguPath(target)})).json();
+    if(d.recursive)return fail(res,503,'Rekursive Dateisuche benötigt einen konfigurierten SSH-Zugang');
+    if(d.term)listingResult.entries=listingResult.entries.filter(e=>e.name.toLowerCase().includes(cleanText(d.term,100).toLowerCase()));
+    return send(res,200,listingResult);
+  }
   if(req.method==='POST'&&p==='/api/v1/mgu/search'){
     const d=await body(req,2048),root=mguPath(d.root),term=cleanText(d.term,60).replace(/["'*]/g,'');
     if(term.length<2)throw Error('Suchbegriff: mindestens 2 Zeichen');
@@ -1192,8 +1395,8 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     return send(res,200,{root,term,results,truncated:/180 matches/.test(String(out.stdout||''))&&results.length>=180});
   }
   if(req.method==='POST'&&p==='/api/v1/mgu/fetch'){
-    const d=await body(req,2048),kind=d.kind==='log'?'log':'mgu';
-    const {file,duplicate}=await fetchMguFile(d.path,kind);
+    const d=await body(req,8192),kind=d.kind==='log'?'log':'mgu';
+    const {file,duplicate}=await fetchMguFile(d.path,kind,true);
     if(kind==='log'){const rec=registerFoundLog(file.mguPath,'manual',file.bytes)||Object.values(st.logLibrary.found).find(r=>r.path===file.mguPath);if(rec){rec.status='saved';rec.fileId=file.id;rec.savedAt=now();}save();}
     return send(res,200,{file,duplicate});
   }
@@ -1301,7 +1504,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
   fs.createReadStream(file).pipe(res);return;
  }
  return fail(res,404,'Not found');
- })().catch(e=>{if(!res.headersSent)fail(res,400,e.message||'Internal error');else res.end();});}
+ })().catch(e=>{if(!res.headersSent)fail(res,e.status||400,e.message||'Internal error');else res.destroy();});}
 if(require.main===module){http.createServer(route).listen(PORT,HOST,()=>console.log('BMW AI Pi server: http://'+HOST+':'+PORT));setTimeout(scheduleLocalChatExport,6500);
  // Nach einem Neustart ist der Diagnosemodus aus: einen eventuell noch offenen Funnel schließen.
  if(st.mcp.autoFunnel===true)syncFunnel();

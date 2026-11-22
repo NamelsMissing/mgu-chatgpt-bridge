@@ -15,7 +15,7 @@ function notice(s){
 }
 async function api(endpoint,method='GET',data,raw){
  const headers=authHeaders();if(data&&!raw)headers['content-type']='application/json';
- const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined});
+ const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined,signal:AbortSignal.timeout(endpoint==='/faults/read'?110000:60000)});
  const result=await res.json().catch(()=>({error:'Invalid response'}));
  if(!res.ok)throw Error(result.error||'HTTP '+res.status);
  return result;
@@ -90,8 +90,8 @@ const barText=v=>v===null||v===undefined?'–':v.toFixed(2).replace('.',',')+' b
 const num1=v=>v===null||v===undefined?'–':(Math.round(v*10)/10).toLocaleString('de-DE');
 function renderTyres(t){
  const box=$('tyreList');box.replaceChildren();
- $('tyreAge').textContent=t?'gelesen '+stamp(t.at):'keine Daten';
- $('tyreAge').className='pill '+(t&&Date.now()-Date.parse(t.at)<3600000?'pill-live':'pill-off');
+ $('tyreAge').textContent=t?(t.stale?'Veraltet · ':'Gelesen · ')+stamp(t.at):'keine Daten';
+ $('tyreAge').className='pill '+(t&&!t.stale?'pill-live':'pill-off');
  if(!t){box.appendChild(txt('p','Noch keine Reifendaten. Sie kommen von der App „Vehicle Data“, sobald das Fahrzeug sie sendet.','hint'));return;}
  for(const w of t.wheels){
   const card=txt('div','','tyre'+(w.low?' tyre-low':''));
@@ -104,13 +104,14 @@ function renderTyres(t){
 }
 function renderDpf(d){
  const vals=$('dpfValues'),regs=$('dpfRegens');vals.replaceChildren();regs.replaceChildren();
- $('dpfAge').textContent=d?'gelesen '+stamp(d.latest.at):'keine Daten';
- $('dpfAge').className='pill '+(d&&Date.now()-Date.parse(d.latest.at)<3600000?'pill-live':'pill-off');
+ $('dpfAge').textContent=d?(d.stale?'Veraltet · ':'Gelesen · ')+stamp(d.latest.at):'keine Daten';
+ $('dpfAge').className='pill '+(d&&!d.stale?'pill-live':'pill-off');
  if(!d){vals.appendChild(txt('p','Noch keine Werte. Sie kommen alle 5 Minuten bei laufendem Auto von der App „Vehicle Data“.','hint'));return;}
  const l=d.latest;
- for(const [label,value,unit] of [['Ruß',l.soot,' g'],['Asche',l.ash,' g'],['Seit Regeneration',l.distance,' km'],['Regenerationen',l.regenCount,''],['Ø Abstand',l.regenAverage,' km'],['Temperatur',l.temperature,' °C']]){
+ for(const [label,key,unit] of [['Ruß','soot',' g'],['Asche','ash',' g'],['Seit Regeneration','distance',' km'],['Regenerationen','regenCount',''],['Ø Abstand','regenAverage',' km'],['Temperatur','temperature',' °C']]){
+  const value=l[key],at=l.fieldTimes&&l.fieldTimes[key];
   if(value===null||value===undefined)continue;
-  const c=txt('div','','stat');c.appendChild(txt('span',label,'hint'));c.appendChild(txt('strong',num1(value)+unit));vals.appendChild(c);
+  const c=txt('div','','stat');c.appendChild(txt('span',label,'hint'));c.appendChild(txt('strong',num1(value)+unit));c.appendChild(txt('span',at?'DDE · '+stamp(at)+(Date.now()-Date.parse(at)>8*60000?' · älter als 8 Min.':''):'Zeitpunkt je Messwert unbekannt','hint'));vals.appendChild(c);
  }
  if(!d.regens.length)regs.appendChild(txt('p','Noch keine Regeneration erkannt.','hint'));
  for(const r of d.regens){
@@ -135,8 +136,10 @@ function dtcRow(d,extra){
 }
 function renderFaults(f){
  setFaultBadge(f);
+ const diagnosis=f.diagnosis||{},poll=diagnosis.poll||{},ecu=poll.signals&&poll.signals.Diagnostics;
+ $('faultConnection').textContent=[poll.ok?'MGU erreichbar':'MGU-Status: '+(poll.error||'unbekannt'),vehicleState(poll),ecu?(ecu.available?'Diagnosedienst erreichbar':ecu.error||'Diagnosedienst nicht verfügbar'):'Keine Rückmeldung vom Diagnosedienst',diagnosis.running?'Abfrage läuft':''].filter(Boolean).join(' · ');
  const act=$('ccActive');act.replaceChildren();
- if(!f.checkControl.active.length)act.appendChild(txt('p','Keine aktive Meldung.','hint'));
+ if(!f.checkControl.active.length)act.appendChild(txt('p','Keine aktive Meldung im letzten gespeicherten Stand.','hint'));
  for(const c of f.checkControl.active){
   const card=txt('div','','due due-overdue');
   card.appendChild(txt('strong',c.text||'Meldung '+c.id));
@@ -416,9 +419,9 @@ function consoleAddLine(content,kind){
 function consolePrint(content,kind='output'){
  const text=String(content);
  consoleAddLine(text,kind);
- consoleTranscript.push({kind,text:text.slice(0,40000)});
+ consoleTranscript.push({kind,text});
  consoleTranscript=consoleTranscript.slice(-90);
- try{sessionStorage.setItem(CONSOLE_TRANSCRIPT_KEY,JSON.stringify(consoleTranscript));}catch(e){}
+ try{sessionStorage.setItem(CONSOLE_TRANSCRIPT_KEY,JSON.stringify(consoleTranscript.map(entry=>({...entry,text:entry.text.slice(0,40000)}))));}catch(e){}
 }
 function consoleRestore(){
  try{
@@ -434,18 +437,48 @@ function consoleSetResult(message,error=false){
 }
 function consoleCommandSafetyProblem(command){
  if(command.length>450)return 'Der Befehl ist zu lang (maximal 450 Zeichen).';
- const first=command.trim().split(/\s+/)[0].toLowerCase();
- const allowed=['help','pwd','uname','uptime','ip','ps','systemctl','ls','cat','head','tail','grep','find','strings','stat','sha256sum'];
- if(!allowed.includes(first))return 'Der Befehl „'+first+'“ wird hier nicht unterstützt. Nutze „help“ für erlaubte Lesebefehle.';
- let quote='';
- for(const ch of command){
-  if(quote){if(ch===quote)quote='';continue;}
-  if(ch==='"'||ch==="'"){quote=ch;continue;}
-  if(/[;&|<>$\\]/.test(ch)||ch.charCodeAt(0)===96)
-   return 'Shell-Schleifen, Pipes (|), Umleitungen (>) und Variablen sind nicht erlaubt. Gib einen einzelnen Lesebefehl ein. Für vollständige SSH-Befehle verwende die separate MGU-SSH-App.';
- }
- if(quote)return 'Anführungszeichen nicht geschlossen.';
+ if(/[\r\n]/.test(command))return 'Der Lesemodus nimmt jeweils einen Befehl entgegen.';
  return '';
+}
+let expertUntil=null,expertRunning=false;
+function setExpert(state){
+ expertUntil=state.until;
+ $('consoleMode').textContent=expertUntil?'Expertenmodus · Schreibzugriff möglich':'Lesemodus';
+ $('expertToggle').textContent=expertUntil?'Expertenmodus beenden':'Expertenmodus freigeben';
+ $('expertToggle').disabled=!state.configured;
+ $('expertPassword').hidden=!!expertUntil||!state.configured;
+}
+$('expertToggle').onclick=async()=>{
+ const password=$('expertPassword').value;
+ $('expertPassword').value='';
+ try{setExpert(await api('/console/expert','POST',expertUntil?{enabled:false}:{enabled:true,password}));}
+ catch(e){consoleSetResult(e.message,true);}
+};
+$('expertAbort').onclick=async()=>{
+ try{await api('/console/expert/abort','POST');}catch(e){consoleSetResult(e.message,true);}
+};
+$('copyCommand').onclick=async()=>{
+ try{await navigator.clipboard.writeText($('consoleInput').value||consoleHistory[consoleHistory.length-1]||'');}
+ catch(e){consoleSetResult(e.message,true);}
+};
+async function runExpert(command){
+ if(expertRunning)return;
+ if(!confirm('Diesen SSH-Befehl mit möglichen Schreibzugriffen ausführen?\n\n'+command))return;
+ expertRunning=true;
+ $('expertAbort').disabled=false;
+ consoleLock(true);
+ consoleHistory.push(command);consoleHistory=consoleHistory.slice(-40);consoleHistoryIndex=consoleHistory.length;
+ consolePrint('ssh $ '+command,'cmd');
+ consoleSetResult('SSH-Befehl läuft …');
+ try{
+  const r=await api('/console/expert/run','POST',{command,confirmed:true});
+  if(r.stdout)consolePrint(r.stdout,'output');
+  if(r.stderr)consolePrint(r.stderr,'error');
+  const result=r.cancelled?'SSH-Verbindung abgebrochen':r.timedOut?'Zeitlimit erreicht':r.outputLimit?'Ausgabelimit erreicht':'Exit-Code '+r.exitCode;
+  consoleSetResult(result,r.exitCode!==0);
+  consolePrint(result,r.exitCode===0?'success':'error');
+ }catch(e){consoleSetResult(e.message,true);}
+ finally{expertRunning=false;$('expertAbort').disabled=true;consoleLock(false);}
 }
 function consoleHumanError(err){
  const raw=String(err&&err.message||err||'Unbekannter Fehler');
@@ -463,7 +496,8 @@ function consoleHumanError(err){
 function consoleLock(locked){$('consoleSend').disabled=locked;$('consoleInput').disabled=locked;}
 async function refreshConsoleConnection(){
  const label=$('consoleConnectionText'),dot=$('consoleDot');
- label.textContent='Prüfen ...';dot.className='console-dot';
+ label.textContent='Prüfen …';dot.className='console-dot';
+ api('/console/expert').then(setExpert).catch(e=>consoleSetResult(e.message,true));
  try{
   const d=await api('/status');
   if(d.mgu&&d.mgu.online===true){label.textContent='MGU verbunden';dot.className='console-dot is-online';}
@@ -474,8 +508,12 @@ $('consoleRefreshConnection').onclick=refreshConsoleConnection;
 $('consoleCommandForm').onsubmit=async event=>{
  event.preventDefault();
  if(pendingConsoleId)return consoleSetResult('Zuerst die offene Freigabe bestätigen oder abbrechen.',true);
- const command=$('consoleInput').value.trim();
- if(!command)return consoleSetResult('Gib zuerst einen Befehl ein.',true);
+ const command=$('consoleInput').value;
+ if(!command.trim())return consoleSetResult('Gib zuerst einen Befehl ein.',true);
+ if(expertUntil){
+  if(Date.parse(expertUntil)<=Date.now()){setExpert({configured:true,until:null});return consoleSetResult('SSH-Freigabe abgelaufen.',true);}
+  return runExpert(command);
+ }
  const problem=consoleCommandSafetyProblem(command);
  consolePrint('mgu $ '+command,'cmd');
  if(problem){consolePrint('Nicht ausgeführt: '+problem,'error');consoleSetResult(problem,true);return;}
@@ -492,8 +530,9 @@ $('consoleCommandForm').onsubmit=async event=>{
  }catch(err){const msg=consoleHumanError(err);consolePrint('FEHLER: '+msg,'error');consoleSetResult(msg,true);consoleLock(false);}
 };
 $('consoleInput').onkeydown=event=>{
- if(event.key==='ArrowUp'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.max(0,consoleHistoryIndex-1);$('consoleInput').value=consoleHistory[consoleHistoryIndex];}
- else if(event.key==='ArrowDown'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.min(consoleHistory.length,consoleHistoryIndex+1);$('consoleInput').value=consoleHistoryIndex===consoleHistory.length?'':consoleHistory[consoleHistoryIndex];}
+ if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();$('consoleCommandForm').requestSubmit();}
+ if(event.altKey&&event.key==='ArrowUp'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.max(0,consoleHistoryIndex-1);$('consoleInput').value=consoleHistory[consoleHistoryIndex];}
+ else if(event.altKey&&event.key==='ArrowDown'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.min(consoleHistory.length,consoleHistoryIndex+1);$('consoleInput').value=consoleHistoryIndex===consoleHistory.length?'':consoleHistory[consoleHistoryIndex];}
 };
 $('consoleApprove').onclick=async()=>{
  if(!pendingConsoleId)return;
@@ -502,6 +541,7 @@ $('consoleApprove').onclick=async()=>{
  try{
   const d=await api('/jobs/'+id+'/approve','POST'),out=d.job.result||{};
   const content=typeof out.stdout==='string'?out.stdout:JSON.stringify(out,null,2);
+  if(out.stderr)consolePrint(out.stderr,'error');
   consolePrint(content||'(keine Ausgabe)',content.startsWith('[unavailable]')?'error':'output');
   consolePrint('Beendet · Exit-Code '+(out.exitCode===undefined?'unbekannt':out.exitCode),out.exitCode===0?'success':'error');
   consoleSetResult('Befehl abgeschlossen.');refreshJobs();
@@ -618,16 +658,16 @@ function renderVehicle(v){
 }
 function renderReported(v){
  const live=v.live,box=$('cbsList'),hist=$('historyList');box.replaceChildren();hist.replaceChildren();
- $('reportedAge').textContent=live?'gelesen '+stamp(live.at):'keine Daten';
- $('reportedAge').className='pill '+(live&&Date.now()-Date.parse(live.at)<3600000?'pill-live':'pill-off');
+ $('reportedAge').textContent=live?(live.stale?'Letzter gespeicherter Stand':'Vehicle Data empfängt Werte'):'Keine Daten';
+ $('reportedAge').className='pill '+(live&&!live.stale?'pill-live':'pill-off');
  if(!live){box.appendChild(txt('p','Noch nichts vom Fahrzeug. Dafür muss auf der MGU die App „Vehicle Data“ installiert sein und einmal gelaufen sein.','hint'));return;}
- if(live.mileageKm!==null)box.appendChild(txt('p','Kilometerstand laut Fahrzeug: '+kmText(live.mileageKm)+(live.mileageAt?' ('+stamp(live.mileageAt)+')':'')));
+ if(live.mileageKm!==null)box.appendChild(txt('p','Kilometerstand laut Fahrzeug: '+kmText(live.mileageKm)+' · '+(live.mileageSource||'Quelle nicht übermittelt')+' · '+(stamp(live.mileageAt)||'Zeitpunkt unbekannt')+(live.stale?' · veraltet':'')));
  if(!live.cbs.length)box.appendChild(txt('p','Noch keine Servicebedarf-Meldung empfangen.','hint'));
  for(const c of live.cbs){
   const row=txt('div','','list-row'),info=txt('div','','request-info');
   info.appendChild(txt('strong',c.label));
   row.appendChild(info);
-  const parts=[c.dueDate?'bis '+dateText(c.dueDate):'',c.remainingKm!==null?'noch '+kmText(c.remainingKm):''].filter(Boolean);
+  const parts=[c.dueDate?'bis '+dateText(c.dueDate):'',c.remainingKm!==null?'noch '+kmText(c.remainingKm):'',c.at?'CBS · '+stamp(c.at):''].filter(Boolean);
   row.appendChild(txt('span',parts.join(' · ')||'–',c.remainingKm===0?'error':''));
   box.appendChild(row);
  }
@@ -651,11 +691,8 @@ async function refreshVehicle(){
  // Liefert der MGU-Agent einen Kilometerstand, übernimmt der Server ihn dabei.
  try{
   const s=await api('/status'),veh=s.mgu&&s.mgu.vehicle;
-  $('vehicleLive').textContent=!s.mgu?'MGU nicht erreichbar: '+String(s.error||'').slice(0,120)
-   :veh&&Number.isInteger(veh.mileageKm)?'Live vom Fahrzeug: '+kmText(veh.mileageKm)+' (Vehicle Data, Einheit noch nicht abgeglichen)'
-   :veh&&veh.status==='waiting'?'Vehicle Data läuft, hat aber noch keinen Kilometerstand vom Fahrzeug.'
-   :'Live-Daten vom Fahrzeug: '+((veh&&veh.reason)||'keine Quelle auf der MGU')+'. Bis dahin zählt dein eingetragener Stand.';
-  if(veh&&(veh.status==='ok'||veh.status==='waiting'))renderVehicle(await api('/vehicle'));
+  $('vehicleLive').textContent=!s.mgu?'MGU nicht erreichbar · '+String(s.error||'').slice(0,120):vehicleState(veh||{});
+  renderVehicle(await api('/vehicle'));
  }catch(e){$('vehicleLive').textContent='Live-Daten nicht abrufbar: '+e.message;}
 }
 $('refreshVehicle').onclick=refreshVehicle;
@@ -726,61 +763,112 @@ async function fetchFromMgu(p,kind,button){
  }catch(e){notice(e.message);return null;}
  finally{if(button)button.disabled=false;}
 }
-function mguFileRow(fullPath,bytes,kind){
- const row=txt('div','','list-row'),name=fullPath.split('/').pop();
- if(kind==='directory'){
-  const b=txt('button','📁 '+name,'linkbutton');b.onclick=()=>browseMgu(fullPath);row.appendChild(b);
-  return row;
- }
- const info=txt('div','','request-info');info.appendChild(txt('span',name));
- info.appendChild(txt('span',[sizeText(bytes),kind==='symlink'?'Verknüpfung (nicht lesbar)':''].filter(Boolean).join(' · ')||fullPath,'hint'));
+function mguFileRow(fullPath,entry){
+ const row=txt('div','','list-row'),name=entry.name;
+ const info=txt('div','','request-info');
+ info.appendChild(txt('strong',name));
+ info.appendChild(txt('span',[entry.kind,sizeText(entry.bytes),stamp(entry.mtime)].filter(Boolean).join(' · '),'hint'));
  row.appendChild(info);
- if(kind==='file'||kind===undefined){
+ if(entry.kind==='directory'||entry.kind==='symlink'){
+  const b=txt('button','Öffnen','linkbutton');b.onclick=()=>browseMgu(fullPath);row.appendChild(b);
+ }
+ if(entry.kind==='file'){
   const dl=txt('button','Herunterladen','secondary');
-  dl.onclick=async()=>{const f=await fetchFromMgu(fullPath,isLogName(name)||fullPath.startsWith('/var/log/')?'log':'mgu',dl);if(f)authenticatedDownload('/files/'+f.id+'/download',f.name);};
-  row.appendChild(dl);
-  if(isLogName(name)||fullPath.startsWith('/var/log/')){const lg=txt('button','Als Log speichern','textbutton');lg.onclick=()=>fetchFromMgu(fullPath,'log',lg);row.appendChild(lg);}
+  dl.onclick=async()=>{
+   dl.disabled=true;
+   try{
+    if(entry.bytes>16*1024*1024){
+     const ticket=await api('/mgu/download-ticket','POST',{path:fullPath});
+     const link=document.createElement('a');
+     link.href=ticket.url;link.download=fullPath.split('/').pop();link.rel='noreferrer';
+     document.body.appendChild(link);link.click();link.remove();
+     notice('Übertragung an den Download-Manager übergeben.');
+     return;
+    }
+    const response=await fetch('/api/v1/mgu/download?path='+encodeURIComponent(fullPath),{headers:authHeaders(),signal:AbortSignal.timeout(605000)});
+    if(!response.ok)throw Error((await response.json()).error||'HTTP '+response.status);
+    const length=Number(response.headers.get('content-length')),reader=response.body.getReader(),chunks=[];
+    let bytes=0;
+    while(true){
+     const result=await reader.read();if(result.done)break;
+     chunks.push(result.value);bytes+=result.value.length;
+     dl.textContent=sizeText(bytes)+(length?' / '+sizeText(length):'');
+    }
+    if(bytes!==length)throw Error('Download wurde unvollständig übertragen');
+    triggerFileDownload(new Blob(chunks),fullPath.split('/').pop());
+    notice('Datei vollständig an den Browser übertragen.');
+   }catch(e){notice(e.message);}
+   finally{dl.disabled=false;dl.textContent='Herunterladen';}
+  };
+  const save=txt('button','Auf Pi speichern','textbutton');
+  save.onclick=()=>fetchFromMgu(fullPath,isLogName(name)||fullPath.startsWith('/var/log/')?'log':'mgu',save);
+  row.append(dl,save);
  }
  return row;
 }
-function renderCrumbs(p){
- const c=$('mguCrumbs');c.replaceChildren();if(!p)return;
- const root=mguRootsList.find(r=>p===r||p.startsWith(r+'/'))||p,rest=p.slice(root.length).split('/').filter(Boolean);
- let acc=root;const add=(label,target)=>{const b=txt('button',label,'linkbutton');b.onclick=()=>browseMgu(target);c.appendChild(b);};
- add(root,root);for(const seg of rest){acc+='/'+seg;c.appendChild(txt('span','/','hint'));add(seg,acc);}
+let browseSequence=0,mguListing=null,mguFavorites=[];
+function renderMguListing(){
+ const box=$('mguListing'),d=mguListing;
+ if(!d)return;
+ box.replaceChildren();
+ const sort=$('mguSort').value;
+ const entries=[...d.entries].sort((a,b)=>sort==='bytes'?a.bytes-b.bytes:String(a[sort]||'').localeCompare(String(b[sort]||'')));
+ for(const e of entries)box.appendChild(mguFileRow(d.file?d.path:d.path.replace(/\/$/,'')+'/'+e.name,e));
+ if(!entries.length)box.appendChild(txt('p','Keine passenden Einträge.','hint'));
+ if(d.skipped)box.appendChild(txt('p',d.skipped+' Einträge konnten nicht gelesen werden.','hint'));
+ if(d.next!==null&&d.next!==undefined){
+  const more=txt('button','Nächste Seite','secondary');
+  more.onclick=()=>browseMgu(d.path,d.term,d.recursive,d.next);box.appendChild(more);
+ }else if(d.truncated)box.appendChild(txt('p','Suchgrenze erreicht. Gib einen genaueren Suchbegriff ein.','hint'));
 }
-async function browseMgu(p){
- const box=$('mguListing');box.replaceChildren(txt('p','Lade '+p+' …','hint'));
+async function browseMgu(p,term='',recursive=false,offset=0){
+ const box=$('mguListing'),serial=++browseSequence;
+ box.replaceChildren(txt('p','Lade '+p+' …','hint'));
+ mguListing=null;
  try{
-  const d=await api('/mgu/browse','POST',{path:p});mguCurrent=d.path||p;renderCrumbs(mguCurrent);box.replaceChildren();
-  const root=mguRootsList.find(r=>mguCurrent===r||mguCurrent.startsWith(r+'/'));if(root)$('mguSearchRoot').value=root;
-  const entries=[...(d.entries||[])].sort((a,b)=>(a.kind==='directory'?0:1)-(b.kind==='directory'?0:1)||a.name.localeCompare(b.name));
-  if(!entries.length)box.appendChild(txt('p','Ordner ist leer.','hint'));
-  for(const e of entries)box.appendChild(mguFileRow(mguCurrent+'/'+e.name,e.bytes,e.kind));
-  if(entries.length>=200)box.appendChild(txt('p','Nur die ersten 200 Einträge. Nutze die Suche.','hint'));
- }catch(e){box.replaceChildren(txt('p',e.message,'error'));}
+  const d=await api('/mgu/browse','POST',{path:p,term,recursive,offset});
+  if(serial!==browseSequence)return;
+  mguCurrent=d.path||p;$('mguPathInput').value=mguCurrent;
+  $('mguCrumbs').textContent=mguCurrent;
+  mguListing={...d,term,recursive};renderMguListing();
+ }catch(e){if(serial===browseSequence)box.replaceChildren(txt('p',e.message,'error'));}
 }
-$('mguSearch').onclick=async()=>{
- const term=$('mguSearchTerm').value.trim(),root=$('mguSearchRoot').value,box=$('mguListing');
- if(term.length<2)return notice('Mindestens 2 Zeichen eingeben.');
- box.replaceChildren(txt('p','Suche „'+term+'“ in '+root+' …','hint'));$('mguCrumbs').replaceChildren(txt('span','Suchergebnisse in '+root,'hint'));
- try{
-  const d=await api('/mgu/search','POST',{root,term});box.replaceChildren();
-  if(!d.results.length)box.appendChild(txt('p','Nichts gefunden (bis 4 Ebenen tief).','hint'));
-  for(const r of d.results){
-   const row=mguFileRow(r,null,undefined),open=txt('button','Ordner öffnen','textbutton');
-   open.onclick=()=>browseMgu(r.slice(0,r.lastIndexOf('/'))||root);row.appendChild(open);box.appendChild(row);
-  }
-  if(d.truncated)box.appendChild(txt('p','Mehr als 180 Treffer, bitte genauer suchen.','hint'));
- }catch(e){box.replaceChildren(txt('p',e.message,'error'));}
-};
+$('mguOpen').onclick=()=>browseMgu($('mguPathInput').value.trim());
+$('mguPathInput').onkeydown=e=>{if(e.key==='Enter')$('mguOpen').click();};
+$('mguParent').onclick=()=>browseMgu(mguCurrent.slice(0,mguCurrent.lastIndexOf('/'))||'/');
+$('mguSort').onchange=renderMguListing;
+$('mguSearch').onclick=()=>browseMgu(($('mguPathInput').value||mguCurrent).trim(),$('mguSearchTerm').value.trim(),$('mguRecursive').checked);
 $('mguSearchTerm').onkeydown=e=>{if(e.key==='Enter')$('mguSearch').click();};
+function showFavorites(data){
+ mguFavorites=data.favorites;
+ const sel=$('mguFavorites'),previous=sel.value;
+ sel.replaceChildren(new Option('Favoriten',''),...mguFavorites.map(f=>new Option(f.name,f.id)));
+ if(mguFavorites.some(f=>f.id===previous))sel.value=previous;
+}
+const selectedFavorite=()=>mguFavorites.find(f=>f.id===$('mguFavorites').value);
+$('mguFavorites').onchange=()=>{const f=selectedFavorite();if(f)browseMgu(f.path);};
+$('favoriteAdd').onclick=async()=>{
+ const name=prompt('Name des Favoriten');
+ if(!name)return;
+ try{showFavorites(await api('/mgu/favorites','POST',{name,path:$('mguPathInput').value.trim()}));}catch(e){notice(e.message);}
+};
+$('favoriteRename').onclick=async()=>{
+ const f=selectedFavorite();if(!f)return notice('Wähle einen Favoriten.');
+ const name=prompt('Neuer Name',f.name);if(!name)return;
+ try{showFavorites(await api('/mgu/favorites','POST',{id:f.id,name}));}catch(e){notice(e.message);}
+};
+$('favoriteDelete').onclick=async()=>{
+ const f=selectedFavorite();if(!f)return notice('Wähle einen Favoriten.');
+ if(!confirm('Favorit „'+f.name+'“ löschen?'))return;
+ try{showFavorites(await api('/mgu/favorites','DELETE',{id:f.id}));}catch(e){notice(e.message);}
+};
 async function loadMguRoots(){
- if(mguRootsList.length)return;
  try{
+  showFavorites(await api('/mgu/favorites'));
+  if(mguRootsList.length)return;
   mguRootsList=(await api('/mgu/roots')).roots;
-  const chips=$('mguRoots'),sel=$('mguSearchRoot');chips.replaceChildren();sel.replaceChildren();
-  for(const r of mguRootsList){const b=txt('button',r,'console-chip');b.onclick=()=>browseMgu(r);chips.appendChild(b);sel.appendChild(new Option(r,r));}
+  const chips=$('mguRoots');chips.replaceChildren();
+  for(const r of mguRootsList){const b=txt('button',r,'console-chip');b.onclick=()=>browseMgu(r);chips.appendChild(b);}
  }catch(e){notice(e.message);}
 }
 const FOUND_STATES={new:'Neu',queued:'Wird geholt',saving:'Wird geholt',saved:'Gespeichert',failed:'Fehlgeschlagen',ignored:'Ignoriert'};
@@ -1050,7 +1138,52 @@ async function refreshLogs(){
 }
 $('refreshLogs').onclick=refreshLogs;
 $('downloadLogs').onclick=()=>authenticatedDownload('/logs/download','bmw-ai-logs.json');
-function refreshSystem(){refreshUpdates();refreshLogs();refreshNotify();}
+function vehicleState(v){
+ const states={running:'Vehicle Data aktiv',stale:'Vehicle Data · Heartbeat veraltet',
+  not_detected:'Vehicle Data nicht gefunden',no_snapshot:'Vehicle Data installiert · Snapshot fehlt',
+  snapshot_error:'Vehicle Data · Snapshot fehlerhaft',storage_unavailable:'OAP-Speicher nicht erreichbar',unknown:'Vehicle Data · Startstatus unbekannt'};
+ return [states[v.appState]||'Vehicle Data · Status unbekannt',v.reason||'',(v.status||v.vehicle)==='waiting'?'Wartet auf Fahrzeugwerte':''].filter(Boolean).join(' · ');
+}
+let connectionEntries=[];
+async function refreshConnection(probe=false){
+ try{
+  if(probe)await api('/monitor/poll','POST');
+  const d=await api('/connection'),p=d.poll||{},ecu=p.signals&&p.signals.Diagnostics;
+  $('connectionStatus').textContent=[
+   'Raspberry Pi online · Web-API erreichbar',
+   'MGU-Agent '+({reachable:'erreichbar',unreachable:'nicht erreichbar',unknown:'ungeprüft'}[d.agent])+(p.error?' · '+p.error:''),
+   'SSH '+({unknown:'ungeprüft',authenticated:'authentifiziert',error:'Verbindungs- oder Anmeldefehler',timeout:'Zeitüberschreitung',not_configured:'nicht konfiguriert'}[d.ssh.state]||d.ssh.state),
+   vehicleState(p),
+   'Letzter Snapshot mit Fahrzeugwerten · '+(stamp(p.lastData)||'unbekannt'),
+   'Diagnose · '+(d.diagnosis.running?'läuft':ecu?(ecu.available?'bereit':ecu.error||'nicht verfügbar'):'ungeprüft'),
+   'Letzter erfolgreicher Fehlerscan · '+(stamp(d.diagnosis.lastSuccess)||'unbekannt')
+  ].join('\n');
+  if($('connectionLogPanel').open)await refreshConnectionLog();
+ }catch(e){$('connectionStatus').textContent='Web-API nicht erreichbar · '+e.message;}
+}
+function logText(){
+ return connectionEntries.map(e=>[e.at,e.component,e.endpoint,e.status||'–',e.outcome].join(' · ')).join('\n');
+}
+async function refreshConnectionLog(method='GET'){
+ try{
+  connectionEntries=(await api('/connection/log',method)).entries;
+  const out=$('connectionLog');out.textContent=logText();
+  if($('connectionLogScroll').checked)out.scrollTop=out.scrollHeight;
+ }catch(e){notice(e.message);}
+}
+$('connectionRefresh').onclick=()=>refreshConnection(true);
+$('sshProbe').onclick=async()=>{
+ $('sshProbe').disabled=true;
+ try{await api('/connection/ssh','POST');await refreshConnection();}
+ catch(e){notice(e.message);}finally{$('sshProbe').disabled=false;}
+};
+$('connectionLogPanel').ontoggle=()=>{if($('connectionLogPanel').open)refreshConnectionLog();};
+$('connectionLogClear').onclick=()=>refreshConnectionLog('DELETE');
+$('connectionLogCopy').onclick=()=>navigator.clipboard.writeText(logText()).catch(e=>notice(e.message));
+$('connectionLogText').onclick=()=>triggerFileDownload(new Blob([logText()],{type:'text/plain'}),'bmw-ai-verbindungen.txt');
+$('connectionLogJson').onclick=()=>triggerFileDownload(new Blob([JSON.stringify(connectionEntries,null,2)],{type:'application/json'}),'bmw-ai-verbindungen.json');
+setInterval(()=>{if(token&&currentTab==='system')refreshConnection();},5000);
+function refreshSystem(){refreshUpdates();refreshLogs();refreshNotify();refreshConnection();}
 
 // ----- Automatically refresh this already-open webpage after a successful Pi update -----
 // The server embeds its running version into HTML on each page load. Re-check via

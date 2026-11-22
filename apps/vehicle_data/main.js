@@ -58,10 +58,13 @@ class ReadOnlyDiag extends Diag {
 mgu.run({
     async start(ctx) {
         const { ui, log, signals } = ctx;
-        const snap = new VehicleSnapshot({ dir: ctx.dataDir, version: (ctx.spec && ctx.spec.version) || '' });
+        const dataDir = path.resolve(__dirname, '..', '..', 'data');
+        const snap = new VehicleSnapshot({ dir: dataDir, onError: (e) => log.warn('Vehicle Data IPC: ' + e), version: (ctx.spec && ctx.spec.version) || '' });
         const faults = new FaultState();
         snap.extra = () => faults.document();
-        const flush = () => { try { snap.flush(); } catch (e) { log.warn('vehicle snapshot: ' + e); } };
+        const flush = (force) => { try { snap.flush(force); } catch (e) { log.warn('vehicle snapshot: ' + e); } };
+        flush(true);
+        setInterval(() => flush(true), 20000);
         let page = 0, historyProxy = null, historyBusy = false, kombi = null, notice = '';
         let diag = null, dids = null, diagBusy = false, lastRequest = null, lastSecondary = 0;
         const shapes = {};
@@ -69,8 +72,10 @@ mgu.run({
         // Log the raw shape of each signal once, to check units against iDrive's own screens.
         const firstRaw = (name, v) => { if (!shapes[name]) { shapes[name] = true; log.info('vehicle raw ' + name + ': ' + JSON.stringify(v).slice(0, 600)); } };
 
-        const watch = (iface, handlers, opts) => signals.watch(iface, '1', handlers, log, opts)
-            .then((s) => { snap.available(iface.split('.').pop(), !s.error, s.error); flush(); return s; })
+        const watch = (iface, handlers, opts) => signals.watch(iface, '1', handlers, log, Object.assign({}, opts, {
+            onAvailability: (ok) => { snap.available(iface.split('.').pop(), ok); flush(); },
+        }))
+            .then((s) => { snap.available(iface.split('.').pop(), s.available, s.error); flush(); return s; })
             .catch((e) => { snap.available(iface.split('.').pop(), false, e); flush(); });
         watch(SECURE, { mileage: (v) => { firstRaw('SecureMileage', v); snap.secureMileage(v); flush(); } }, { pollMs: 5 * 60000 });
         watch(SUPREME, { mileageSupreme: (v) => { firstRaw('MileageSupreme', v); snap.mileageSupreme(v); flush(); } }, { pollMs: 5 * 60000 });
@@ -112,6 +117,7 @@ mgu.run({
                 snap.available('ServiceHistory', true);
                 notice = 'Service history read (' + reason + ')';
             } catch (e) {
+                historyProxy = null;
                 snap.available('ServiceHistory', false, e);
                 notice = 'Service history not readable: ' + ascii(String(e)).slice(0, 80);
                 log.warn('service history: ' + e);
@@ -125,8 +131,14 @@ mgu.run({
             if (diagBusy) return false;
             diagBusy = true;
             try {
-                if (!diag) { diag = new ReadOnlyDiag(signals, log); diag.quiet = true; await diag.init(); if (diag.p) dids = new DidReader(diag, { ecu: DPF.ECU }); }
-                if (!diag.p) throw new Error(diag.error || 'diagnostic transport unavailable');
+                if (!diag || diag.error) {
+                    if (diag && diag.p && diag.p.shutdown) await Promise.resolve().then(() => diag.p.shutdown()).catch(() => {});
+                    diag = new ReadOnlyDiag(signals, log);
+                    diag.quiet = true;
+                    await diag.init();
+                    if (!diag.error && diag.p) dids = new DidReader(diag, { ecu: DPF.ECU });
+                }
+                if (!diag.p || diag.error) throw new Error(diag.error || 'diagnostic transport unavailable');
                 await fn();
                 snap.available('Diagnostics', true);
                 return true;
@@ -141,6 +153,10 @@ mgu.run({
                 try { replies = await diag.functional(0x19, DTC_PARAMS, { idleMs: 4000, maxMs: 30000 }); }
                 catch (e) { faults.setDtc(requestId, null, DTC_PARAMS, e); throw e; }
                 const r = faults.setDtc(requestId, replies, DTC_PARAMS, null);
+                if (!r.ecus.some((ecu) => ecu.ok)) {
+                    r.error = r.ecus.length ? 'Kein Steuergerät hat positiv geantwortet' : 'Keine ECU-Antwort innerhalb des Diagnosefensters';
+                    throw new Error(r.error);
+                }
                 notice = 'Fault memory: ' + r.dtcs.length + ' codes from ' + r.ecus.length + ' units';
                 log.info('fault memory read: ' + r.ecus.length + ' units, ' + r.dtcs.length + ' codes');
             });
@@ -164,9 +180,9 @@ mgu.run({
         // The companion agent asks for a fresh fault-memory read by dropping a request file here.
         setInterval(() => {
             let req;
-            try { req = JSON.parse(fs.readFileSync(path.join(ctx.dataDir, REQUEST_FILE), 'utf8')); } catch (e) { return; }
+            try { req = JSON.parse(fs.readFileSync(path.join(dataDir, REQUEST_FILE), 'utf8')); } catch (e) { return; }
             if (!req || typeof req.id !== 'string' || req.id === lastRequest || req.type !== 'faultMemory') return;
-            if (Date.parse(req.at) < Date.now() - 5 * 60000) return;
+            if (!Number.isFinite(Date.parse(req.at)) || Math.abs(Date.parse(req.at) - Date.now()) > 90000) return;
             lastRequest = req.id;
             readFaultMemory(req.id.slice(0, 64));
         }, 3000);

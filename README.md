@@ -87,3 +87,5 @@ Der eigene Code dieses Repositorys steht unter der **GNU General Public License 
 Bestandteile von Dritten behalten ihre Lizenzen: das App-Kit in `kit/` aus [idrive7-apps](https://github.com/cauliflowermossgrape/idrive7-apps) (MIT) und der QR-Code-Generator (MIT). Siehe [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Inoffizielles Projekt, nicht von BMW hergestellt oder unterstützt.
+
+Der [Prüfbericht für BMW AI 0.9.0](docs/PRUEFBERICHT-BMW-AI-0.9.0.md) beschreibt die Fahrzeugdatenkette, die SSH-Einrichtung und die noch offenen Fahrzeugtests.

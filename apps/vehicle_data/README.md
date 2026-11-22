@@ -21,7 +21,7 @@ Ab 0.2.0 zusätzlich:
 
 Anfragen vom Pi (Fehlerspeicher jetzt auslesen) kommen über den Agenten als `bmw-vehicle-request.json` im Datenordner; die App prüft die Datei alle 3 Sekunden. Fehlercodes erscheinen ohne Klartext, weil die Steuergeräte-Beschreibungen (PRG) nicht vorliegen.
 
-Die Datei wird bei jeder Änderung geschrieben, höchstens einmal pro Sekunde, atomar über eine Zwischendatei.
+Die App schreibt atomar über eine Zwischendatei. Ab 0.2.1 aktualisiert sie alle 20 Sekunden den Heartbeat. Änderungen an Fahrzeugwerten und ihre Messzeiten bleiben davon getrennt. Der Companion Agent 0.2.6 meldet den Heartbeat und den Zustand der lokalen Übergabe.
 
 **Noch am Auto zu prüfen:** Der Katalog nennt keine Einheiten. Die Annahmen oben sind im Dateiinhalt als `unverified` markiert, bis Kilometerstand und Servicebedarf einmal mit Kombi und iDrive („Fahrzeugstatus“ → „Servicebedarf“) verglichen wurden. Den ersten Rohwert jedes Signals schreibt die App ins Log (`vehicle raw …`).
 

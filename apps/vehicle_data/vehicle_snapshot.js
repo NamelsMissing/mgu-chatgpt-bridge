@@ -115,9 +115,11 @@ class VehicleSnapshot {
         this.file = path.join(opts.dir, FILE);
         this.version = opts.version || '';
         this.now = opts.now || Date.now;
+        this.onError = opts.onError || (() => {});
         this.state = { secure: null, supreme: null, cbs: {}, history: null, historyReadAt: null, signals: {} };
         this.last = '';
         this.lastWrite = 0;
+        this.heartbeatAt = null;
     }
     available(name, ok, error) { this.state.signals[name] = { available: !!ok, error: error ? String(error).slice(0, 200) : null }; }
     secureMileage(v) { this.state.secure = Object.assign(decodeSecureMileage(v), { at: this.now() }); }
@@ -126,7 +128,7 @@ class VehicleSnapshot {
     serviceHistory(r) { this.state.history = decodeServiceHistory(r); this.state.historyReadAt = this.now(); }
     mileage() {
         const s = this.state.secure, p = this.state.supreme;
-        if (s && s.km !== null) return { km: s.km, source: 'SecureMileage', at: s.at };
+        if (s && s.km !== null && (!p || p.km === null || p.at - s.at <= 6 * 60000)) return { km: s.km, source: 'SecureMileage', at: s.at };
         if (p && p.km !== null) return { km: p.km, source: 'MileageSupreme', at: p.at };
         return null;
     }
@@ -146,16 +148,21 @@ class VehicleSnapshot {
     }
     /** Writes when the content changed, at most once per second. Returns true when written. */
     flush(force) {
-        const doc = this.document(), body = JSON.stringify(doc), t = this.now();
-        if (body === this.last || (!force && t - this.lastWrite < 1000)) return false;
-        doc.writtenAt = new Date(t).toISOString();
+        const doc = this.document(), t = this.now(), body = JSON.stringify(doc);
+        const changed = body !== this.last;
+        if (!force && (!changed || t - this.lastWrite < 1000)) return false;
+        if (force) this.heartbeatAt = new Date(t).toISOString();
+        if (this.heartbeatAt) doc.heartbeatAt = this.heartbeatAt;
+        if (changed) this.writtenAt = new Date(t).toISOString();
+        doc.writtenAt = this.writtenAt;
         try {
-            fs.mkdirSync(path.dirname(this.file), { recursive: true });
+            const dir = path.dirname(this.file);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir);
             fs.writeFileSync(this.file + '.tmp', JSON.stringify(doc, null, 1));
             fs.renameSync(this.file + '.tmp', this.file);
             this.last = body; this.lastWrite = t;
             return true;
-        } catch (e) { return false; }
+        } catch (e) { this.onError(e); return false; }
     }
 }
 
