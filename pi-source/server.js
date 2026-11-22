@@ -11,7 +11,7 @@ const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.9.0'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.9.1'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';

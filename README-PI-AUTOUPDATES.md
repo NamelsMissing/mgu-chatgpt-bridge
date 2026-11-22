@@ -18,6 +18,8 @@ Die Raspberry-Pi-Software wird über einen **separaten Release-Kanal** im besteh
 
 ## Folgeupdates
 
+Ab 0.9.1 behält das signierte ZIP die Dateiliste von 0.8.0 bei. Der Release-Build bindet das separate SSH-Modul in `server.js` ein. Version 0.9.1 kann dadurch direkt von 0.8.0 installiert werden.
+
 Die fünf Dateien im Ordner `pi-source/` und `pi-source/VERSION` werden per Commit aktualisiert. GitHub Actions prüft die JavaScript-Syntax, Signierberechtigung sowie Versionsübereinstimmung und veröffentlicht eine neue signierte ZIP unter `pi-updates/`. Auf dem Raspberry Pi prüft der Root-Updater Signatur, SHA-256-Werte und neue Versionsnummer, erstellt ein Backup und führt einen Health-Test aus; bei Startfehler erfolgt ein Rollback.
 
 **Wichtig:** GitHub kann nicht von sich aus in deinen privaten Raspberry Pi hinein zugreifen; der Pi selbst stellt ausgehend eine HTTPS-Verbindung zu GitHub her, ohne Router-Portfreigabe. Automatische Updates installieren ausführbaren Servercode; schütze deshalb das private Signier-Secret und den Main-Branch besonders gut.
