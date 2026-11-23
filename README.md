@@ -97,3 +97,5 @@ Der [Prüfbericht zu 0.10.1](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.1.md) besch
 Der [Prüfbericht zu 0.10.2](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.2.md) beschreibt die Diagnosewarteschlange, den privaten MGU-Katalogexport und die ECU-Zuordnungsvorlage.
 
 Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokumentiert Datenübernahme, Wiederverbindung und den privaten MotorScope-Import in der Fehleransicht.
+
+**0.10.4:** Private, fahrzeugübergreifende SQLite-Fehlertexte mit Offline-Auflösung und Upload im System-Reiter. [Installation, Schema und Prüfbericht](docs/PRUEFBERICHT-DTC-0.10.4.md).

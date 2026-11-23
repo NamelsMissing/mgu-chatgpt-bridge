@@ -162,7 +162,31 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   assert.deepEqual(imported.data,{count:1,ecuCount:1});
   assert.equal(fs.statSync(catalogFile).mode&0o777,0o600);
   assert.equal((await api('POST',route,{catalog,identities})).status,409);
-  assert.equal((await api('GET','/faults')).data.faultMemory.earlier.find(d=>d.code==='480A12').title,'Importierter fiktiver Titel');
+  assert.equal((await api('GET','/faults')).data.faultMemory.earlier.find(d=>d.code==='480A12').title,'Testtitel','historical scan keeps verified identity and original text');
+
+  // SQLite installation, failure rollback and offline re-resolution.
+  const py=require('node:child_process').execFileSync;
+  const importer=path.resolve(__dirname,'../dtc-reference.py'),fixture=path.join(temp,'refs.zip'),db=path.join(temp,'candidate.sqlite');
+  py('python3',['-c',`
+import plistlib,sys,zipfile
+with zipfile.ZipFile(sys.argv[1],'w') as z:
+ z.writestr('ecu-variants.plist',plistlib.dumps([dict(UDS=True,addressIndex='40 X',descriptionFilename='FIXTURE',group='G_FIXTURE')]))
+ z.writestr('dat/FIXTURE.plist',plistlib.dumps({'errors':{'0x801234':{'de':'Fiktiver SQLite-Titel'}}},fmt=plistlib.FMT_BINARY))
+`,fixture]);
+  py('python3',[importer,fixture,db]);
+  const upload=async(bytes,headers=owner)=>fetch(base+'/api/v1/faults/reference',{method:'POST',headers,body:bytes});
+  assert.equal((await upload(fs.readFileSync(db),{})).status,401);
+  assert.equal((await upload(fs.readFileSync(db))).status,201);
+  mguUp=false;
+  assert.equal((await upload(Buffer.from('corrupt'))).status,400);
+  const refs=(await api('GET','/faults')).data;
+  assert.equal(refs.texts.reference.state,'ready');
+  const code=refs.faultMemory.earlier.find(d=>d.code==='801234');
+  assert.equal(code.title,'Fiktiver SQLite-Titel');
+  assert.equal(code.referenceQuality,'address_consensus');
+  assert.equal((await upload(fs.readFileSync(db))).status,201);
+  assert.equal((await api('POST','/faults/reference/restore')).status,201);
+  mguUp=true;
 
   // ----- Einstellungen -----
   let s=(await api('GET','/notify')).data;assert.equal(s.enabled,true);assert.ok(s.log.length>0);assert.equal(s.hasToken,false);

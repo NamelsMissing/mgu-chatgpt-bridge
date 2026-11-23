@@ -8,3 +8,13 @@ reference/someip-interfaces.json
 
 pi-source/.private/
 dtc-texts.json
+
+dtc-reference.sqlite*
+
+*.prg
+*.PRG
+DiagDocDb.sqlite
+xmlvalueprimitive_*.sqlite
+streamdataprimitive_*.sqlite
+bmw-fehlertext-referenzen.zip
+verbunden*.zip

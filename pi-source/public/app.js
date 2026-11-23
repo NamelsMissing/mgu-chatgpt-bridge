@@ -15,7 +15,7 @@ function notice(s){
 }
 async function api(endpoint,method='GET',data,raw){
  const headers=authHeaders();if(data&&!raw)headers['content-type']='application/json';
- const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined,signal:AbortSignal.timeout(endpoint==='/faults/read'?110000:60000)});
+ const res=await fetch('/api/v1'+endpoint,{method,headers,body:raw?data:data?JSON.stringify(data):undefined,signal:AbortSignal.timeout(endpoint==='/faults/read'?110000:endpoint==='/faults/reference'?180000:60000)});
  const result=await res.json().catch(()=>({error:'Invalid response'}));
  if(!res.ok)throw Error(result.error||'HTTP '+res.status);
  return result;
@@ -145,6 +145,16 @@ function dtcRow(d,extra){
  const reason={database_missing:'Lokale Fehlertextdatenbank fehlt',database_invalid:'Lokale Fehlertextdatenbank konnte nicht geladen werden',
   identity_missing:'Geprüfte ECU-/SGBD-Identität fehlt',ambiguous:'Fehlertextzuordnung nicht eindeutig',unknown_code:'Code für diese ECU-Identität nicht im Katalog'};
  if(Object.prototype.hasOwnProperty.call(reason,d.textReason))info.appendChild(txt('span',reason[d.textReason],'hint'));
+ const quality={exact_variant:'Steuergerätespezifisch zugeordnet',family_consensus:'Übereinstimmung in der ECU-Familie',
+  address_consensus:'Übereinstimmung an der Diagnoseadresse',global_consensus:'Allgemeiner Referenztext – ECU-Zuordnung nicht bestätigt',
+  unknown_code:'Kein Referenztext verfügbar'};
+ if(quality[d.referenceQuality])info.appendChild(txt('span',quality[d.referenceQuality]+(d.referenceLanguage==='en'?' · Englisch':''),'hint'));
+ if(d.referenceCandidates?.length){
+  const candidates=txt('details','');
+  candidates.appendChild(txt('summary','Referenzkandidaten ('+d.candidateCount+')'));
+  for(const candidate of d.referenceCandidates)candidates.appendChild(txt('p',[candidate.variant,candidate.title,candidate.source].join(' · '),'hint'));
+  info.appendChild(candidates);
+ }
  if(d.description)info.appendChild(txt('p',d.description,'notes'));
  info.appendChild(txt('span',extra,'hint'));
  const detail=txt('details','','');
@@ -178,16 +188,22 @@ function renderFaults(f){
   ev.appendChild(row);
  }
  const fm=f.faultMemory,list=$('faultList');list.replaceChildren();
+ const archive=$('faultArchive');
+ archive.replaceChildren(new Option('Aktuelle Kopplung',''),...(f.archives||[]).map((a,i)=>new Option('Archiv '+(i+1)+' · '+stamp(a.lastAt),a.key)));
+ archive.value=f.archiveKey||'';
  const texts=f.texts;
+ if(texts?.reference?.state)showReference(texts.reference);
  $('faultTextCatalog').textContent=texts?texts.count+' geladene Fehlertexte · '+texts.ecuCount+' ECU-Zuordnungen':
   'Fehlertextkatalog ungeprüft';
+ if(texts?.reference?.meta)$('faultTextCatalog').textContent+=
+  ' · SQLite: '+[...Object.entries(texts.resolution||{})].map(([k,v])=>k+' '+v).join(', ');
  const latest=fm.latest,last=fm.lastAttempt,filter=$('faultEcu'),selected=filter.value;
  const available=new Map([...(latest?.dtcs||[]),...fm.earlier].map(d=>[String(d.ecu),d.ecuName]));
  filter.replaceChildren(new Option('Alle',''),...Array.from(available,([id,name])=>new Option(name,id)));
  if(available.has(selected))filter.value=selected;
  const query=$('faultQuery').value.trim().toLowerCase(),status=$('faultState').value;
  const matches=d=>(!filter.value||filter.value===String(d.ecu))&&(!status||(d.bits||[]).includes(status))&&
-  (!query||[d.code,d.title,d.description,d.ecuName].some(x=>String(x||'').toLowerCase().includes(query)));
+  (!query||[d.code,d.title,d.description,d.ecuName,d.referenceVariant,...(d.referenceCandidates||[]).flatMap(c=>[c.title,c.variant])].some(x=>String(x||'').toLowerCase().includes(query)));
  $('faultCounts').textContent=f.checkControl.active.length+' Check-Control im letzten Stand · '+(latest?latest.dtcs.length+' DTC insgesamt · '+latest.dtcs.filter(d=>d.active).length+' aktuell vorhanden im letzten Scan':'Noch kein DTC-Scan');
  $('faultInfo').textContent=!latest?(last&&last.error?'Letzter Versuch '+stamp(last.readAt)+' fehlgeschlagen: '+last.error:'Noch nicht ausgelesen. Das passiert bei jedem Fahrzeugstart einmal automatisch.')
   :'Ausgelesen '+stamp(latest.readAt)+': '+latest.dtcs.length+' Codes aus '+latest.ecus.length+' Steuergeräten'+(last&&last.error&&last.readAt!==latest.readAt?' · letzter Versuch fehlgeschlagen: '+last.error:'');
@@ -222,10 +238,43 @@ $('faultCatalogForm').onsubmit=async event=>{
  }catch(e){result.textContent=e.message;}
  finally{button.disabled=false;}
 };
-async function refreshFaults(){if(!token)return;try{renderFaults(await api('/faults'));}catch(e){notice(e.message);}}
+let referenceState=null;
+function showReference(value){
+ referenceState=value;
+ const meta=value?.meta,c=meta?.counts;
+ $('referenceStatus').textContent=meta?
+  ['Version '+meta.version,stamp(meta.importedAt),meta.source,c.codes+' Codes',c.variants+' Varianten',
+   (c.de||0)+' deutsche und '+(c.en||0)+' englische Texte',(c.descriptions||0)+' Beschreibungen',
+   (meta.bytes/1048576).toFixed(1)+' MiB'].join(' · '):
+  value?.state==='invalid_or_unavailable'?'SQLite ungültig oder Python 3 nicht verfügbar.':'SQLite-Referenz bislang nicht installiert.';
+}
+$('referenceCheck').onclick=async()=>{
+ try{showReference(await api('/faults/reference'));}catch(e){$('referenceStatus').textContent=e.message;}
+};
+$('referenceForm').onsubmit=async event=>{
+ event.preventDefault();
+ const file=$('referenceFile').files[0],button=event.currentTarget.querySelector('button');
+ if(!file||file.size>192*1024*1024)return notice('SQLite-Datei bis 192 MiB auswählen.');
+ button.disabled=true;$('referenceStatus').textContent='Referenz wird übertragen und geprüft …';
+ try{
+  const meta=await api('/faults/reference','POST',file,true);
+  showReference({state:'ready',meta});
+ }catch(e){$('referenceStatus').textContent=e.message;}
+ finally{button.disabled=false;}
+};
+$('referenceRestore').onclick=async()=>{
+ if(!confirm('Die letzte gesicherte Fehlertextdatenbank wiederherstellen?'))return;
+ try{showReference({state:'ready',meta:await api('/faults/reference/restore','POST')});}
+ catch(e){$('referenceStatus').textContent=e.message;}
+};
+$('referenceReport').onclick=()=>{
+ if(referenceState?.meta)triggerFileDownload(new Blob([JSON.stringify(referenceState.meta,null,2)],{type:'application/json'}),'bmw-dtc-importbericht.json');
+};
+async function refreshFaults(){if(!token)return;try{renderFaults(await api('/faults'+($('faultArchive').value?'?archive='+encodeURIComponent($('faultArchive').value):'')));}catch(e){notice(e.message);}}
 $('refreshFaults').onclick=refreshFaults;
+$('faultArchive').onchange=refreshFaults;
 $('faultRead').onclick=async()=>{
- const b=$('faultRead');b.disabled=true;b.textContent='Liest … (bis 90 s)';
+ const b=$('faultRead');$('faultArchive').value='';b.disabled=true;b.textContent='Liest … (bis 90 s)';
  try{renderFaults(await api('/faults/read','POST'));notice('Fehlerspeicher ausgelesen.');}
  catch(e){notice(e.message);refreshFaults();}
  finally{b.disabled=false;b.textContent='Jetzt auslesen';}
@@ -1365,7 +1414,7 @@ $('connectionLogCopy').onclick=()=>navigator.clipboard.writeText(logText()).catc
 $('connectionLogText').onclick=()=>triggerFileDownload(new Blob([logText()],{type:'text/plain'}),'bmw-ai-verbindungen.txt');
 $('connectionLogJson').onclick=()=>triggerFileDownload(new Blob([JSON.stringify(connectionEntries,null,2)],{type:'application/json'}),'bmw-ai-verbindungen.json');
 setInterval(()=>{if(token&&currentTab==='system')refreshConnection();},5000);
-function refreshSystem(){refreshUpdates();refreshLogs();refreshNotify();refreshConnection();}
+function refreshSystem(){refreshUpdates();$('referenceCheck').click();refreshLogs();refreshNotify();refreshConnection();}
 
 // ----- Automatically refresh this already-open webpage after a successful Pi update -----
 // The server embeds its running version into HTML on each page load. Re-check via

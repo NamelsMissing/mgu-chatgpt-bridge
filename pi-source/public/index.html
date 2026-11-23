@@ -257,6 +257,7 @@
     <p class="hint" id="faultInfo">Wird bei jedem Fahrzeugstart einmal ausgelesen.</p>
     <p class="hint" id="faultCounts"></p>
     <p class="hint" id="faultTextCatalog"></p>
+    <label>Fahrzeugarchiv <select id="faultArchive"><option value="">Aktuelle Kopplung</option></select></label>
     <button id="faultEcuWorksheet" class="secondary" type="button">ECU-Zuordnungsvorlage herunterladen</button>
     <details>
       <summary>Private BMW-Fehlertexte aus MotorScope importieren</summary>
@@ -478,6 +479,19 @@
 
 <!-- ===== System ===== -->
 <section id="system" class="tab" hidden>
+  <div class="panel">
+    <h3>Fehlertextdatenbank</h3>
+    <p id="referenceStatus" role="status"></p>
+    <button id="referenceCheck" class="secondary" type="button">Status aktualisieren</button>
+    <form id="referenceForm">
+      <label>Lokale SQLite-Referenz <input id="referenceFile" type="file" accept=".sqlite" required></label>
+      <button type="submit">Validieren und installieren</button>
+    </form>
+    <div class="toolbar">
+      <button id="referenceRestore" type="button" class="secondary">Letzte Sicherung wiederherstellen</button>
+      <button id="referenceReport" type="button" class="secondary">Importbericht herunterladen</button>
+    </div>
+  </div>
   <div class="panel">
     <h2>Verbindungen</h2>
     <div class="toolbar"><button id="connectionRefresh">Aktualisieren</button><button id="sshProbe">SSH prüfen</button></div>

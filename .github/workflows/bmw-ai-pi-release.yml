@@ -66,6 +66,7 @@ jobs:
           node --check pi-source/mgu-ssh.js
           node --check pi-source/dtc-import.js
           node tests/motorscope-import.mjs
+          python3 tests/dtc-reference-test.py
           node --check pi-source/public/app.js
           node pi-source/tests/test-chat-export.js
           node pi-source/tests/test-auto-update-prefs.js
@@ -94,6 +95,9 @@ jobs:
             local_source=(root/(module+'.js')).read_text()
             bundled="const "+variable+"=(()=>{\nconst module={exports:{}};\n"+local_source+"\nreturn module.exports;\n})();"
             server=server.replace(source_import,bundled,1)
+          program="const referenceProgram=()=>fs.readFileSync(path.join(__dirname,'dtc-reference.py'),'utf8');"
+          assert server.count(program)==1
+          server=server.replace(program,"const referenceProgram=()=>"+json.dumps((root/'dtc-reference.py').read_text())+";",1)
           contents['server.js']=server.encode()
           manifest={'schema':1,'package':'bmw-ai-pi','version':version,
             'files':[{'path':n,'sha256':hashlib.sha256(c).hexdigest()} for n,c in contents.items()]}
