@@ -2,7 +2,7 @@
   "id": "vehicle_data",
   "title": "Vehicle Data",
   "description": "Mileage, service due messages, the car's service history, check-control messages, tyre pressures, fault memory and DPF values, read-only. Shares them with your private BMW AI server.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "vendor": "custom",
   "loggingId": "OVD1",
   "iconGlyph": "service",
@@ -37,9 +37,7 @@
       "newCCMessage": "s",
       "_methods": [
         "requestCCMessage"
-      ],
-      "ccList": "r",
-      "cbsDataServiceList": "r"
+      ]
     },
     "de.bmw.infotainment.vehicle.TPMSInternalData": {
       "tpmsInternalLastValues": "rs"
@@ -52,13 +50,6 @@
       "_broadcasts": [
         "sendTasuResponse"
       ]
-    },
-    "de.bmw.infrastructure.VehicleInformation": {
-      "Range": "r"
-    },
-    "de.bmw.infotainment.vehicle.TPMS": {
-      "statusTyrePressure": "r",
-      "statusTargetTyrePressure": "r"
     }
   },
   "screens": [

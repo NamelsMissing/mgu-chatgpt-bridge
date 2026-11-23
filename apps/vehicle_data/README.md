@@ -38,3 +38,8 @@ Ab 0.2.2 liest Vehicle Data zusätzlich die in BMW `x_call` belegten Getter
 `VehicleInformation.Range`, `KombiInterface_2.ccList` und
 `KombiInterface_2.cbsDataServiceList`. Herkunft, Grenzen und Schritte zur
 Fahrzeugprüfung stehen im [Prüfbericht](../../docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.0.md).
+
+Version 0.2.3 verwendet im Standardpaket die SOME/IP-Anforderungen von 0.2.1.
+Die fünf zusätzlichen Getter aus 0.2.2 können lokal nach Prüfung gegen den
+Zielkatalog freigegeben werden. Der [Installationsprüfbericht](../../docs/PRUEFBERICHT-VEHICLE-DATA-0.2.3.md)
+beschreibt die Paketprüfung und den kataloggebundenen Build.

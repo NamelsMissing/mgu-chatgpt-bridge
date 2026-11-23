@@ -34,6 +34,14 @@ const repo = JSON.parse(fs.readFileSync(path.join(root, 'mgu-repo.json'), 'utf8'
 assert.strictEqual(repo.components.find((c) => c.id === 'vehicle_data').version, spec.version);
 assert.deepStrictEqual(Object.keys(spec.signals['de.bmw.infotainment.ConditionBasedServicesLegacy']), V.CBS_FIELDS);
 
+for (const [iface, fields] of [
+    ['de.bmw.infrastructure.VehicleInformation',['Range']],
+    ['de.bmw.infotainment.KombiInterface_2',['ccList','cbsDataServiceList']],
+    ['de.bmw.infotainment.vehicle.TPMS',['statusTyrePressure','statusTargetTyrePressure']],
+]) {
+    for (const field of fields) assert.ok(!(field in (spec.signals[iface] || {})), iface+'.'+field+' is optional');
+}
+
 // Mileage
 assert.deepStrictEqual(V.decodeSecureMileage({ currentMileage: 143350, aliveCounter: 3, manipulationState: 0 }).km, 143350);
 assert.strictEqual(V.decodeSecureMileage({ currentMileage: 0xFFFFFFFF }).km, null, 'all bits set = no value');
@@ -115,8 +123,9 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
       getValue:async(field)=>{events.push(field);if(!attempt++)throw Error('fixture timeout');return {mileageKilometre:143352};},
       subscribe:()=>{throw Error('getter-only field was subscribed');}};
     const mod={exports:{}};
+    let cfg={fields:{Range:{getter:{id:1}}}};
     vm.runInNewContext(signalSource,{module:mod,__dirname:path.join(root,'kit/runtime'),setImmediate,setInterval,clearInterval,
-      require:name=>name==='someip'?{buildProxy:async()=>proxy}:name==='fs'?{readFileSync:()=>JSON.stringify({})}:require(name)});
+      require:name=>name==='someip'?{buildProxy:async()=>proxy}:name==='fs'?{readFileSync:()=>JSON.stringify(cfg)}:require(name)});
     let result,err;
     const watch=await mod.exports.watch('de.bmw.infrastructure.VehicleInformation','1',{Range:v=>{result=v;}},null,
       {initialRead:true,readFields:['Range'],readOnlyFields:['Range'],onError:(field,stage)=>{err=field+' '+stage;}});
@@ -126,6 +135,13 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     await new Promise(resolve=>setImmediate(resolve));
     assert.strictEqual(result.mileageKilometre,143352);
     await watch.shutdown();
+    cfg={fields:{Range:{event:{id:1}}}};
+    const blocked=await mod.exports.watch('de.bmw.infrastructure.VehicleInformation','1',{Range:()=>assert.fail('getter missing')},null,
+      {initialRead:true,readFields:['Range'],readOnlyFields:['Range'],onError:(field,stage)=>{err=field+' '+stage;}});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepStrictEqual(events,['Range','Range']);
+    assert.strictEqual(err,'Range get');
+    await blocked.shutdown();
 
     const sent = [];
     const d = new ReadOnlyDiag({ call: async (p, m, args) => { sent.push(args.serviceID); return 'NO_ERROR'; } }, { info() {}, warn() {} });

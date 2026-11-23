@@ -59,13 +59,19 @@ async function watch(iface, instance, handlers, log, opts) {
         res.proxy = p;
         res.shutdown = () => Promise.resolve().then(() => p.shutdown && p.shutdown()).catch(() => {});
         const fields = Object.keys(handlers || {});
-        const reads = opts && opts.readFields || fields.filter((f) => cfg.fields && cfg.fields[f] && cfg.fields[f].getter);
+        const readOnly = opts && opts.readOnlyFields || [];
+        const requestedReads = opts && opts.readFields || fields.filter((f) => cfg.fields && cfg.fields[f] && cfg.fields[f].getter);
         const pending = new Set(), generations = {};
         let ready = false, poll, stopped = false, availabilityGeneration = 0;
         const report = (f, stage, error) => {
             if (opts && opts.onError) opts.onError(f, stage, error);
             if (log) log.warn(stage + ' ' + iface + '.' + f + ': ' + error);
         };
+        const reads = requestedReads.filter((f) => {
+            if (readOnly.indexOf(f) === -1 || (cfg.fields && cfg.fields[f] && cfg.fields[f].getter)) return true;
+            report(f, 'get', 'installed SOME/IP config has no getter');
+            return false;
+        });
         const fetchAll = () => reads.forEach((f) => {
             if (stopped || !ready || pending.has(f)) return;
             pending.add(f);
@@ -85,7 +91,6 @@ async function watch(iface, instance, handlers, log, opts) {
         res.shutdown = () => { stopped = true; clearInterval(poll); return shutdown(); };
         try { await nativeTick(() => p.subscribeToAvailability(availability)); }
         catch (e) { report('*', 'availability', e); }
-        const readOnly = opts && opts.readOnlyFields || [];
         for (const f of fields) {
             if (readOnly.indexOf(f) !== -1) continue;
             try {

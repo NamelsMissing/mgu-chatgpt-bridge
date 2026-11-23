@@ -58,6 +58,7 @@ class ReadOnlyDiag extends Diag {
 mgu.run({
     async start(ctx) {
         const { ui, log, signals } = ctx;
+        const proxies = require('../manifest.json').proxies;
         const dataDir = path.resolve(__dirname, '..', '..', 'data');
         const snap = new VehicleSnapshot({ dir: dataDir, onError: (e) => log.warn('Vehicle Data IPC: ' + e), version: (ctx.spec && ctx.spec.version) || '' });
         const faults = new FaultState();
@@ -75,7 +76,25 @@ mgu.run({
         // Reads are restricted to fields already declared with r in the manifest.
         const watch = (iface, handlers, opts, attempt) => {
             const name = iface.split('.').pop();
-            return signals.watch(iface, '1', handlers, log, Object.assign({initialRead:true}, opts, {
+            const declared = (proxies[iface] || {}).attributes || {};
+            const requested = opts && opts.readFields || [];
+            const reads = requested.filter(field => /r/.test(declared[field] || ''));
+            const getterOnly = opts && opts.readOnlyFields || [];
+            const enabledHandlers = {};
+            Object.keys(handlers).forEach(field => {
+                if (getterOnly.indexOf(field) === -1 || reads.indexOf(field) !== -1) {
+                    enabledHandlers[field] = handlers[field];
+                } else {
+                    snap.available(name+'.'+field,false,'Getter nicht für dieses Installationspaket freigegeben');
+                }
+            });
+            if (!Object.keys(enabledHandlers).length) {
+                snap.available(name,false,'Kein geprüfter Getter im Installationsmanifest');
+                flush();
+                return Promise.resolve(null);
+            }
+            const configured = Object.assign({initialRead:true},opts,{readFields:reads});
+            return signals.watch(iface, '1', enabledHandlers, log, Object.assign(configured, {
                 onAvailability: (ok) => { snap.available(name,ok);flush(); },
                 onError: (field, stage) => { snap.available(name, snap.state.signals[name] && snap.state.signals[name].available, stage+' '+field);flush(); },
             })).then(async (sub) => {

@@ -371,7 +371,7 @@ def build_start_widget(spec, app_id, icon_src, out):
     return {'component': comp, 'layout': ui['containers']['500']['components'][str(WIDGET_COMPONENT_ID)]['cells']['Widget']['value']}
 
 
-def build(app_id, language='en'):
+def build(app_id, language='en', stage_only=False):
     spec = json.load(open(os.path.join(APPS, app_id, 'app.json'), encoding='utf-8'))
     spec = localize_spec(spec, language)
     spec.setdefault('id', app_id)
@@ -531,6 +531,9 @@ def build(app_id, language='en'):
         meta['optional'] = optional
     json.dump(meta, open(os.path.join(stage, 'meta.json'), 'w', encoding='utf-8', newline='\n'), indent=1)
 
+    if stage_only:
+        return
+
     # --- archives ---
     os.makedirs(DIST, exist_ok=True)
     bundle = os.path.join(DIST, f'{app_id}@{ver}.mgu')
@@ -548,12 +551,13 @@ def build(app_id, language='en'):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--stage-only', action='store_true')
     parser.add_argument('--language', choices=languages(), default='en')
     parser.add_argument('apps', nargs='*')
     args = parser.parse_args()
     ids = args.apps or sorted(d for d in os.listdir(APPS) if os.path.exists(os.path.join(APPS, d, 'app.json')))
     for i in ids:
-        build(i, args.language)
+        build(i, args.language, stage_only=args.stage_only)
 
 
 if __name__ == '__main__':
