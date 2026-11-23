@@ -181,21 +181,35 @@ class VehicleSnapshot {
             const fields = [];
             for (const key of Object.keys(v).slice(0,24)) {
                 if (!/^[a-z_][a-z0-9_]{0,45}$/i.test(key) || /vin|token|secret|auth|password|key|dealer/i.test(key)) continue;
-                const number = /^(currentMileage|mileageSupreme|mileageKilometre|ccmId|cCIdentifer|activeState|qualifierMileageSupreme|statusOperation|cBSServiceWay|cBSServiceDate|yearCBSDisplay|monthCBSDisplay|dayCBSDisplay|actualValuePressureTyreFLH|actualValuePressureTyreFRH|targetPressureTyre(FLH|FRH|RLH|RRH)|tpmsInternalLast(PositionId|PressureMbarId|TargetPressureMbarId|TemperatureDegCId)[1-4])$/i.test(key);
-                fields.push([key,number && Number.isSafeInteger(v[key]) ? v[key] : shape(v[key],depth-1)]);
+                const number = /^(currentMileage|mileageSupreme|mileageKilometre|ccmId|cCIdentifer|activeState|qualifierMileageSupreme|manipulationState|statusOperation|cBSServiceWay|cBSServiceDate|yearCBSDisplay|monthCBSDisplay|dayCBSDisplay|actualValuePressureTyreFLH|actualValuePressureTyreFRH|targetPressureTyre(FLH|FRH|RLH|RRH)|tpmsInternalLast(PositionId|PressureMbarId|TargetPressureMbarId|TemperatureDegCId)[1-4])$/i.test(key);
+                const qualifier=key==='qualifierMileageSupreme'&&typeof v[key]==='string'&&/^EVENT_[A-Z_]{1,40}$/.test(v[key]);
+                fields.push([key,qualifier||(number&&Number.isSafeInteger(v[key]))?v[key]:shape(v[key],depth-1)]);
             }
             return fields;
         };
         this.samples[name] = shape(raw,3);
     }
-    range(v) { this.state.range = {km:rangeMileage(v),at:this.now()}; return this.state.range.km; }
+    range(v) {
+        this.state.range = {km:rangeMileage(v),at:this.now()};
+        this.rememberMileage(this.state.range,'VehicleInformation.Range');
+        return this.state.range.km;
+    }
     cbsList(v) {
         const rows = decodeCbsList(v);
         if (rows !== null) this.state.cbsList = rows.slice(0,50).map(row=>Object.assign(row,{at:this.now()}));
         return rows;
     }
-    secureMileage(v) { this.state.secure = Object.assign(decodeSecureMileage(v), { at: this.now() }); }
-    mileageSupreme(v) { this.state.supreme = Object.assign(decodeMileageSupreme(v), { at: this.now() }); }
+    secureMileage(v) {
+        this.state.secure = Object.assign(decodeSecureMileage(v),{at:this.now()});
+        this.rememberMileage(this.state.secure,'SecureMileage');
+    }
+    mileageSupreme(v) {
+        this.state.supreme = Object.assign(decodeMileageSupreme(v),{at:this.now()});
+        this.rememberMileage(this.state.supreme,'MileageSupreme');
+    }
+    rememberMileage(sample,source) {
+        if (sample.km!==null) this.lastMileage={km:sample.km,source,at:sample.at,valid:false};
+    }
     cbs(field, v) { const c = decodeCbs(field, v); if (c) this.state.cbs[field] = Object.assign(c, { at: this.now() }); else delete this.state.cbs[field]; }
     serviceHistory(r) { this.state.history = decodeServiceHistory(r); this.state.historyReadAt = this.now(); }
     mileage() {
@@ -205,13 +219,13 @@ class VehicleSnapshot {
         }
         if (s && s.km !== null && (!p || p.km === null || p.at - s.at <= 6 * 60000)) return { km: s.km, source: 'SecureMileage', at: s.at };
         if (p && p.km !== null) return { km: p.km, source: 'MileageSupreme', at: p.at };
-        return r && r.km !== null ? {km:r.km,source:'VehicleInformation.Range',at:r.at} : null;
+        return r && r.km !== null ? {km:r.km,source:'VehicleInformation.Range',at:r.at} : this.lastMileage || null;
     }
     document() {
         const m = this.mileage(), iso = (t) => (t ? new Date(t).toISOString() : null);
         return Object.assign({
             schema: SCHEMA, app: 'vehicle_data', version: this.version,
-            mileage: m ? { km: m.km, source: m.source, at: iso(m.at), unverified: true } : null,
+            mileage: m ? { km: m.km, source: m.source, at: iso(m.at), valid:m.valid!==false, unverified: true } : null,
             mileageSources: {
                 secure: this.state.secure && { km: this.state.secure.km, manipulationState: this.state.secure.manipulationState, at: iso(this.state.secure.at) },
                 supreme: this.state.supreme && { km: this.state.supreme.km, qualifier: this.state.supreme.qualifier, at: iso(this.state.supreme.at) },

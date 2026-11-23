@@ -1,7 +1,7 @@
 {
   "id": "mgu-ai-agent",
   "kind": "tool",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "title": "BMW AI Companion Agent",
   "description": "Private read-only MGU companion with approved commands and QR link to secure Pi web terminal",
   "mguHmi": [

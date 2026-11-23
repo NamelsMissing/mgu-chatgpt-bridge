@@ -15,12 +15,12 @@ const session=crypto.randomBytes(32).toString('base64url');
 const iso=ms=>new Date(Date.now()+ms).toISOString();
 
 (async()=>{
- let vehicle={status:'ok',appState:'running',mileageAt:iso(0),mileageSource:'SecureMileage',mileageKm:120000,cbs:[],serviceHistory:null,checkControl:{active:[],events:[]},tyres:null,dpf:null,faultMemory:null};
- let mguUp=true,faultReply=null,faultUnavailable=false;
+ let vehicle={status:'ok',appState:'running',heartbeatAt:iso(0),mileageAt:iso(0),mileageSource:'SecureMileage',mileageKm:120000,cbs:[],serviceHistory:null,checkControl:{active:[],events:[]},tyres:null,dpf:null,faultMemory:null};
+ let mguUp=true,faultReply=null,faultUnavailable=false,statusRequests=0;
  const mgu=http.createServer((req,res)=>{let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
   const j=(c,d)=>{res.writeHead(c,{'content-type':'application/json'});res.end(JSON.stringify(d));};
   if(!mguUp){res.destroy();return;}
-  if(req.url==='/v1/status')return j(200,{online:true,vehicle});
+  if(req.url==='/v1/status'){statusRequests++;return j(200,{online:true,vehicle});}
   if(req.url==='/v1/vehicle/fault-memory'&&faultUnavailable)return j(503,{code:'no_snapshot',error:'Snapshot fehlt'});
   if(req.url==='/v1/vehicle/fault-memory')return j(faultReply.error?502:200,{error:faultReply.error,faultMemory:faultReply});
   j(404,{});
@@ -45,7 +45,12 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
  const wait=ms=>new Promise(r=>setTimeout(r,ms));
  try{
   // ----- Abfrage im Hintergrund -----
-  let poll=await server.pollOnce();assert.equal(poll.ok,true);
+  const polls=await Promise.all([server.pollOnce(),server.pollOnce(),api('GET','/status')]);
+  let poll=polls[0];assert.equal(poll.ok,true);
+  assert.equal(polls[2].data.connection,'reachable');
+  // Direct HTTP dispatch may arrive after a very fast response. The two
+  // synchronous calls above still coalesce and cannot produce three probes.
+  assert.ok(statusRequests<=2);
   assert.equal((await api('GET','/vehicle')).data.mileage.km,120000);
   mguUp=false;poll=await server.pollOnce();assert.equal(poll.ok,false);assert.ok(poll.lastOk,'last success is kept');
   assert.equal((await api('GET','/vehicle')).data.live.stale,true);
@@ -68,7 +73,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   f=(await api('GET','/faults')).data;
   assert.equal(f.checkControl.active.length,0);assert.deepEqual(f.checkControl.events.slice(0,2).map(e=>e.active),[false,true]);
 
-  vehicle.checkControl={listAt:iso(-1000),active:[{id:222,text:'BMW-Text A',ecu:0x12,lastSeen:iso(-1000)},{id:223,text:'BMW-Text B',ecu:0x40,lastSeen:iso(-1000)}]};
+  vehicle.checkControl={listAt:iso(0),active:[{id:222,text:'BMW-Text A',ecu:0x12,lastSeen:iso(-1000)},{id:223,text:'BMW-Text B',ecu:0x40,lastSeen:iso(-1000)}]};
   await server.pollOnce();
   f=(await api('GET','/faults')).data;
   assert.equal(f.checkControl.status,'read');assert.equal(f.checkControl.active.length,2);
@@ -136,11 +141,28 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   assert.equal(v.dpf.regens.length,1);assert.equal(v.dpf.regens[0].distanceBefore,410);assert.equal(v.dpf.latest.soot,3.1);
 
   // ----- Service-Fälligkeit melden (eigene Wartungsarten und CBS) -----
-  vehicle.cbs=[{scope:'OELSERVICE',label:'Motoröl',remainingKm:800,dueDate:null}];
+  vehicle.cbs=[{scope:'OELSERVICE',label:'Motoröl',remainingKm:800,dueDate:null,at:iso(0)}];
   await server.pollOnce();await wait(50);
   assert.ok(pushes.some(p=>/Motoröl fällig/.test(p.title)));
   const n=pushes.length;await server.pollOnce();await wait(50);
   assert.equal(pushes.length,n,'service reminders are not repeated on every poll');
+
+  vehicle.cbs=[];
+  await server.pollOnce();
+  assert.equal((await api('GET','/vehicle')).data.live.cbs[0].label,'Motoröl','legacy startup must preserve service data');
+
+  fs.unlinkSync(catalogFile);
+  const catalog={sgbd:'TEST_DDE',faultTexts:{'480A12':'Importierter fiktiver Titel'}};
+  const identities={schema:1,ecu:{18:{sgbd:'TEST_DDE',family:'FIXTURE',verified:true}}};
+  const route='/faults/import-catalog';
+  const denied=await fetch(base+'/api/v1'+route,{method:'POST'});
+  assert.equal(denied.status,401);
+  const imported=await api('POST',route,{catalog,identities});
+  assert.equal(imported.status,201);
+  assert.deepEqual(imported.data,{count:1,ecuCount:1});
+  assert.equal(fs.statSync(catalogFile).mode&0o777,0o600);
+  assert.equal((await api('POST',route,{catalog,identities})).status,409);
+  assert.equal((await api('GET','/faults')).data.faultMemory.earlier.find(d=>d.code==='480A12').title,'Importierter fiktiver Titel');
 
   // ----- Einstellungen -----
   let s=(await api('GET','/notify')).data;assert.equal(s.enabled,true);assert.ok(s.log.length>0);assert.equal(s.hasToken,false);

@@ -95,3 +95,5 @@ Fahrzeugdaten und private DTC-Textzuordnungen ab Pi 0.10.0 sind im [technischen 
 Der [Prüfbericht zu 0.10.1](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.1.md) beschreibt den privaten MotorScope-Import und den stufenweisen Fahrzeugdaten-Diagnoseexport.
 
 Der [Prüfbericht zu 0.10.2](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.2.md) beschreibt die Diagnosewarteschlange, den privaten MGU-Katalogexport und die ECU-Zuordnungsvorlage.
+
+Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokumentiert Datenübernahme, Wiederverbindung und den privaten MotorScope-Import in der Fehleransicht.

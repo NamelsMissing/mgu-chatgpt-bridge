@@ -207,6 +207,21 @@ function renderFaults(f){
  for(const k of fm.earlier.filter(matches))earlier.appendChild(dtcRow(k,k.ecuName+' · zuletzt '+stamp(k.lastSeen)+
   (k.noLongerReportedAt?' · seit '+stamp(k.noLongerReportedAt)+' im Scan nicht mehr gemeldet':' · im letzten Scan nicht beobachtet')));
 }
+$('faultCatalogForm').onsubmit=async event=>{
+ event.preventDefault();
+ const result=$('faultImportResult'),button=event.currentTarget.querySelector('button');
+ button.disabled=true;
+ result.textContent='Import wird geprüft …';
+ try{
+  const catalog=$('faultCatalogFile').files[0],ids=$('faultIdentityFile').files[0];
+  if(!catalog||!ids||catalog.size+ids.size>20*1024*1024)throw Error('Zwei JSON-Dateien und insgesamt höchstens 20 MiB erforderlich.');
+  const imported=await api('/faults/import-catalog','POST',{catalog:JSON.parse(await catalog.text()),identities:JSON.parse(await ids.text())});
+  result.textContent=imported.count+' Fehlertexte für '+imported.ecuCount+' Steuergeräte installiert.';
+  $('faultCatalogForm').reset();
+  await refreshFaults();
+ }catch(e){result.textContent=e.message;}
+ finally{button.disabled=false;}
+};
 async function refreshFaults(){if(!token)return;try{renderFaults(await api('/faults'));}catch(e){notice(e.message);}}
 $('refreshFaults').onclick=refreshFaults;
 $('faultRead').onclick=async()=>{
@@ -226,7 +241,8 @@ function renderNotify(n){
  if(!n.log.length)log.appendChild(txt('p','Noch nichts gesendet.','hint'));
  for(const e of n.log){const row=txt('div','','list-row');row.appendChild(txt('span',stamp(e.at),'hint'));row.appendChild(txt('strong',e.title));row.appendChild(txt('span',e.ok?'zugestellt':'Fehler: '+(e.error||'?'),e.ok?'hint':'error'));log.appendChild(row);}
  const p=n.poll||{};
- $('pollInfo').textContent='Hintergrundabfrage der MGU: '+(p.at?(p.ok?'zuletzt erfolgreich '+stamp(p.at):'MGU nicht erreichbar ('+stamp(p.at)+')'+(p.lastOk?', zuletzt erreichbar '+stamp(p.lastOk):'')):'noch keine')+'. Alle 2 Minuten, wenn erreichbar, sonst alle 10 Minuten.';
+ $('pollInfo').textContent=p.ok?'Hintergrundabfrage zuletzt erfolgreich '+stamp(p.lastOk):
+  mguConnectionText(p)+(p.lastOk?' Zuletzt erreichbar '+stamp(p.lastOk)+'.':'');
 }
 async function refreshNotify(){try{renderNotify(await api('/notify'));}catch(e){notice(e.message);}}
 $('notifySave').onclick=async()=>{
@@ -418,7 +434,7 @@ async function refreshStatus(){
   const d=await api('/status'),on=!!(d.mgu&&d.mgu.online===true);
   $('statusResult').textContent=JSON.stringify(d,null,2);
   $('mguDot').className='dot '+(on?'is-online':'is-offline');
-  $('mguText').textContent=on?'MGU verbunden'+(d.mgu.host?' ('+d.mgu.host+')':''):'MGU nicht erreichbar'+(d.error?': '+String(d.error).slice(0,140):'');
+  $('mguText').textContent=on?'MGU verbunden'+(d.mgu.host?' ('+d.mgu.host+')':''):mguConnectionText(d);
  }catch(e){notice(e.message);}
 }
 $('refreshStatus').onclick=refreshStatus;
@@ -535,7 +551,7 @@ async function refreshConsoleConnection(){
  try{
   const d=await api('/status');
   if(d.mgu&&d.mgu.online===true){label.textContent='MGU verbunden';dot.className='console-dot is-online';}
-  else{label.textContent='MGU nicht erreichbar';dot.className='console-dot is-offline';if(d.error)consoleSetResult('Verbindung: '+consoleHumanError(d.error),true);}
+  else{label.textContent=mguConnectionText(d);dot.className='console-dot is-offline';if(d.error)consoleSetResult('Verbindung: '+consoleHumanError(d.error),true);}
  }catch(err){label.textContent='Verbindung unklar';dot.className='console-dot is-offline';consoleSetResult(consoleHumanError(err),true);}
 }
 $('consoleRefreshConnection').onclick=refreshConsoleConnection;
@@ -702,7 +718,7 @@ function renderReported(v){
  const due=v.bmwNextService||{};
  const until=c=>c.dueDate?dateText(c.dueDate):c.dueMonth?c.dueMonth.replace(/^(\d{4})-(\d{2})$/,'$2/$1'):'';
  if(due.byDate||due.byDistance){
-  next.appendChild(txt('strong','Nächster fälliger BMW-Service'));
+  next.appendChild(txt('strong',live?.cbsStale?'Letzter gespeicherter BMW-Servicebedarf':'Nächster fälliger BMW-Service'));
   if(due.byDate)next.appendChild(txt('p','Nach Datum · '+due.byDate.label+' · bis '+until(due.byDate),'hint'));
   if(due.byDistance)next.appendChild(txt('p','Nach Strecke · '+due.byDistance.label+' · '+kmText(due.byDistance.remainingKm),'hint'));
  }
@@ -711,7 +727,7 @@ function renderReported(v){
  if(!live){box.appendChild(txt('p','Noch nichts vom Fahrzeug. Dafür muss auf der MGU die App „Vehicle Data“ installiert sein und einmal gelaufen sein.','hint'));return;}
  if(live.mileageKm!==null)box.appendChild(txt('p','Kilometerstand laut Fahrzeug: '+kmText(live.mileageKm)+' · '+(live.mileageSource||'Quelle nicht übermittelt')+' · '+(stamp(live.mileageAt)||'Zeitpunkt unbekannt')+(live.stale?' · veraltet':'')));
  if(live.cbsListAt)box.appendChild(txt('p','BMW-Liste gelesen · '+stamp(live.cbsListAt)+
-  ((!v.poll?.ok||Date.now()-Date.parse(live.cbsListAt)>3*60000)?' · veraltet':''),'hint'));
+  (live.cbsStale?' · veraltet':''),'hint'));
  if(!live.cbs.length)box.appendChild(txt('p',missingSignal(v.poll||{},['KombiInterface_2.cbsDataServiceList',
   ...Object.keys(v.poll?.stages||{}).filter(key=>key.startsWith('ConditionBasedServicesLegacy.'))])||
   'Noch keine Servicebedarf-Meldung empfangen.','hint'));
@@ -755,10 +771,17 @@ const telemetryGroups={
  'DPF':['UDS.DPF','Diagnostics'],
  'Fehlerspeicher':['UDS.1902','Diagnostics']
 };
+function mguConnectionText(p){
+ if(p.connection==='unreachable')return 'MGU derzeit nicht erreichbar. Fahrzeug möglicherweise ausgeschaltet oder im Standby.';
+ if(p.connection==='unconfigured')return 'MGU-Verbindung nicht eingerichtet.';
+ if(p.connection==='agent_http_error')return p.error||'Agent hat mit einem HTTP-Fehler geantwortet.';
+ if(p.connection==='invalid_response')return 'Agent-Antwort konnte nicht verarbeitet werden.';
+ return p.ok||p.connection==='reachable'?'MGU-Agent erreichbar':'MGU-Verbindung noch nicht geprüft.';
+}
 function missingSignal(p,keys){
  const reason={unexpected_shape_or_type:'Datenstruktur oder Datentyp nicht erkannt',
   qualifier_unavailable:'BMW-Qualifier meldet keinen gültigen Wert',invalid_value:'Messwert ungültig'};
- if(p.ok===false)return 'Datenübertragung vom Agenten unterbrochen';
+ if(p.ok===false)return mguConnectionText(p);
  const messages=[];
  for(const key of keys){
   const row=p.stages?.[key],family=p.stages?.[key.split('.')[0]];
@@ -849,7 +872,7 @@ async function refreshVehicle(){
  // Liefert der MGU-Agent einen Kilometerstand, übernimmt der Server ihn dabei.
  try{
   const s=await api('/status'),veh=s.mgu&&s.mgu.vehicle;
-  $('vehicleLive').textContent=!s.mgu?'MGU nicht erreichbar · '+String(s.error||'').slice(0,120):vehicleState(veh||{});
+  $('vehicleLive').textContent=!s.mgu?mguConnectionText(s):vehicleState(veh||{});
   renderVehicle(await api('/vehicle'));
   if($('vehicleTelemetry').open)renderTelemetry();
  }catch(e){$('vehicleLive').textContent='Live-Daten nicht abrufbar: '+e.message;}

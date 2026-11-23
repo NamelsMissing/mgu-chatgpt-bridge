@@ -74,7 +74,7 @@ async function stop(child){
   await api('/monitor/poll','POST');
   let v=(await api('/vehicle')).body.live;
   assert.equal(v.mileageKm,123456);assert.equal(v.mileageSource,'VehicleInformation.Range');assert.equal(v.stale,false);
-  const measuredAt=v.mileageAt;
+  let measuredAt=v.mileageAt;
   assert.equal(v.cbs[0].source,'KombiInterface_2.cbsDataServiceList');
   assert.equal(v.cbs[0].dueMonth,'2027-05');
   assert.equal((await api('/faults')).body.checkControl.active[0].text,'Testmeldung');
@@ -84,7 +84,7 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
-  assert.equal(diag.poll.versions.agent,'0.2.9');
+  assert.equal(diag.poll.versions.agent,'0.2.10');
   assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');
   const checks=(await api('/vehicle/diagnostics?capabilities=1')).body.capabilities;
   assert.equal(checks.schema,1);
@@ -96,11 +96,27 @@ async function stop(child){
 
   await stop(agent);
   await api('/monitor/poll','POST');
-  assert.equal((await api('/vehicle')).body.live.stale,true);
+  const offline=(await api('/vehicle')).body;
+  assert.equal(offline.poll.connection,'unreachable');
+  assert.match(offline.poll.error,/möglicherweise ausgeschaltet oder im Standby/);
+  assert.equal(offline.live.stale,true);
+  assert.equal(offline.live.cbsStale,true);
   agent=start('native/mgu-ai-agent/agent.js',agentEnv);
   await waitFor(mgu,'/v1/status',{authorization:'Bearer '+deviceToken});
   await api('/monitor/poll','POST');
-  assert.equal((await api('/vehicle')).body.live.stale,false);
+  const reconnected=(await api('/vehicle')).body;
+  assert.equal(reconnected.poll.connection,'reachable');
+  assert.equal(reconnected.live.stale,true);
+  assert.equal(reconnected.live.cbsStale,true);
+  snapshot.range({mileageKilometre:123456});
+  snapshot.receivedValue('KombiInterface_2.cbsDataServiceList',cbs,1);
+  assert.ok(snapshot.flush(true));
+  await api('/monitor/poll','POST');
+  v=(await api('/vehicle')).body.live;
+  assert.equal(v.stale,false);
+  assert.equal(v.cbsStale,false);
+  assert.notEqual(v.mileageAt,measuredAt);
+  measuredAt=v.mileageAt;
 
   const favorite=(await api('/mgu/favorites','POST',{name:'Test',path:'/tmp'})).body.favorites[0];
   await stop(pi);

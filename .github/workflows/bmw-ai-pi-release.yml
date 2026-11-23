@@ -64,6 +64,8 @@ jobs:
           node --check pi-source/server.js
           node --check pi-source/siwc.js
           node --check pi-source/mgu-ssh.js
+          node --check pi-source/dtc-import.js
+          node tests/motorscope-import.mjs
           node --check pi-source/public/app.js
           node pi-source/tests/test-chat-export.js
           node pi-source/tests/test-auto-update-prefs.js
@@ -86,11 +88,13 @@ jobs:
             paths=[entry['path'] for entry in json.loads(baseline.read('manifest.json'))['files']]
           contents={x:(root/x).read_bytes() for x in paths}
           server=contents['server.js'].decode()
-          ssh_import="const ssh=require('./mgu-ssh');"
-          assert server.count(ssh_import)==1, 'Could not locate SSH module import'
-          ssh_source=(root/'mgu-ssh.js').read_text()
-          bundled="const ssh=(()=>{\nconst module={exports:{}};\n"+ssh_source+"\nreturn module.exports;\n})();"
-          contents['server.js']=server.replace(ssh_import,bundled,1).encode()
+          for variable, module in [('ssh','mgu-ssh'),('dtcImport','dtc-import')]:
+            source_import="const "+variable+"=require('./"+module+"');"
+            assert server.count(source_import)==1, 'Could not locate module import: '+module
+            local_source=(root/(module+'.js')).read_text()
+            bundled="const "+variable+"=(()=>{\nconst module={exports:{}};\n"+local_source+"\nreturn module.exports;\n})();"
+            server=server.replace(source_import,bundled,1)
+          contents['server.js']=server.encode()
           manifest={'schema':1,'package':'bmw-ai-pi','version':version,
             'files':[{'path':n,'sha256':hashlib.sha256(c).hexdigest()} for n,c in contents.items()]}
           mb=(json.dumps(manifest,sort_keys=True,separators=(',',':'))+'\n').encode()

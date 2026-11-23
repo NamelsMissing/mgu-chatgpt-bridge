@@ -114,6 +114,12 @@ fs.rmSync(dir, { recursive: true, force: true });
 const roSrc = src.slice(src.indexOf('class ReadOnlyDiag'), src.indexOf('mgu.run('));
 const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag);
 (async () => {
+    const cache=new V.VehicleSnapshot({dir:os.tmpdir(),now:()=>1234});
+    cache.secureMileage({currentMileage:123456});
+    cache.secureMileage({currentMileage:0});
+    assert.deepStrictEqual(cache.document().mileage,
+      {km:123456,source:'SecureMileage',at:new Date(1234).toISOString(),valid:false,unverified:true});
+
     // Inject only the native binding and interface configuration; run the real
     // watch lifecycle. This source exposes a getter without an event notifier.
     const vm=require('node:vm'), signalSource=fs.readFileSync(path.join(root,'kit/runtime/signals.js'),'utf8');

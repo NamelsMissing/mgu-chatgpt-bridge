@@ -10,8 +10,9 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
+const dtcImport=require('./dtc-import');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.2'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.3'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -112,7 +113,7 @@ function logTransport(endpoint,status,outcome,component='MGU-Agent'){
 }
 async function mguRequest(method,endpoint,content,timeoutMs){
   const dest=st.mguConnection||{url:MGU,token:DEVICE_TOKEN};
-  if(!dest.url||!dest.token||dest.token.startsWith('REPLACE_'))throw Error('MGU-Verbindung nicht konfiguriert');
+  if(!dest.url||!dest.token||dest.token.startsWith('REPLACE_'))throw Object.assign(Error('MGU-Verbindung nicht konfiguriert'),{connection:'unconfigured'});
   let res;
   try{
     res=await fetch(dest.url+endpoint,{method,headers:{authorization:'Bearer '+dest.token,'content-type':'application/json'},
@@ -120,7 +121,8 @@ async function mguRequest(method,endpoint,content,timeoutMs){
   }catch(e){
     const timeout=e.name==='TimeoutError'||e.name==='AbortError';
     logTransport(endpoint,null,timeout?'Timeout':'Verbindungsfehler');
-    throw Object.assign(Error(timeout?'Zeitüberschreitung beim MGU-Agenten':'MGU-Agent nicht erreichbar'),{status:timeout?504:502});
+    throw Object.assign(Error(timeout?'Keine rechtzeitige Antwort von der MGU. Fahrzeug möglicherweise ausgeschaltet oder im Standby.':
+      'MGU derzeit nicht erreichbar. Fahrzeug möglicherweise ausgeschaltet oder im Standby.'),{status:timeout?504:502,connection:'unreachable'});
   }
   if(!res.ok){
     const data=await res.json().catch(()=>null);
@@ -129,7 +131,7 @@ async function mguRequest(method,endpoint,content,timeoutMs){
       snapshot_error:'Snapshot fehlerhaft',storage_unavailable:'OAP-Verzeichnis nicht erreichbar',
       request_ipc:'Lokale Übergabe fehlgeschlagen',diagnostic_timeout:'Diagnose-Timeout',busy:'Abfrage läuft'};
     logTransport(endpoint,res.status,codes[data&&data.code]||'HTTP-Fehler');
-    throw Object.assign(Error('MGU HTTP '+res.status+(detail?' · '+detail:'')),{status:res.status,upstream:data});
+    throw Object.assign(Error('MGU HTTP '+res.status+(detail?' · '+detail:'')),{status:res.status,upstream:data,connection:'agent_http_error'});
   }
   logTransport(endpoint,res.status,'Antwort empfangen');
   return res;
@@ -285,6 +287,11 @@ function wasRecent(at,ms){
   const age=Date.now()-Date.parse(at);
   return Number.isFinite(age)&&age>=-10000&&age<=ms;
 }
+function vehicleReadingFresh(at, maxAge){
+  const measured=Date.parse(at),after=Date.parse(M.poll.measurementAfter);
+  return M.poll.ok===true&&M.poll.appState==='running'&&wasRecent(M.poll.heartbeatAt,90000)&&wasRecent(at,maxAge)&&
+    (!Number.isFinite(after)||measured>=after);
+}
 function nextBmwService(rows){
   const eligible=rows.filter(c=>c.available!==false);
   const date=c=>c.dueDate||(c.dueMonth?c.dueMonth+'-01':null);
@@ -302,7 +309,8 @@ function vehicleView(){
     items:Object.values(st.vehicle.items),
     entries:Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0)),
     live:st.vehicle.live?Object.assign({},st.vehicle.live,{
-      stale:st.vehicle.live.mileageAvailable!==true||M.poll.ok!==true||M.poll.appState!=='running'||!wasRecent(M.poll.heartbeatAt,90000)||!wasRecent(st.vehicle.live.mileageAt,7*60000),serviceHistory:st.vehicle.live.serviceHistory?Object.assign({},st.vehicle.live.serviceHistory,
+      stale:st.vehicle.live.mileageAvailable!==true||!vehicleReadingFresh(st.vehicle.live.mileageAt,7*60000),
+      cbsStale:!vehicleReadingFresh(st.vehicle.live.cbsAt||st.vehicle.live.cbsListAt,15*60000),serviceHistory:st.vehicle.live.serviceHistory?Object.assign({},st.vehicle.live.serviceHistory,
       {sets:st.vehicle.live.serviceHistory.sets.map(x=>Object.assign({},x,{imported:!!(x.date&&historyEntryFor(x))}))}):null}):null};
 }
 function addMileage(km,date,source,measuredAt,mileageSource){
@@ -319,7 +327,7 @@ function noteVehicleMileage(status){
   const v=status&&status.vehicle;
   noteVehicleLive(v);
   const km=v&&v.mileageKm;
-  if(!Number.isInteger(km)||km<=0||km>2000000||v.appState==='stale'||!wasRecent(v.mileageAt,7*60000))return;
+  if(!Number.isInteger(km)||km<=0||km>2000000||v.appState==='stale'||v.mileageAvailable===false||!wasRecent(v.mileageAt,7*60000))return;
   const cur=currentMileage();if(cur&&(km<cur.km||(cur.date===today()&&cur.km===km)))return;
   addMileage(km,v.mileageAt.slice(0,10),'vehicle',v.mileageAt,v.mileageSource);
 }
@@ -328,7 +336,7 @@ const str=(v,max)=>typeof v==='string'?v.slice(0,max):null;
 const int=(v,max)=>Number.isInteger(v)&&v>=0&&v<=max?v:null;
 const isoDay=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)?v:null;
 function noteVehicleLive(v){
-  if(!v||(v.status!=='ok'&&v.status!=='waiting'))return;
+  if(!v||v.appState==='stale'||(v.status!=='ok'&&v.status!=='waiting'))return;
   const h=v.serviceHistory&&typeof v.serviceHistory==='object'?v.serviceHistory:null;
   const live={at:str(v.writtenAt,40),source:str(v.source,60),writtenAt:str(v.writtenAt,40),unverified:v.unverified!==false,
     mileageKm:int(v.mileageKm,2000000),mileageAt:str(v.mileageAt,40),mileageSource:str(v.mileageSource,60),
@@ -345,13 +353,22 @@ function noteVehicleLive(v){
     live.mileageAvailable=false;
     for(const k of ['mileageKm','mileageAt','mileageSource'])live[k]=previous[k];
   }
-  if(live.mileageAvailable===undefined)live.mileageAvailable=Number.isInteger(live.mileageKm)&&wasRecent(live.mileageAt,7*60000);
+  if(live.mileageAvailable===undefined)live.mileageAvailable=v.mileageAvailable!==false&&Number.isInteger(live.mileageKm)&&wasRecent(live.mileageAt,7*60000);
   const listAt=v.telemetry?.received?.['KombiInterface_2.cbsDataServiceList']?.validAt||null;
   live.cbsListAt=listAt;
   if(previous?.cbsListAt&&(!listAt||Date.parse(listAt)<Date.parse(previous.cbsListAt))){
     live.cbs=previous.cbs;
     live.cbsListAt=previous.cbsListAt;
   }
+  if(!live.cbsListAt&&previous?.cbs?.length){
+    const entries=new Map(previous.cbs.map(c=>[c.scope,c]));
+    for(const c of live.cbs){
+      const old=entries.get(c.scope);
+      if(!old||Date.parse(c.at)>=Date.parse(old.at)||!old.at)entries.set(c.scope,c);
+    }
+    live.cbs=[...entries.values()].slice(0,50);
+  }
+  live.cbsAt=live.cbsListAt||live.cbs.map(c=>c.at).filter(at=>Number.isFinite(Date.parse(at))).sort().pop()||null;
   if(previous&&!live.serviceHistory)live.serviceHistory=previous.serviceHistory||null;
   const before=JSON.stringify(Object.assign({},previous||{},{at:null}));
   st.vehicle.live=live;
@@ -560,7 +577,7 @@ function checkControlState(){
   const observed=M.poll.received?.[list], signal=M.poll.signals?.KombiInterface_2;
   if(!M.poll.ok||M.poll.appState==='stale')return M.cc.listAt?'stale':'unknown';
   if(observed?.valid===false||(signal?.error==='get ccList'&&Date.parse(signal.errorAt)>(observed?.at?Date.parse(observed.at):-Infinity)))return 'failed';
-  if(wasRecent(M.cc.listAt,3*60000))return 'read';
+  if(vehicleReadingFresh(M.cc.listAt,3*60000))return 'read';
   return signal?.available===false?'unavailable':M.cc.listAt?'stale':'unknown';
 }
 let lastTextResolution='';
@@ -623,7 +640,7 @@ const TYRE_NAMES={FRONT_LEFT:'vorne links',FRONT_RIGHT:'vorne rechts',REAR_LEFT:
 function tyresView(){
   const last=M.lastTyres||M.tyres[M.tyres.length-1];if(!last)return null;
   const weekAgo=M.tyres.filter(s=>Date.parse(s.at)<=Date.parse(last.at)-7*86400000).pop()||M.tyres[0];
-  return {at:last.at,stale:!wasRecent(last.at,3*60000),unverified:true,wheels:last.wheels.map(w=>{const o=weekAgo&&weekAgo.wheels.find(x=>x.position===w.position);
+  return {at:last.at,stale:!vehicleReadingFresh(last.at,3*60000),unverified:true,wheels:last.wheels.map(w=>{const o=weekAgo&&weekAgo.wheels.find(x=>x.position===w.position);
     return Object.assign({},w,{name:TYRE_NAMES[w.position]||w.position,low:w.p!==null&&w.p<(w.target?w.target*0.9:1.9),change7d:o&&o.p!==null&&w.p!==null&&weekAgo!==last?Math.round((w.p-o.p)*100)/100:null,since:weekAgo!==last?weekAgo.at:null});}),
     history:M.tyres.slice(-200)};
 }
@@ -641,7 +658,7 @@ function noteDpf(d){
     {M.dpf.regens.push({at:s.at,km:s.km,distanceBefore:last.distance,sootBefore:last.soot});trim(M.dpf.regens,200);}
   if(!last||Date.now()-Date.parse(last.at)>=10*60000||M.dpf.regens.length&&M.dpf.regens[M.dpf.regens.length-1].at===s.at){M.dpf.samples.push(s);trim(M.dpf.samples,3000);save();}
 }
-function dpfView(){const last=M.lastDpf||M.dpf.samples[M.dpf.samples.length-1];return last?{latest:last,stale:!wasRecent(last.at,8*60000),regens:[...M.dpf.regens].reverse().slice(0,30),history:M.dpf.samples.slice(-200)}:null;}
+function dpfView(){const last=M.lastDpf||M.dpf.samples[M.dpf.samples.length-1];return last?{latest:last,stale:!vehicleReadingFresh(last.at,8*60000),regens:[...M.dpf.regens].reverse().slice(0,30),history:M.dpf.samples.slice(-200)}:null;}
 
 // ----- Service-Fälligkeiten melden -----
 function checkServiceNotifications(){
@@ -650,6 +667,7 @@ function checkServiceNotifications(){
     notify('service','service:'+d.id+':'+d.status+':'+(d.dueDate||'')+':'+(d.dueKm||''),'BMW: '+d.name+(d.status==='overdue'?' überfällig':' bald fällig'),
       [d.dueDate?'Datum: '+d.dueDate:'',d.dueKm!==null?'bei '+d.dueKm.toLocaleString('de-DE')+' km'+(d.kmLeft!==null?' (noch '+d.kmLeft.toLocaleString('de-DE')+' km)':''):''].filter(Boolean).join(', '),{cooldownMs:30*86400000});
   for(const c of (st.vehicle.live&&st.vehicle.live.cbs)||[]){
+    if(c.available===false||!vehicleReadingFresh(c.at||st.vehicle.live.cbsListAt,15*60000))continue;
     const days=c.dueDate?Math.round((Date.parse(c.dueDate)-Date.now())/86400000):null;
     if((c.remainingKm!==null&&c.remainingKm<=1000)||(days!==null&&days<=30))
       notify('service','cbs:'+c.scope+':'+(c.dueDate||'')+':'+Math.floor((c.remainingKm||0)/500),'BMW meldet: '+c.label+' fällig',[c.dueDate?'bis '+c.dueDate:'',c.remainingKm!==null?'noch '+c.remainingKm+' km':''].filter(Boolean).join(', '),{cooldownMs:30*86400000});
@@ -657,14 +675,16 @@ function checkServiceNotifications(){
 }
 
 // ----- Hintergrundabfrage -----
-let pollTimer=null,pollBusy=false;
-M.poll=Object.assign({},M.poll,{ok:false,appState:'unknown'});
+let pollTimer=null,pollRequest=null;
+M.poll=Object.assign({},M.poll,{ok:false,appState:'unknown',connection:'unchecked'});
 let pollFailures=0,vehicleRawSamples={};
 function recordMguStatus(s){
+  if(s?.online!==true)throw Object.assign(Error('Agent hat eine ungültige Statusantwort geliefert'),{connection:'invalid_response'});
+  const previous=M.poll;
   noteVehicleMileage(s);
   const v=s.vehicle||{};
   if(v.telemetry?.samples)vehicleRawSamples=v.telemetry.samples;
-  M.poll={at:now(),ok:true,error:null,lastOk:now(),vehicle:v.status,appState:v.appState||'unknown',
+  M.poll={at:now(),ok:true,error:null,lastOk:now(),connection:'reachable',measurementAfter:previous.measurementAfter||null,vehicle:v.status,appState:v.appState||'unknown',
     reason:v.reason||null,heartbeatAt:v.heartbeatAt||null,signals:v.signals||{},
     received:v.telemetry?.received||M.poll.received||{},
     stages:v.telemetry?.stages||{},
@@ -675,17 +695,30 @@ function recordMguStatus(s){
     lastData:v.status==='ok'&&v.writtenAt&&v.appState!=='stale'?v.writtenAt:M.poll.lastData||null};
   try{save();}catch(e){M.poll.transfer.piPersistedAt=null;throw e;}
 }
+function recordMguFailure(e){
+  const at=now();
+  M.poll={...M.poll,at,ok:false,connection:e.connection||'invalid_response',measurementAfter:at,
+    error:String(e.message||e).slice(0,160)};
+}
+function requestMguStatus(){
+  if(!pollRequest)pollRequest=probeMgu().finally(()=>{pollRequest=null;});
+  return pollRequest;
+}
 async function pollOnce(){
-  if(pollBusy)return M.poll;pollBusy=true;
+  await requestMguStatus();
+  return M.poll;
+}
+async function probeMgu(){
+  let mgu=null;
   try{
     const s=await(await mguRequest('GET','/v1/status')).json();
     recordMguStatus(s);
+    mgu=s;
     pollFailures=0;
-  }catch(e){pollFailures=Math.min(pollFailures+1,5);M.poll=Object.assign({},M.poll,{at:now(),ok:false,error:String(e.message||e).slice(0,160)});}
-  finally{pollBusy=false;}
+  }catch(e){pollFailures=Math.min(pollFailures+1,5);recordMguFailure(e);}
   try{checkServiceNotifications();}catch(e){}
   if(!M.poll.ok)save();
-  return M.poll;
+  return mgu;
 }
 function schedulePoll(){
   clearTimeout(pollTimer);
@@ -1250,7 +1283,10 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
    res.setHeader('Set-Cookie',[SESSION_COOKIE+'=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict',SESSION_COOKIE_HTTP+'=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict']);
    audit('logout','owner');return send(res,200,{ok:true});}
   if(req.method==='GET'&&p==='/api/v1/config')return send(res,200,{model:MODEL,chatgptPlan:siwc.status(),openaiConfigured:siwc.status().permission||!!APIKEY,mguConfigured:!!st.mguConnection||(!!MGU&&!!DEVICE_TOKEN),features:{chat:true,voice:'iOS Speech framework',diagnostics:true,downloads:true,claudeMcp:true,vehicleActions:'locked pending verified ECU adapters'}});
-  if(req.method==='GET'&&p==='/api/v1/status'){let mgu=null,error=null;try{mgu=await(await mguRequest('GET','/v1/status')).json();recordMguStatus(mgu);}catch(e){error=e.message;M.poll={...M.poll,ok:false,at:now(),error};}return send(res,200,{server:{online:true,at:now()},mgu,error});}
+  if(req.method==='GET'&&p==='/api/v1/status'){
+    const mgu=await requestMguStatus();
+    return send(res,200,{server:{online:true,at:now()},mgu,error:M.poll.error,connection:M.poll.connection});
+  }
   // Only the authenticated owner can export. Files stay on this device until explicitly downloaded.
   if(req.method==='POST'&&p==='/api/v1/conversations/export'){
     const d=await body(req,12000);
@@ -1371,6 +1407,20 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
   }
   if(req.method==='GET'&&p==='/api/v1/vehicle')return send(res,200,Object.assign(vehicleView(),{tyres:tyresView(),dpf:dpfView(),poll:M.poll}));
   // ----- Fehler: Check-Control und Fehlerspeicher -----
+  if(req.method==='POST'&&p==='/api/v1/faults/import-catalog'){
+    const input=await body(req,24*1024*1024);
+    const data=dtcImport.convert(input.catalog,input.identities);
+    const bytes=dtcImport.serialize(data);
+    const destination=path.join(DATA,'dtc-texts.json'),tmp=destination+'.'+uid()+'.tmp';
+    try{
+      fs.writeFileSync(tmp,bytes,{mode:0o600,flag:'wx'});
+      try{fs.linkSync(tmp,destination);}
+      catch(e){if(e.code==='EEXIST')return fail(res,409,'Ein Fehlertextkatalog ist bereits vorhanden. Für einen Austausch verwende die lokale Pi-Datei.');throw e;}
+    }finally{if(fs.existsSync(tmp))fs.unlinkSync(tmp);}
+    faultTextCatalog.mtime=null;
+    const loaded=localFaultTexts();
+    return send(res,201,{count:loaded.count,ecuCount:Object.keys(loaded.ecu).length});
+  }
   if(req.method==='GET'&&p==='/api/v1/faults')return send(res,200,faultsView());
   if(req.method==='POST'&&p==='/api/v1/faults/read'){const fm=await readFaultMemoryNow();audit('fault_memory_read',fm&&fm.dtcs?fm.dtcs.length+' Codes':'');return send(res,200,faultsView());}
   if(req.method==='POST'&&p==='/api/v1/monitor/poll'){await pollOnce();return send(res,200,{poll:M.poll});}

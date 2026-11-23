@@ -258,6 +258,15 @@
     <p class="hint" id="faultCounts"></p>
     <p class="hint" id="faultTextCatalog"></p>
     <button id="faultEcuWorksheet" class="secondary" type="button">ECU-Zuordnungsvorlage herunterladen</button>
+    <details>
+      <summary>Private BMW-Fehlertexte aus MotorScope importieren</summary>
+      <form id="faultCatalogForm">
+        <label>MotorScope-Katalog <input id="faultCatalogFile" type="file" accept=".json,application/json" required></label>
+        <label>Bestätigte ECU-Zuordnung <input id="faultIdentityFile" type="file" accept=".json,application/json" required></label>
+        <button type="submit">Privaten Katalog auf dem Pi installieren</button>
+        <p id="faultImportResult" class="hint" role="status"></p>
+      </form>
+    </details>
     <div class="toolbar">
       <label>Steuergerät <select id="faultEcu"><option value="">Alle</option></select></label>
       <label>Status <select id="faultState"><option value="">Alle</option><option value="testFailed">Aktuell vorhanden</option><option value="pendingDTC">Vorläufig</option><option value="confirmedDTC">Bestätigt</option></select></label>
