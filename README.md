@@ -93,3 +93,5 @@ Der [Prüfbericht für BMW AI 0.9.0](docs/PRUEFBERICHT-BMW-AI-0.9.0.md) beschrei
 Fahrzeugdaten und private DTC-Textzuordnungen ab Pi 0.10.0 sind im [technischen Prüfbericht](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.0.md) dokumentiert.
 
 Der [Prüfbericht zu 0.10.1](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.1.md) beschreibt den privaten MotorScope-Import und den stufenweisen Fahrzeugdaten-Diagnoseexport.
+
+Der [Prüfbericht zu 0.10.2](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.2.md) beschreibt die Diagnosewarteschlange, den privaten MGU-Katalogexport und die ECU-Zuordnungsvorlage.

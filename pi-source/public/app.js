@@ -159,7 +159,9 @@ function renderFaults(f){
  const act=$('ccActive');act.replaceChildren();
  const ccReasons={failed:'Letzte Abfrage der vollständigen Meldungsliste fehlgeschlagen.',unavailable:'Schnittstelle für die vollständige Meldungsliste nicht verfügbar.',
   stale:'Letzter vollständiger Stand ist veraltet.',unknown:'Aktive Meldungen noch nicht vollständig gelesen. Einzelereignisse können bereits vorliegen.'};
- if(f.checkControl.status!=='read')act.appendChild(txt('p',ccReasons[f.checkControl.status]||ccReasons.unknown,'hint'));
+ if(f.checkControl.status!=='read')act.appendChild(txt('p',
+  [ccReasons[f.checkControl.status]||ccReasons.unknown,missingSignal(poll,['KombiInterface_2.ccList','CheckControlMaster.basicList'])]
+   .filter(Boolean).join(' · '),'hint'));
  else act.appendChild(txt('p',f.checkControl.active.length?'Vollständige Liste empfangen · '+stamp(f.checkControl.listAt):'Erfolgreich gelesen · keine aktiven Meldungen','hint'));
  for(const c of f.checkControl.active){
   const card=txt('div','','due due-overdue');
@@ -629,12 +631,18 @@ function dueLine(d){
 function renderVehicle(v){
  vehicleData=v;
  renderTyres(v.tyres||null);renderDpf(v.dpf||null);
+ if(!v.tyres){
+  const detail=missingSignal(v.poll||{},['TPMSInternalData.tpmsInternalLastValues','TPMS.statusTyrePressure']);
+  if(detail)$('tyreList').appendChild(txt('p',detail,'hint'));
+ }
  const m=v.mileage;
  const measured=v.live&&Number.isInteger(v.live.mileageKm)?v.live:null;
  $('mileageNow').textContent=measured?kmText(measured.mileageKm):m?kmText(m.km):'Noch kein Kilometerstand';
  $('mileageSource').textContent=measured?(measured.stale?'Fahrzeug · veraltet':'Fahrzeug · '+(measured.mileageSource||'Quelle unbekannt')):m?MILEAGE_SOURCES[m.source]||m.source:'–';
  $('mileageSource').className='pill '+(measured&&!measured.stale?'pill-live':'pill-off');
+ const mileageReason=missingSignal(v.poll||{},['SecureMileage.mileage','MileageSupreme.mileageSupreme','VehicleInformation.Range']);
  $('mileageInfo').textContent=measured?'Gemessen '+stamp(measured.mileageAt)+' · '+(measured.mileageSource||'Quelle unbekannt'):m?'Stand vom '+dateText(m.date)+(v.kmPerDay?' · Ø '+v.kmPerDay.toLocaleString('de-DE')+' km pro Tag im letzten Jahr':''):'Trag den aktuellen Stand ein. Er ist die Grundlage für die km-Fälligkeiten.';
+  if(!measured&&mileageReason)$('mileageInfo').textContent=mileageReason;
  if(!$('mileageDate').value)$('mileageDate').value=v.today;
  $('mileageDate').max=v.today;
  const hist=$('mileageHistory');hist.replaceChildren();
@@ -704,7 +712,9 @@ function renderReported(v){
  if(live.mileageKm!==null)box.appendChild(txt('p','Kilometerstand laut Fahrzeug: '+kmText(live.mileageKm)+' · '+(live.mileageSource||'Quelle nicht übermittelt')+' · '+(stamp(live.mileageAt)||'Zeitpunkt unbekannt')+(live.stale?' · veraltet':'')));
  if(live.cbsListAt)box.appendChild(txt('p','BMW-Liste gelesen · '+stamp(live.cbsListAt)+
   ((!v.poll?.ok||Date.now()-Date.parse(live.cbsListAt)>3*60000)?' · veraltet':''),'hint'));
- if(!live.cbs.length)box.appendChild(txt('p','Noch keine Servicebedarf-Meldung empfangen.','hint'));
+ if(!live.cbs.length)box.appendChild(txt('p',missingSignal(v.poll||{},['KombiInterface_2.cbsDataServiceList',
+  ...Object.keys(v.poll?.stages||{}).filter(key=>key.startsWith('ConditionBasedServicesLegacy.'))])||
+  'Noch keine Servicebedarf-Meldung empfangen.','hint'));
  for(const c of live.cbs){
   const row=txt('div','','list-row'),info=txt('div','','request-info');
   info.appendChild(txt('strong',c.label));
@@ -745,11 +755,36 @@ const telemetryGroups={
  'DPF':['UDS.DPF','Diagnostics'],
  'Fehlerspeicher':['UDS.1902','Diagnostics']
 };
+function missingSignal(p,keys){
+ const reason={unexpected_shape_or_type:'Datenstruktur oder Datentyp nicht erkannt',
+  qualifier_unavailable:'BMW-Qualifier meldet keinen gültigen Wert',invalid_value:'Messwert ungültig'};
+ if(p.ok===false)return 'Datenübertragung vom Agenten unterbrochen';
+ const messages=[];
+ for(const key of keys){
+  const row=p.stages?.[key],family=p.stages?.[key.split('.')[0]];
+  if(!row)continue;
+  const why=reason[row.decodeReason]||(row.responseReceived&&row.decoded===false?'Antwort nicht auswertbar':
+    row.manifestRead===false&&row.manifestSubscribe!==true?'Getter nicht im Manifest freigegeben':
+    row.getter==='not_configured'?'Getter in der installierten Proxy-Konfiguration fehlt':
+    ['failed','paused'].includes(row.getter)?'Getter antwortet nicht erfolgreich':
+    family?.provider===false?'Provider nicht erreichbar':
+    row.subscription==='failed'?'Subscription fehlgeschlagen':null);
+  if(why)messages.push(key+' · '+why);
+ }
+ return messages.join(' / ');
+}
+$('faultEcuWorksheet').onclick=async()=>{
+ try{triggerFileDownload(new Blob([JSON.stringify(await api('/faults/ecu-worksheet'),null,2)],{type:'application/json'}),'bmw-ecu-identities.json');}
+ catch(e){notice(e.message);}
+};
 async function renderTelemetry(){
  try{
   const data=await api('/vehicle/diagnostics'),p=data.poll||{},box=$('vehicleTelemetryRows');
-  const transfer=p.transfer||{};
+  const transfer=p.transfer||{},versions=p.versions||{};
+  const installed=(versions.vehicleDataInstalled||[]).map(app=>app.version).join(', ');
   box.replaceChildren(txt('p',p.ok?'Snapshot empfangen · '+stamp(p.lastOk):'Übertragung unterbrochen oder noch ungeprüft','hint'));
+  box.appendChild(txt('p',['Pi '+(versions.pi||'unbekannt'),'Agent '+(versions.agent||'unbekannt'),
+   'Vehicle Data installiert '+(installed||'unbestätigt'),'Snapshot-Version '+(versions.vehicleDataRunning||'unbekannt')].join(' · '),'hint'));
   box.appendChild(txt('p',[
    transfer.snapshotAt?'Snapshot geschrieben '+stamp(transfer.snapshotAt):'Snapshotzeit fehlt',
    transfer.agentForwardedAt?'Agent übertragen '+stamp(transfer.agentForwardedAt):'Agent-Zeit fehlt',
@@ -774,6 +809,7 @@ async function renderTelemetry(){
       typeof stage.provider==='boolean'?'Provider '+yesNo(stage.provider):null,
       stage.initialGetter?'Initialabruf '+states[stage.initialGetter]:null,
       stage.getter?'Letzter Abruf '+states[stage.getter]:null,
+      stage.decodeReason?'Dekodierung: '+stage.decodeReason:null,
       stage.subscription?'Abo '+states[stage.subscription]:null,
       'Antwort '+yesNo(stage.responseReceived),'Dekodiert '+yesNo(stage.decoded)
      ].filter(Boolean).join(' · ');
@@ -790,7 +826,7 @@ async function renderTelemetry(){
 }
 $('vehicleTelemetry').ontoggle=()=>{if($('vehicleTelemetry').open)renderTelemetry();};
 $('vehicleTelemetryExport').onclick=async()=>{
- try{triggerFileDownload(new Blob([JSON.stringify(await api('/vehicle/diagnostics'),null,2)],{type:'application/json'}),'bmw-vehicle-diagnostics.json');}
+ try{triggerFileDownload(new Blob([JSON.stringify(await api('/vehicle/diagnostics?capabilities=1'),null,2)],{type:'application/json'}),'bmw-vehicle-diagnostics.json');}
  catch(e){notice(e.message);}
 };
 

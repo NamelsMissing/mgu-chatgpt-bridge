@@ -11,7 +11,7 @@ const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.1'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.2'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -668,6 +668,8 @@ function recordMguStatus(s){
     reason:v.reason||null,heartbeatAt:v.heartbeatAt||null,signals:v.signals||{},
     received:v.telemetry?.received||M.poll.received||{},
     stages:v.telemetry?.stages||{},
+    versions:{pi:SERVER_VERSION,agent:s.agentVersion||null,vehicleDataInstalled:s.vehicleDataInstalled||[],
+      vehicleDataRunning:v.source?.match(/^Vehicle Data ([0-9.]+)$/)?.[1]||null},
     transfer:{snapshotAt:v.telemetry?.snapshotAt||v.writtenAt||null,
       agentForwardedAt:v.telemetry?.forwardedAt||null,piReceivedAt:now(),piPersistedAt:now()},
     lastData:v.status==='ok'&&v.writtenAt&&v.appState!=='stale'?v.writtenAt:M.poll.lastData||null};
@@ -1350,7 +1352,23 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     const name=st.mcp.clients[dc[1]].name;revokeClient(dc[1]);audit('mcp_client_revoked',name);return send(res,200,diagView());
   }
   // ----- Fahrzeug und Service -----
-  if(req.method==='GET'&&p==='/api/v1/vehicle/diagnostics')return send(res,200,{poll:M.poll,samples:vehicleRawSamples,dtcCatalog:faultsView().texts});
+  if(req.method==='GET'&&p==='/api/v1/vehicle/diagnostics'){
+    let capabilities=null;
+    if(q.get('capabilities')==='1'){
+      try{capabilities=await(await mguRequest('GET','/v1/vehicle/capabilities',null,18000)).json();}
+      catch(e){capabilities={state:'unverified',httpStatus:e.status||null};}
+    }
+    return send(res,200,{poll:M.poll,samples:vehicleRawSamples,dtcCatalog:faultsView().texts,capabilities});
+  }
+  if(req.method==='GET'&&p==='/api/v1/faults/ecu-worksheet'){
+    const configured=localFaultTexts(),valid=[...M.faults.reads].reverse().find(x=>!x.error);
+    const ecu={};
+    for(const entry of valid?.ecus||[]){
+      if(entry.ok&&Number.isInteger(entry.ecu))ecu[entry.ecu]={family:configured.ecu[entry.ecu]?.family||'',
+        sgbd:configured.ecu[entry.ecu]?.sgbd||'',variant:configured.ecu[entry.ecu]?.variant||null,verified:false};
+    }
+    return send(res,200,{schema:1,ecu});
+  }
   if(req.method==='GET'&&p==='/api/v1/vehicle')return send(res,200,Object.assign(vehicleView(),{tyres:tyresView(),dpf:dpfView(),poll:M.poll}));
   // ----- Fehler: Check-Control und Fehlerspeicher -----
   if(req.method==='GET'&&p==='/api/v1/faults')return send(res,200,faultsView());

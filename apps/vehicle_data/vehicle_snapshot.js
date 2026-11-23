@@ -59,13 +59,15 @@ function isoDate(y, m, d) {
 /** SecureMileage.mileage -> km or null. Values close to 2^32 are "no value". */
 function decodeSecureMileage(v) {
     const km = v ? uint(v.currentMileage, 1999999) : null;
-    return { km: km === 0 ? null : km, manipulationState: v ? v.manipulationState : null, raw: v || null };
+    return { km: km === 0 ? null : km, reason:typeof (v&&v.currentMileage)!=='number'?'unexpected_shape_or_type':
+        !km?'invalid_value':null, manipulationState: v ? v.manipulationState : null, raw: v || null };
 }
 /** MileageSupreme.mileageSupreme -> km or null (only with the "available" qualifier). */
 function decodeMileageSupreme(v) {
     const ok = v && QUALIFIER_OK.has(v.qualifierMileageSupreme);
     const km = ok ? uint(v.mileageSupreme, 1999999) : null;
-    return { km: km === 0 ? null : km, qualifier: v ? v.qualifierMileageSupreme : null, raw: v || null };
+    return { km: km === 0 ? null : km, reason:typeof (v&&v.mileageSupreme)!=='number'?'unexpected_shape_or_type':
+        !ok?'qualifier_unavailable':!km?'invalid_value':null, qualifier: v ? v.qualifierMileageSupreme : null, raw: v || null };
 }
 /** One legacy CBS message. Member names end in the field's own suffix. */
 function decodeCbs(field, v) {

@@ -27,6 +27,7 @@ const HISTORY_INSTANCE = 'SystemFunctionsServiceHistoryInst1';
 const CHECK_CONTROL = 'de.bmw.infotainment.checkcontrol.CheckControlMaster';
 const KOMBI = 'de.bmw.infotainment.KombiInterface_2';
 const TPMS = 'de.bmw.infotainment.vehicle.TPMSInternalData';
+const DiagnosticQueue = require('./diagnostic_queue');
 const REQUEST_FILE = 'bmw-vehicle-request.json';
 const HISTORY_EVERY_MS = 6 * 3600 * 1000;
 const DTC_PARAMS = [0x02, 0x0C];               // reportDTCByStatusMask: pending + confirmed
@@ -67,7 +68,12 @@ mgu.run({
         flush(true);
         setInterval(() => flush(true), 20000);
         let page = 0, historyProxy = null, historyBusy = false, kombi = null, notice = '';
-        let diag = null, dids = null, diagBusy = false, lastRequest = null, lastSecondary = 0;
+        let diag = null, dids = null, lastRequest = null, lastSecondary = 0, dpfRunning=false, queueState=null, previousFaultScan=null;
+        const queue=new DiagnosticQueue(state=>{
+            queueState=state;
+            snap.stage('UDS','queue',state);
+            flush();
+        });
         const pause = (ms) => new Promise((r) => setTimeout(r, ms));
         const sample = (name, raw, validCount) => {
             snap.receivedValue(name,raw,validCount);
@@ -115,10 +121,10 @@ mgu.run({
             });
         };
         watch(SECURE, { mileage: (v) => {
-            snap.secureMileage(v); sample('SecureMileage.mileage',v,snap.state.secure.km === null ? null : 1);
+            snap.secureMileage(v); snap.stage('SecureMileage.mileage','decodeReason',snap.state.secure.reason); sample('SecureMileage.mileage',v,snap.state.secure.km === null ? null : 1);
         } }, { readFields:['mileage'],pollMs:5*60000 });
         watch(SUPREME, { mileageSupreme: (v) => {
-            snap.mileageSupreme(v); sample('MileageSupreme.mileageSupreme',v,snap.state.supreme.km === null ? null : 1);
+            snap.mileageSupreme(v); snap.stage('MileageSupreme.mileageSupreme','decodeReason',snap.state.supreme.reason); sample('MileageSupreme.mileageSupreme',v,snap.state.supreme.km === null ? null : 1);
         } }, { readFields:['mileageSupreme'],pollMs:5*60000 });
         watch('de.bmw.infrastructure.VehicleInformation', { Range: (v) =>
             sample('VehicleInformation.Range',v,snap.range(v) === null ? null : 1),
@@ -217,10 +223,8 @@ mgu.run({
         setInterval(() => readHistory('periodic'), HISTORY_EVERY_MS);
 
         // ----- Diagnostic reads: fault memory (0x19) and DPF values (0x22), one at a time -----
-        async function withDiag(fn) {
-            if (diagBusy) return false;
-            diagBusy = true;
-            try {
+        function withDiag(kind, key, fn) {
+            return queue.run(kind,key,async ()=>{
                 if (!diag || diag.error) {
                     if (diag && diag.p && diag.p.shutdown) await Promise.resolve().then(() => diag.p.shutdown()).catch(() => {});
                     diag = new ReadOnlyDiag(signals, log);
@@ -230,42 +234,57 @@ mgu.run({
                 }
                 if (!diag.p || diag.error) throw new Error(diag.error || 'diagnostic transport unavailable');
                 await fn();
-                snap.available('Diagnostics', true);
-                return true;
-            } catch (e) { snap.available('Diagnostics', false, e); log.warn('diagnostics: ' + e); return false; }
-            finally { diagBusy = false; flush(); }
+                snap.available('Diagnostics',true);
+            }).catch(e=>{
+                snap.available('Diagnostics',false,'Diagnoseauftrag fehlgeschlagen oder Zeitlimit erreicht');
+                throw e;
+            });
         }
         async function readFaultMemory(requestId) {
-            for (let attempt = 0; attempt < 10 && diagBusy; attempt++) await pause(2000);   // DPF read running
-            notice = 'Reading fault memory ...';
-            const ok = await withDiag(async () => {
-                let replies;
-                try { replies = await diag.functional(0x19, DTC_PARAMS, { idleMs: 4000, maxMs: 30000 }); }
-                catch (e) { faults.setDtc(requestId, null, DTC_PARAMS, e); throw e; }
-                const r = faults.setDtc(requestId, replies, DTC_PARAMS, null);
-                sample('UDS.1902',null,r.ecus.some(ecu=>ecu.ok)?r.dtcs.length:null);
-                if (!r.ecus.some((ecu) => ecu.ok)) {
-                    r.error = r.ecus.length ? 'Kein Steuergerät hat positiv geantwortet' : 'Keine ECU-Antwort innerhalb des Diagnosefensters';
-                    throw new Error(r.error);
+            notice = 'Fault memory queued ...';
+            try {
+                let scan;
+                await withDiag('fault',requestId,async ()=>{
+                    notice = 'Reading fault memory ...';
+                    scan = await diag.functional(0x19, DTC_PARAMS, {
+                        idleMs:4000,maxMs:30000,maxRetries:1,callTimeoutMs:6000,
+                    });
+                });
+                if (!scan) return; // Another invocation already owns this same local button request.
+                const result=faults.setDtc(requestId,scan,DTC_PARAMS,null);
+                if (!result.ecus.some(ecu=>ecu.ok)) {
+                    result.error = result.ecus.length ? 'Kein Steuergerät hat positiv geantwortet' : 'Keine ECU-Antwort innerhalb des Diagnosefensters';
                 }
-                notice = 'Fault memory: ' + r.dtcs.length + ' codes from ' + r.ecus.length + ' units';
-                log.info('fault memory read: ' + r.ecus.length + ' units, ' + r.dtcs.length + ' codes');
-            });
-            if (!ok) { notice = 'Fault memory not readable'; if (!faults.dtc || faults.dtc.requestId !== requestId) faults.setDtc(requestId, null, DTC_PARAMS, diagBusy ? 'busy' : (diag && diag.error) || 'diagnostic transport unavailable'); flush(); }
+                sample('UDS.1902',null,result.error?null:result.dtcs.length);
+                if(!result.error) previousFaultScan=result;
+                notice = result.error ? 'Fault memory not readable' : 'Fault memory: '+result.dtcs.length+' codes from '+result.ecus.length+' units';
+            } catch(e) {
+                faults.setDtc(requestId,null,DTC_PARAMS,e);
+                notice = 'Fault memory: '+ascii(String(e.message||e)).slice(0,100);
+            } finally { flush(true); }
         }
         async function readDpf() {
-            const secondary = Date.now() - lastSecondary > DPF_SECONDARY_MS;
-            await withDiag(async () => {
-                let count=0;
+            if (dpfRunning) return;
+            dpfRunning=true;
+            const secondary = Date.now()-lastSecondary>DPF_SECONDARY_MS;
+            let count=0;
+            try {
                 for (const field of DPF.READINGS) {
-                    if (field.tier === 'secondary' && !secondary) continue;
-                    const v = await dids.read(field.request);
-                    if (v !== null) { faults.setDpf(field.name, v); count++; }
-                    await pause(180);
+                    if (field.tier==='secondary' && !secondary) continue;
+                    let value;
+                    await withDiag('dpf',field.name,async ()=>{
+                        // Keep read units, scaling and DID selection. Limit just
+                        // this physical transaction so it can yield to a scan.
+                        const request=Object.assign({},field.request,{diagOpts:Object.assign({},field.request.diagOpts,
+                            {maxRetries:1,callTimeoutMs:5000,hardTimeoutMs:12000})});
+                        value=await dids.read(request);
+                        await pause(180);
+                    });
+                    if (value!==null && value!==undefined) { faults.setDpf(field.name,value); count++; }
                 }
-                sample('UDS.DPF',null,count||null);
-                if (secondary) lastSecondary = Date.now();
-            });
+                if (secondary && count) lastSecondary=Date.now();
+            } catch(e) { log.warn('DPF transport unavailable: '+e); }
+            finally { sample('UDS.DPF',null,count||null);dpfRunning=false;flush(); }
         }
         setTimeout(() => readFaultMemory('start'), DTC_AUTO_AFTER_MS);
         setTimeout(() => { readDpf(); setInterval(readDpf, DPF_PRIMARY_MS); }, 45 * 1000);
@@ -314,12 +333,17 @@ mgu.run({
         function messages(cv) {
             const f = faults.document();
             card(cv, 43, 900, 'CHECK-CONTROL MESSAGES');
-            if (!f.checkControl.active.length) label(cv, 'No active message.', 73, 220, 24, C.dim);
+            if (!f.checkControl.active.length) label(cv, f.checkControl.listAt?'No active message.':'Complete list not read.', 73, 220, 24, C.dim);
             f.checkControl.active.slice(0, 6).forEach((c, i) => label(cv, (c.text || 'Message ' + c.id).slice(0, 52), 73, 210 + i * 44, 23, C.warn));
             card(cv, 973, 584, 'FAULT MEMORY');
             const d = f.faultMemory;
-            if (!d) label(cv, diagBusy ? 'Reading...' : 'Read after start.', 1003, 220, 24, C.dim);
-            else if (d.error) label(cv, 'Not readable', 1003, 220, 24, C.over);
+            if (queueState && (queueState.active==='fault'||queueState.waiting.indexOf('fault')!==-1)) {
+                label(cv,queueState.active==='fault'?'Reading fault memory ...':'Waiting for diagnostic transport ...',1003,220,22,C.dim);
+            } else if (!d) label(cv, 'Read after start.', 1003, 220, 24, C.dim);
+            else if (d.error) {
+                label(cv, 'Last scan failed', 1003, 220, 24, C.over);
+                if(previousFaultScan)label(cv,'Previous scan: '+previousFaultScan.dtcs.length+' codes',1003,285,22,C.dim);
+            }
             else {
                 label(cv, String(d.dtcs.length), 1003, 260, 64, d.dtcs.some((x) => x.active) ? C.over : C.text, { font: 'bold' });
                 label(cv, 'codes in ' + d.ecus.filter((e) => e.count).length + ' of ' + d.ecus.length + ' units', 1003, 310, 22, C.dim);

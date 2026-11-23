@@ -120,6 +120,7 @@ class Diag extends EventEmitter {
             finish = () => { clearTimeout(idle); clearTimeout(hard); this.removeListener('frame', onFrame); this.removeListener('tasError', onErr); resolve(replies); };
             kick = (ms) => { clearTimeout(idle); idle = setTimeout(finish, ms); };
             onFrame = (f) => {
+                if (!(f.uds[0]===sid+0x40 && f.uds[1]===data[0]) && !(f.uds[0]===0x7F && f.uds[1]===sid)) return;
                 const pending = f.uds[0] === 0x7F && f.uds[2] === 0x78;
                 if (!pending || !replies.has(f.ecu)) replies.set(f.ecu, f.uds);
                 if (opts && opts.onReply && !pending) opts.onReply(f.ecu, replies.size);
@@ -128,7 +129,7 @@ class Diag extends EventEmitter {
             onErr = (e) => this.log.warn('TASU error during scan: ' + e);
             this.on('frame', onFrame); this.on('tasError', onErr);
         });
-        try { this._check(await this.send(ALL, sid, data)); } catch (e) { finish(); throw e; }
+        try { this._check(await this.send(ALL, sid, data, opts)); } catch (e) { finish(); throw e; }
         // timers from when the transport took the request (send() may have waited for it)
         if (!idle) kick(idleMs + 2000);          // first replies can take a moment
         hard = setTimeout(finish, maxMs);

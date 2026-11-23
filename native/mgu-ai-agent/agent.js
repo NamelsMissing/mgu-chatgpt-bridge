@@ -10,7 +10,33 @@ var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-var VEHICLE_STALE_MS=90000;
+var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.9';
+function installedVehicleApps(){
+ var result=[];
+ try{fs.readdirSync(OAP_APPS).forEach(function(dir){
+  if(!/^oap_\d+$/.test(dir))return;
+  try{
+   var pkg=JSON.parse(fs.readFileSync(path.join(OAP_APPS,dir,'source','package.json'),'utf8'));
+   if(pkg.name==='vehicle_data'&&/^\d+\.\d+\.\d+$/.test(pkg.version||''))result.push({appId:dir,version:pkg.version});
+  }catch(e){}
+ });}catch(e){}
+ return result;
+}
+var capabilityPending=false;
+function capabilityReport(res){
+ if(capabilityPending)return json(res,409,{error:'Die Katalogprüfung läuft bereits'});
+ capabilityPending=true;
+ var current=vehicleSnapshot(),installed=installedVehicleApps();
+ var id=current.appId||installed.length===1&&installed[0].appId;
+ var args=[path.join(__dirname,'vehicle-capabilities.js')];
+ if(id)args.push(path.join(OAP_APPS,id));
+ cp.execFile(process.execPath,args,{timeout:15000,maxBuffer:128*1024},function(err,stdout){
+  capabilityPending=false;
+  if(err)return json(res,502,{error:'Fahrzeugkatalog konnte nicht innerhalb des Zeitlimits geprüft werden'});
+  try{return json(res,200,JSON.parse(stdout));}
+  catch(e){return json(res,502,{error:'Ungültige Antwort der lokalen Katalogprüfung'});}
+ });
+}
 function vehicleSnapshot(){
  var dirs,best=null,installed=false,problem=null;
  try{dirs=fs.readdirSync(OAP_APPS);}catch(e){return {state:'storage_unavailable',reason:'OAP-Verzeichnis: '+e.code};}
@@ -72,7 +98,9 @@ function readFaultMemory(cb){
   if(fm&&fm.requestId===id)return finish({status:fm.error?502:200,body:{error:fm.error||null,faultMemory:fm}});
   if(tries>=90)finish({status:504,body:{code:'diagnostic_timeout',error:'Vehicle Data hat innerhalb von 90 s nicht geantwortet'}});
  },1000);
- function finish(result){clearInterval(t);faultReadPending=false;cb(result);}
+ function finish(result){clearInterval(t);faultReadPending=false;
+  try{if(JSON.parse(fs.readFileSync(req,'utf8')).id===id)fs.unlinkSync(req);}catch(e){}
+  cb(result);}
 }
 var PRESETS=['system','network','audio','services','storage','bridge','recent_logs','vehicle'];
 function mkdir(d){if(!fs.existsSync(d))fs.mkdirSync(d,0o700);}
@@ -189,7 +217,7 @@ function emitUI(){
  var dirs=appDataDirs();if(!dirs.length)return;
  var network=tsNetworkStatus();
  if(Date.now()-uiBridgeAt>=30000){uiBridge=bridgeInfo();uiBridgeAt=Date.now();}
- var value={version:'0.2.8',paired:!!latest.paired,tailscale:network,pairing:pairingInfo(network.tailIP),
+ var value={version:AGENT_VERSION,paired:!!latest.paired,tailscale:network,pairing:pairingInfo(network.tailIP),
   webConsoleUrl:latest.webConsoleUrl||'',at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,
   remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:uiBridge};
  dirs.forEach(function(dir){
@@ -213,7 +241,8 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
    if(!deviceToken)return json(res,403,{error:'Pairing code invalid or expired'});
    return json(res,200,{token:deviceToken});
  }
- if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;var vehicle=vehicleData();return json(res,200,{online:true,at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:vehicle.appState==='running'&&vehicle.status==='ok',vehicle:vehicle,capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
+ if(req.method==='GET'&&url==='/v1/vehicle/capabilities')return capabilityReport(res);
+ if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;var vehicle=vehicleData();return json(res,200,{online:true,agentVersion:AGENT_VERSION,vehicleDataInstalled:installedVehicleApps(),at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:vehicle.appState==='running'&&vehicle.status==='ok',vehicle:vehicle,capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
  if(req.method==='POST'&&url==='/v1/vehicle/fault-memory')return readFaultMemory(function(r){json(res,r.status,r.body);});
  if(req.method==='POST'&&url==='/v1/console')return json(res,200,readOnlyConsole.run(b.command));
  if(req.method==='POST'&&url==='/v1/diagnostics'){var d=diag(b.preset);latest.lastDiagnostic={preset:d.preset,at:d.at,preview:JSON.stringify(d.values).slice(0,350)};emitUI();return json(res,200,d);}

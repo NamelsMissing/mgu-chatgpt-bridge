@@ -84,6 +84,12 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
+  assert.equal(diag.poll.versions.agent,'0.2.9');
+  assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');
+  const checks=(await api('/vehicle/diagnostics?capabilities=1')).body.capabilities;
+  assert.equal(checks.schema,1);
+  assert.ok(checks.rows.some(row=>row.field==='Range'));
+  assert.ok(checks.rows.every(row=>!row.catalogGetter.supported),'local fixture does not verify BMW capabilities');
   assert.equal(diag.poll.received['VehicleInformation.Range'].count,1);
   assert.match(JSON.stringify(diag.samples),/123456/);
   assert.doesNotMatch(JSON.stringify(diag.samples),/sensitive-example|not exported|vin/i);
