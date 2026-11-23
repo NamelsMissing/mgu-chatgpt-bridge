@@ -142,6 +142,9 @@ function dtcRow(d,extra){
  if(d.isNew)head.appendChild(txt('span','neu','pill due-pill-soon'));
  info.appendChild(head);
  info.appendChild(txt('strong',d.title||'Fehlerbeschreibung nicht verfügbar'));
+ const reason={database_missing:'Lokale Fehlertextdatenbank fehlt',database_invalid:'Lokale Fehlertextdatenbank konnte nicht geladen werden',
+  identity_missing:'Geprüfte ECU-/SGBD-Identität fehlt',ambiguous:'Fehlertextzuordnung nicht eindeutig',unknown_code:'Code für diese ECU-Identität nicht im Katalog'};
+ if(Object.prototype.hasOwnProperty.call(reason,d.textReason))info.appendChild(txt('span',reason[d.textReason],'hint'));
  if(d.description)info.appendChild(txt('p',d.description,'notes'));
  info.appendChild(txt('span',extra,'hint'));
  const detail=txt('details','','');
@@ -173,6 +176,9 @@ function renderFaults(f){
   ev.appendChild(row);
  }
  const fm=f.faultMemory,list=$('faultList');list.replaceChildren();
+ const texts=f.texts;
+ $('faultTextCatalog').textContent=texts?texts.count+' geladene Fehlertexte · '+texts.ecuCount+' ECU-Zuordnungen':
+  'Fehlertextkatalog ungeprüft';
  const latest=fm.latest,last=fm.lastAttempt,filter=$('faultEcu'),selected=filter.value;
  const available=new Map([...(latest?.dtcs||[]),...fm.earlier].map(d=>[String(d.ecu),d.ecuName]));
  filter.replaceChildren(new Option('Alle',''),...Array.from(available,([id,name])=>new Option(name,id)));
@@ -742,13 +748,37 @@ const telemetryGroups={
 async function renderTelemetry(){
  try{
   const data=await api('/vehicle/diagnostics'),p=data.poll||{},box=$('vehicleTelemetryRows');
+  const transfer=p.transfer||{};
   box.replaceChildren(txt('p',p.ok?'Snapshot empfangen · '+stamp(p.lastOk):'Übertragung unterbrochen oder noch ungeprüft','hint'));
+  box.appendChild(txt('p',[
+   transfer.snapshotAt?'Snapshot geschrieben '+stamp(transfer.snapshotAt):'Snapshotzeit fehlt',
+   transfer.agentForwardedAt?'Agent übertragen '+stamp(transfer.agentForwardedAt):'Agent-Zeit fehlt',
+   transfer.piReceivedAt?'Pi empfangen '+stamp(transfer.piReceivedAt):null,
+   transfer.piPersistedAt?'Pi Diagnose gespeichert '+stamp(transfer.piPersistedAt):'Pi Speicherung nicht bestätigt'
+  ].filter(Boolean).join(' · '),'hint'));
   for(const [label,sources] of Object.entries(telemetryGroups)){
    const section=txt('div','','service-entry');
    section.appendChild(txt('strong',label));
-   const keys=Object.keys(p.received||{}).filter(k=>sources.some(src=>k===src||k.startsWith(src+'.')));
+   const keys=[...Object.keys(p.received||{}),...Object.keys(p.stages||{})].filter(k=>sources.some(src=>k===src||k.startsWith(src+'.')));
    for(const key of [...new Set([...sources,...keys])]){
-    const signal=(p.signals||{})[key.split('.')[0]],r=(p.received||{})[key];
+    const family=key.split('.')[0],signal=(p.signals||{})[key]||(p.signals||{})[family],r=(p.received||{})[key];
+    const stage={...p.stages?.[family],...p.stages?.[key]},yesNo=v=>v===true?'ja':v===false?'nein':'–';
+    const states={config_missing_or_invalid:'Konfiguration fehlt oder ist ungültig',config_loaded:'Konfiguration geladen',
+     native_unavailable:'SOME/IP-Bibliothek fehlt',not_configured:'Getter fehlt',not_requested:'entfällt',
+     pending:'läuft',ok:'erfolgreich',failed:'fehlgeschlagen',paused:'nach 3 Fehlern pausiert'};
+    if(typeof stage.manifestRead==='boolean'||stage.manifestMethod||stage.interface){
+     const stages=[
+      typeof stage.manifestRead==='boolean'?'Manifest Lesen '+yesNo(stage.manifestRead)+' / Abo '+yesNo(stage.manifestSubscribe):null,
+      stage.manifestMethod?'Methode im Manifest':null,
+      stage.interface?states[stage.interface]:null,
+      typeof stage.provider==='boolean'?'Provider '+yesNo(stage.provider):null,
+      stage.initialGetter?'Initialabruf '+states[stage.initialGetter]:null,
+      stage.getter?'Letzter Abruf '+states[stage.getter]:null,
+      stage.subscription?'Abo '+states[stage.subscription]:null,
+      'Antwort '+yesNo(stage.responseReceived),'Dekodiert '+yesNo(stage.decoded)
+     ].filter(Boolean).join(' · ');
+     section.appendChild(txt('p',key+' · '+stages,'hint'));
+    }
     const meta=[signal?(signal.available?'Schnittstelle verfügbar':'Schnittstelle nicht bestätigt'):null,
       r?'Empfangen '+stamp(r.at):null,r?.validAt?'Gültig '+stamp(r.validAt)+' · '+r.count+' Datensätze':null,
       r&&r.valid===false?'Letzte Antwort nicht auswertbar':null,signal?.error?'Letzter Fehler · '+signal.error+(signal.errorAt?' · '+stamp(signal.errorAt):''):null].filter(Boolean);

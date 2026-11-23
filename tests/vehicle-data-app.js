@@ -124,7 +124,7 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
       subscribe:()=>{throw Error('getter-only field was subscribed');}};
     const mod={exports:{}};
     let cfg={fields:{Range:{getter:{id:1}}}};
-    vm.runInNewContext(signalSource,{module:mod,__dirname:path.join(root,'kit/runtime'),setImmediate,setInterval,clearInterval,
+    vm.runInNewContext(signalSource,{module:mod,__dirname:path.join(root,'kit/runtime'),setImmediate,setInterval,clearInterval,setTimeout,clearTimeout,
       require:name=>name==='someip'?{buildProxy:async()=>proxy}:name==='fs'?{readFileSync:()=>JSON.stringify(cfg)}:require(name)});
     let result,err;
     const watch=await mod.exports.watch('de.bmw.infrastructure.VehicleInformation','1',{Range:v=>{result=v;}},null,
@@ -142,6 +142,21 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     assert.deepStrictEqual(events,['Range','Range']);
     assert.strictEqual(err,'Range get');
     await blocked.shutdown();
+    cfg={fields:{Range:{getter:{id:1}}}};
+    let failedCalls=0;
+    proxy.getValue=async()=>{failedCalls++;throw Error('test provider unavailable');};
+    const states=[];
+    const capped=await mod.exports.watch('de.bmw.infrastructure.VehicleInformation','1',{Range:()=>assert.fail('getter failed')},null,
+      {initialRead:true,strictGetters:true,maxGetterFailures:3,readFields:['Range'],readOnlyFields:['Range'],
+       onTrace:(field,stage,value)=>{if(stage==='getter')states.push(value);}});
+    await new Promise(resolve=>setImmediate(resolve));
+    for(let i=0;i<5;i++){available(true);await new Promise(resolve=>setImmediate(resolve));}
+    assert.ok(states.includes('paused'));
+    assert.equal(failedCalls,4,'one initial attempt, then at most three after the first provider transition');
+    available(false);available(true);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(failedCalls,5,'a new provider connection retries the getter');
+    await capped.shutdown();
 
     const sent = [];
     const d = new ReadOnlyDiag({ call: async (p, m, args) => { sent.push(args.serviceID); return 'NO_ERROR'; } }, { info() {}, warn() {} });

@@ -146,6 +146,7 @@ class VehicleSnapshot {
         this.onError = opts.onError || (() => {});
         this.state = { secure: null, supreme: null, cbs: {}, history: null, historyReadAt: null, signals: {} };
         this.samples = {};
+        this.stages = {};
         this.received = {};
         this.last = '';
         this.lastWrite = 0;
@@ -157,7 +158,15 @@ class VehicleSnapshot {
         if (error) { state.error = String(error).slice(0, 200); state.errorAt = new Date(this.now()).toISOString(); }
         this.state.signals[name] = state;
     }
+    stage(name, key, value) {
+        const row=this.stages[name] || {};
+        if (key==='getter' && !row.initialGetter && value!=='pending') row.initialGetter=value;
+        row[key]=value;
+        this.stages[name]=row;
+    }
     receivedValue(name, raw, count) {
+        this.stage(name,'responseReceived',true);
+        this.stage(name,'decoded',count!==null);
         const old = this.received[name] || {};
         const at = new Date(this.now()).toISOString();
         this.received[name] = {at, validAt:count === null ? old.validAt || null : at,
@@ -211,7 +220,7 @@ class VehicleSnapshot {
                     remainingAt:legacy?iso(legacy.at):null,remainingSource:legacy?'ConditionBasedServicesLegacy':null,
                     dueDate:row.dueDate || (legacy && legacy.dueDate) || null});
             }) : Object.values(this.state.cbs)).map((c) => Object.assign({}, c, { at: iso(c.at) })),
-            telemetry: {received:this.received,samples:this.samples},
+            telemetry: {received:this.received,samples:this.samples,stages:this.stages},
             serviceHistory: this.state.history ? { status: this.state.history.status, readAt: iso(this.state.historyReadAt), sets: this.state.history.sets } : null,
             signals: this.state.signals,
         }, this.extra ? this.extra() : {});

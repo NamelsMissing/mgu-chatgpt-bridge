@@ -82,6 +82,10 @@ mgu.run({
             const getterOnly = opts && opts.readOnlyFields || [];
             const enabledHandlers = {};
             Object.keys(handlers).forEach(field => {
+                const key=name+'.'+field;
+                snap.stage(key,'manifestRead',/r/.test(declared[field]||''));
+                snap.stage(key,'manifestSubscribe',/s/.test(declared[field]||''));
+                if (getterOnly.indexOf(field)!==-1) snap.stage(key,'subscription','not_requested');
                 if (getterOnly.indexOf(field) === -1 || reads.indexOf(field) !== -1) {
                     enabledHandlers[field] = handlers[field];
                 } else {
@@ -93,12 +97,14 @@ mgu.run({
                 flush();
                 return Promise.resolve(null);
             }
-            const configured = Object.assign({initialRead:true},opts,{readFields:reads});
+            const configured = Object.assign({initialRead:true,strictGetters:true,maxGetterFailures:3},opts,{readFields:reads});
             return signals.watch(iface, '1', enabledHandlers, log, Object.assign(configured, {
-                onAvailability: (ok) => { snap.available(name,ok);flush(); },
+                onTrace: (field,stage,value) => { snap.stage(field==='*'?name:name+'.'+field,stage,value);flush(); },
+                onAvailability: (ok) => { snap.stage(name,'provider',ok);snap.available(name,ok);flush(); },
                 onError: (field, stage) => { snap.available(name, snap.state.signals[name] && snap.state.signals[name].available, stage+' '+field);flush(); },
             })).then(async (sub) => {
                 if (iface===KOMBI && !sub.error) kombi=sub.proxy;
+                snap.stage(name,'proxy',sub.error?'failed':'ready');
                 snap.available(name, sub.available, sub.error ? 'Proxy-Initialisierung fehlgeschlagen' : null);
                 flush();
                 if (sub.error && (attempt || 0) < 3) {
@@ -142,11 +148,16 @@ mgu.run({
             textAttempts.set(id,Date.now());
             textPending.add(id);
             try {
+                const key='KombiInterface_2.requestCCMessage';
+                snap.stage(key,'manifestMethod',true);
+                snap.stage(key,'getter','pending');
                 const r = await signals.call(kombi, 'requestCCMessage', { id }, 5000);
+                snap.stage(key,'getter','ok');
                 const text = faults.ccText(r);
                 if (text && text.id === id) snap.available('CheckControlText',true);
                 sample('KombiInterface_2.requestCCMessage',r,text && text.id === id ? 1 : null);
             } catch (e) {
+                snap.stage('KombiInterface_2.requestCCMessage','getter','failed');
                 snap.available('CheckControlText',false,'requestCCMessage fehlgeschlagen');
                 flush();
             } finally { textPending.delete(id); }
@@ -180,7 +191,10 @@ mgu.run({
                     try { await signals.on(historyProxy, 'serviceHistoryUpdated', () => readHistory('updated'), log); }
                     catch(e) { snap.available('ServiceHistorySubscription',false,'serviceHistoryUpdated konnte nicht abonniert werden'); }
                 }
+                snap.stage('ServiceHistory.readServiceHistory','manifestMethod',true);
+                snap.stage('ServiceHistory.readServiceHistory','getter','pending');
                 const r = await signals.call(historyProxy, 'readServiceHistory', {}, 8000);
+                snap.stage('ServiceHistory.readServiceHistory','getter','ok');
                 snap.serviceHistory(r);
                 const h=snap.state.history;
                 sample('ServiceHistory.readServiceHistory',r,h.status==='E_OK'?h.sets.length:null);
@@ -192,6 +206,7 @@ mgu.run({
                 const previous=historyProxy;
                 historyProxy = null;
                 if (previous && previous.shutdown) Promise.resolve().then(()=>previous.shutdown()).catch(()=>{});
+                snap.stage('ServiceHistory.readServiceHistory','getter','failed');
                 snap.available('ServiceHistory', false, 'readServiceHistory fehlgeschlagen');
                 if (historyRetries<3) setTimeout(()=>readHistory('retry'),5000*Math.pow(2,historyRetries++));
                 notice = 'Service history not readable: ' + ascii(String(e)).slice(0, 80);

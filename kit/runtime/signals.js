@@ -52,37 +52,64 @@ function loadConfig(iface) {
  */
 async function watch(iface, instance, handlers, log, opts) {
     const res = { iface, available: false, proxy: null, error: null, shutdown: () => Promise.resolve() };
-    if (!someip) { res.error = 'someip native module not available'; return res; }
+    const trace = (field, stage, value) => { if (opts && opts.onTrace) opts.onTrace(field,stage,value); };
+    if (!someip) { trace('*','interface','native_unavailable'); res.error = 'someip native module not available'; return res; }
     try {
+        trace('*','interface','config_missing_or_invalid');
         const cfg = loadConfig(iface);
+        trace('*','interface','config_loaded');
         const p = await nativeTick(() => someip.buildProxy(cfg, String(instance)).then((px) => px.init().then(() => px)));
         res.proxy = p;
         res.shutdown = () => Promise.resolve().then(() => p.shutdown && p.shutdown()).catch(() => {});
         const fields = Object.keys(handlers || {});
         const readOnly = opts && opts.readOnlyFields || [];
         const requestedReads = opts && opts.readFields || fields.filter((f) => cfg.fields && cfg.fields[f] && cfg.fields[f].getter);
-        const pending = new Set(), generations = {};
+        const pending = new Set(), generations = {}, failures = {};
         let ready = false, poll, stopped = false, availabilityGeneration = 0;
         const report = (f, stage, error) => {
             if (opts && opts.onError) opts.onError(f, stage, error);
             if (log) log.warn(stage + ' ' + iface + '.' + f + ': ' + error);
         };
         const reads = requestedReads.filter((f) => {
-            if (readOnly.indexOf(f) === -1 || (cfg.fields && cfg.fields[f] && cfg.fields[f].getter)) return true;
+            const exists = !!(cfg.fields && cfg.fields[f] && cfg.fields[f].getter);
+            trace(f,'generatedGetter',exists);
+            if (exists || (!(opts && opts.strictGetters) && readOnly.indexOf(f) === -1)) return true;
+            trace(f,'getter','not_configured');
             report(f, 'get', 'installed SOME/IP config has no getter');
             return false;
         });
         const fetchAll = () => reads.forEach((f) => {
-            if (stopped || !ready || pending.has(f)) return;
+            if (stopped || !ready || pending.has(f) || (opts && opts.maxGetterFailures && failures[f]>=opts.maxGetterFailures)) return;
+            trace(f,'getter','pending');
             pending.add(f);
             const generation = generations[f], availability = availabilityGeneration;
-            Promise.resolve().then(() => p.getValue(f, 3000)).then((v) => {
-                if (!stopped && generation === generations[f] && availability === availabilityGeneration) handlers[f](v, 'get');
-            }).catch((e) => { if (!stopped) report(f, 'get', e); })
-                .then(() => pending.delete(f));
+            let watchdog;
+            const response=Promise.resolve().then(() => p.getValue(f,3000));
+            const result=opts && opts.maxGetterFailures ? Promise.race([response,new Promise((resolve,reject)=>{
+                watchdog=setTimeout(()=>reject(new Error('local getter deadline exceeded')),4000);
+            })]) : response;
+            result.then((v) => {
+                if (!stopped && availability === availabilityGeneration) {
+                    failures[f]=0;
+                    trace(f,'getter','ok');
+                    if (generation === generations[f]) {
+                        try { handlers[f](v, 'get'); } catch (e) { report(f,'decode',e); }
+                    }
+                }
+            }).catch((e) => {
+                if (!stopped && availability === availabilityGeneration) {
+                    failures[f]=(failures[f]||0)+1;
+                    trace(f,'getter',opts && failures[f]===opts.maxGetterFailures?'paused':'failed');
+                    report(f, 'get', e);
+                }
+            })
+                .then(() => { clearTimeout(watchdog); pending.delete(f); });
         });
         const availability = (a) => {
-            if (res.available !== !!a) availabilityGeneration++;
+            if (res.available !== !!a) {
+                availabilityGeneration++;
+                if (a) Object.keys(failures).forEach(f=>{failures[f]=0;});
+            }
             res.available = !!a;
             if (opts && opts.onAvailability) opts.onAvailability(res.available);
             if (a && ready) setImmediate(fetchAll);
@@ -99,7 +126,8 @@ async function watch(iface, instance, handlers, log, opts) {
                     generations[f] = (generations[f] || 0) + 1;
                     try { handlers[f](v, 'event'); } catch (e) { report(f, 'decode', e); }
                 } }));
-            } catch (e) { report(f, 'subscribe', e); }
+                trace(f,'subscription','ok');
+            } catch (e) { trace(f,'subscription','failed'); report(f, 'subscribe', e); }
         }
         ready = true;
         if (p.isAvailable && p.isAvailable()) availability(true);

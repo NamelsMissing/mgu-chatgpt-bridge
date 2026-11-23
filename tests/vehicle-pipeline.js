@@ -62,6 +62,8 @@ async function stop(child){
 
   const snapshot=new VehicleSnapshot({dir:data,version:'fixture'});
   snapshot.range({mileageKilometre:123456});
+  snapshot.stage('VehicleInformation.Range','manifestRead',true);
+  snapshot.stage('VehicleInformation.Range','getter','ok');
   snapshot.receivedValue('VehicleInformation.Range',{mileageKilometre:123456,vin:'sensitive-example',opaque:'not exported'},1);
   const cbs=[{cBSDataServiceWithSymbolID:{cBSDataService:{cBSIdentifier:'OELSERVICE',
    cBSServcieName:'Motoröl',yearCBSDisplay:2027,monthCBSDisplay:5}}}];
@@ -77,6 +79,11 @@ async function stop(child){
   assert.equal(v.cbs[0].dueMonth,'2027-05');
   assert.equal((await api('/faults')).body.checkControl.active[0].text,'Testmeldung');
   const diag=(await api('/vehicle/diagnostics')).body;
+  assert.equal(diag.poll.stages['VehicleInformation.Range'].initialGetter,'ok');
+  assert.equal(diag.poll.stages['VehicleInformation.Range'].decoded,true);
+  assert.ok(diag.poll.transfer.snapshotAt);
+  assert.ok(diag.poll.transfer.agentForwardedAt);
+  assert.ok(diag.poll.transfer.piPersistedAt);
   assert.equal(diag.poll.received['VehicleInformation.Range'].count,1);
   assert.match(JSON.stringify(diag.samples),/123456/);
   assert.doesNotMatch(JSON.stringify(diag.samples),/sensitive-example|not exported|vin/i);

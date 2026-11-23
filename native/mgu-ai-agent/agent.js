@@ -44,7 +44,7 @@ function vehicleData(best){
     ['dueMonth','source','remainingAt','remainingSource','available'].forEach(function(key){if(c[key]!==undefined)item[key]=c[key];});
     return item;}):[],
   serviceHistory:doc.serviceHistory?{status:doc.serviceHistory.status,readAt:doc.serviceHistory.readAt,sets:array(doc.serviceHistory.sets).slice(0,60)}:null,
-  signals:doc.signals||{},telemetry:doc.telemetry||null,
+  signals:doc.signals||{},telemetry:doc.telemetry?Object.assign({},doc.telemetry,{forwardedAt:new Date().toISOString(),snapshotAt:doc.writtenAt||null}):null,
   checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{listAt:doc.checkControl.listAt||null,source:doc.checkControl.source||null,active:array(doc.checkControl.active).slice(0,120),events:array(doc.checkControl.events).slice(-50)}:null,
   tyres:doc.tyres&&Array.isArray(doc.tyres.wheels)?{at:doc.tyres.at,wheels:doc.tyres.wheels.slice(0,5).map(function(w){return {position:w.position,pressureBar:w.pressureBar,targetBar:w.targetBar,temperatureC:w.temperatureC,battery:w.battery};}),unverified:true}:null,
   faultMemory:doc.faultMemory&&typeof doc.faultMemory==='object'?{requestId:doc.faultMemory.requestId,readAt:doc.faultMemory.readAt,error:doc.faultMemory.error,ecus:array(doc.faultMemory.ecus).slice(0,120),dtcs:array(doc.faultMemory.dtcs).slice(0,600)}:null,
@@ -189,7 +189,7 @@ function emitUI(){
  var dirs=appDataDirs();if(!dirs.length)return;
  var network=tsNetworkStatus();
  if(Date.now()-uiBridgeAt>=30000){uiBridge=bridgeInfo();uiBridgeAt=Date.now();}
- var value={version:'0.2.7',paired:!!latest.paired,tailscale:network,pairing:pairingInfo(network.tailIP),
+ var value={version:'0.2.8',paired:!!latest.paired,tailscale:network,pairing:pairingInfo(network.tailIP),
   webConsoleUrl:latest.webConsoleUrl||'',at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,
   remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:uiBridge};
  dirs.forEach(function(dir){

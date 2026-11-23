@@ -83,6 +83,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   faultReply={requestId:'r1',readAt:iso(0),error:null,ecus:[{ecu:0x12,ok:true,count:1},{ecu:0x40,ok:true,count:0}],dtcs:[{ecu:0x12,code:'480A12',status:9,label:'ACTIVE',active:true}]};
   f=(await api('POST','/faults/read')).data;
   assert.equal(f.faultMemory.latest.dtcs[0].title,'Testtitel');
+  assert.equal(f.texts.state,'ready');assert.equal(f.texts.count,2);
   assert.deepEqual(f.faultMemory.latest.dtcs[0].bits,['testFailed','confirmedDTC']);
   assert.equal(f.faultMemory.latest.dtcs[0].ecuName,'DME/DDE Motor');assert.equal(f.faultMemory.latest.dtcs[0].isNew,false,'first read: nothing is "new"');
   await wait(50);const before=pushes.length;
@@ -109,6 +110,13 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   assert.equal(unavailable.status,503);
   assert.match(unavailable.data.error,/Snapshot fehlt/);
   faultUnavailable=false;
+
+  const catalogFile=path.join(temp,'dtc-texts.json');
+  fs.unlinkSync(catalogFile);
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.texts.state,'missing');
+  fs.writeFileSync(catalogFile,'{invalid');
+  assert.equal((await api('GET','/faults')).data.texts.state,'invalid');
 
   // ----- Reifen -----
   vehicle.tyres={at:iso(0),wheels:[{position:'FRONT_LEFT',pressureBar:2.45,targetBar:2.5,temperatureC:18},{position:'REAR_RIGHT',pressureBar:2.1,targetBar:2.7,temperatureC:17}]};

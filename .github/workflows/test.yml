@@ -14,3 +14,4 @@ jobs:
           node-version: '22'
       - run: npm test
       - run: python3 tests/test-someip-manifest.py
+      - run: node tests/motorscope-import.mjs
