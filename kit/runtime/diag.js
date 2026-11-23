@@ -176,7 +176,7 @@ class Diag extends EventEmitter {
 function parseDtcReply(uds, params) {
     if (!uds || !uds.length) return { ok: false, nrc: null, dtcs: [] };
     if (uds[0] === 0x7F) return { ok: false, nrc: uds[2], dtcs: [] };
-    if (uds[0] !== 0x59 || uds[1] !== params[0]) return { ok: false, nrc: null, dtcs: [] };
+    if (uds[0] !== 0x59 || uds[1] !== params[0] || uds.length < 3 || (uds.length - 3) % 4 !== 0) return { ok: false, nrc: null, dtcs: [] };
     const out = [];
     for (let i = 1 + params.length; i + 4 <= uds.length; i += 4) {
         out.push({ code: hex(((uds[i] << 16) | (uds[i + 1] << 8) | uds[i + 2]) >>> 0, 6), status: uds[i + 3] });

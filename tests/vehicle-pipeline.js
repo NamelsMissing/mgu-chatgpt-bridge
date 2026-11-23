@@ -61,12 +61,25 @@ async function stop(child){
   assert.equal((await api('/faults/read','POST')).status,503);
 
   const snapshot=new VehicleSnapshot({dir:data,version:'fixture'});
-  snapshot.secureMileage({currentMileage:123456});
+  snapshot.range({mileageKilometre:123456});
+  snapshot.receivedValue('VehicleInformation.Range',{mileageKilometre:123456,vin:'sensitive-example',opaque:'not exported'},1);
+  const cbs=[{cBSDataServiceWithSymbolID:{cBSDataService:{cBSIdentifier:'OELSERVICE',
+   cBSServcieName:'Motoröl',yearCBSDisplay:2027,monthCBSDisplay:5}}}];
+  snapshot.cbsList(cbs);
+  snapshot.receivedValue('KombiInterface_2.cbsDataServiceList',cbs,1);
+  snapshot.extra=()=>({checkControl:{listAt:new Date().toISOString(),active:[{id:22,active:true,text:'Testmeldung',ecu:0x40}],events:[]}});
   assert.ok(snapshot.flush(true));
   await api('/monitor/poll','POST');
   let v=(await api('/vehicle')).body.live;
-  assert.equal(v.mileageKm,123456);assert.equal(v.mileageSource,'SecureMileage');assert.equal(v.stale,false);
+  assert.equal(v.mileageKm,123456);assert.equal(v.mileageSource,'VehicleInformation.Range');assert.equal(v.stale,false);
   const measuredAt=v.mileageAt;
+  assert.equal(v.cbs[0].source,'KombiInterface_2.cbsDataServiceList');
+  assert.equal(v.cbs[0].dueMonth,'2027-05');
+  assert.equal((await api('/faults')).body.checkControl.active[0].text,'Testmeldung');
+  const diag=(await api('/vehicle/diagnostics')).body;
+  assert.equal(diag.poll.received['VehicleInformation.Range'].count,1);
+  assert.match(JSON.stringify(diag.samples),/123456/);
+  assert.doesNotMatch(JSON.stringify(diag.samples),/sensitive-example|not exported|vin/i);
 
   await stop(agent);
   await api('/monitor/poll','POST');
@@ -86,7 +99,7 @@ async function stop(child){
   await api('/monitor/poll','POST');
   assert.equal((await api('/vehicle')).body.live.stale,false);
 
-  snapshot.secureMileage({currentMileage:0});
+  snapshot.range({mileageKilometre:0});
   assert.ok(snapshot.flush(true));
   await api('/monitor/poll','POST');
   v=(await api('/vehicle')).body.live;

@@ -67,58 +67,114 @@ mgu.run({
         setInterval(() => flush(true), 20000);
         let page = 0, historyProxy = null, historyBusy = false, kombi = null, notice = '';
         let diag = null, dids = null, diagBusy = false, lastRequest = null, lastSecondary = 0;
-        const shapes = {};
         const pause = (ms) => new Promise((r) => setTimeout(r, ms));
-        // Log the raw shape of each signal once, to check units against iDrive's own screens.
-        const firstRaw = (name, v) => { if (!shapes[name]) { shapes[name] = true; log.info('vehicle raw ' + name + ': ' + JSON.stringify(v).slice(0, 600)); } };
-
-        const watch = (iface, handlers, opts) => signals.watch(iface, '1', handlers, log, Object.assign({}, opts, {
-            onAvailability: (ok) => { snap.available(iface.split('.').pop(), ok); flush(); },
-        }))
-            .then((s) => { snap.available(iface.split('.').pop(), s.available, s.error); flush(); return s; })
-            .catch((e) => { snap.available(iface.split('.').pop(), false, e); flush(); });
-        watch(SECURE, { mileage: (v) => { firstRaw('SecureMileage', v); snap.secureMileage(v); flush(); } }, { pollMs: 5 * 60000 });
-        watch(SUPREME, { mileageSupreme: (v) => { firstRaw('MileageSupreme', v); snap.mileageSupreme(v); flush(); } }, { pollMs: 5 * 60000 });
+        const sample = (name, raw, validCount) => {
+            snap.receivedValue(name,raw,validCount);
+            flush();
+        };
+        // Reads are restricted to fields already declared with r in the manifest.
+        const watch = (iface, handlers, opts, attempt) => {
+            const name = iface.split('.').pop();
+            return signals.watch(iface, '1', handlers, log, Object.assign({initialRead:true}, opts, {
+                onAvailability: (ok) => { snap.available(name,ok);flush(); },
+                onError: (field, stage) => { snap.available(name, snap.state.signals[name] && snap.state.signals[name].available, stage+' '+field);flush(); },
+            })).then(async (sub) => {
+                if (iface===KOMBI && !sub.error) kombi=sub.proxy;
+                snap.available(name, sub.available, sub.error ? 'Proxy-Initialisierung fehlgeschlagen' : null);
+                flush();
+                if (sub.error && (attempt || 0) < 3) {
+                    await sub.shutdown();
+                    setTimeout(() => watch(iface,handlers,opts,(attempt || 0)+1), 5000*Math.pow(2,attempt || 0));
+                }
+                return sub;
+            });
+        };
+        watch(SECURE, { mileage: (v) => {
+            snap.secureMileage(v); sample('SecureMileage.mileage',v,snap.state.secure.km === null ? null : 1);
+        } }, { readFields:['mileage'],pollMs:5*60000 });
+        watch(SUPREME, { mileageSupreme: (v) => {
+            snap.mileageSupreme(v); sample('MileageSupreme.mileageSupreme',v,snap.state.supreme.km === null ? null : 1);
+        } }, { readFields:['mileageSupreme'],pollMs:5*60000 });
+        watch('de.bmw.infrastructure.VehicleInformation', { Range: (v) =>
+            sample('VehicleInformation.Range',v,snap.range(v) === null ? null : 1),
+        }, {readFields:['Range'],readOnlyFields:['Range'],pollMs:5*60000});
         const cbsHandlers = {};
-        for (const f of CBS_FIELDS) cbsHandlers[f] = (v) => { firstRaw(f, v); snap.cbs(f, v); flush(); };
+        for (const f of CBS_FIELDS) cbsHandlers[f] = (v) => {
+            snap.cbs(f, v); sample('ConditionBasedServicesLegacy.'+f,v,snap.state.cbs[f] ? 1 : null);
+        };
         watch(CBS, cbsHandlers);
-        watch(TPMS, { tpmsInternalLastValues: (v) => { firstRaw('tpmsInternalLastValues', v); faults.setTyres(v); flush(); } }, { pollMs: 60000 });
+        watch(TPMS, { tpmsInternalLastValues: (v) => {
+            const wheels=faults.setTyres(v), valid=wheels.filter(w=>w.pressureBar!==null || w.temperatureC!==null).length;
+            sample('TPMSInternalData.tpmsInternalLastValues',v,valid || null);
+        } }, { readFields:['tpmsInternalLastValues'],pollMs:60000 });
+        watch('de.bmw.infotainment.vehicle.TPMS', {
+            statusTyrePressure:(v)=>sample('TPMS.statusTyrePressure',v,null),
+            statusTargetTyrePressure:(v)=>sample('TPMS.statusTargetTyrePressure',v,null),
+        }, {readFields:['statusTyrePressure','statusTargetTyrePressure'],
+            readOnlyFields:['statusTyrePressure','statusTargetTyrePressure'],pollMs:60000});
 
-        // ----- Check-control messages: event list plus the text the car itself shows -----
+        // The complete list defines presence. Legacy events still supply ECU attribution and transitions.
+        const textAttempts = new Map(), textPending = new Set();
         async function ccText(id) {
+            if (!kombi || !faults.needsText(id) || textPending.size >= 4 || textPending.has(id)) return;
+            const prev = textAttempts.get(id);
+            if (prev && Date.now()-prev < 60000) return;
+            if (textAttempts.size >= 80) textAttempts.delete(textAttempts.keys().next().value);
+            textAttempts.set(id,Date.now());
+            textPending.add(id);
             try {
-                if (!kombi) kombi = await signals.proxy(KOMBI, '1');
                 const r = await signals.call(kombi, 'requestCCMessage', { id }, 5000);
-                firstRaw('requestCCMessage', r);
-                faults.ccText(r);
-            } catch (e) { log.warn('cc text ' + id + ': ' + e); }
-            flush();
+                const text = faults.ccText(r);
+                if (text && text.id === id) snap.available('CheckControlText',true);
+                sample('KombiInterface_2.requestCCMessage',r,text && text.id === id ? 1 : null);
+            } catch (e) {
+                snap.available('CheckControlText',false,'requestCCMessage fehlgeschlagen');
+                flush();
+            } finally { textPending.delete(id); }
         }
-        watch(CHECK_CONTROL, { basicList: (v) => {
-            firstRaw('basicList', v);
-            const e = faults.ccEvent(v);
-            if (e && e.active && faults.needsText(e.id)) ccText(e.id);
-            flush();
-        } }, { pollMs: 60000 });
-        watch(KOMBI, { newCCMessage: (v) => { firstRaw('newCCMessage', v); faults.ccText(v); flush(); } });
+        watch(CHECK_CONTROL, { basicList: (v,method) => {
+            const e = method==='get'&&faults.ccListAt ? null : faults.ccEvent(v);
+            sample('CheckControlMaster.basicList',v,e ? 1 : null);
+            if (e && e.active) ccText(e.id);
+        } }, {readFields:['basicList'],pollMs:60000});
+        watch(KOMBI, {
+            newCCMessage: (v) => sample('KombiInterface_2.newCCMessage',v,faults.ccText(v) ? 1 : null),
+            ccList: (v) => {
+                const ids=faults.ccList(v);
+                sample('KombiInterface_2.ccList',v,ids===null?null:ids.length);
+                if (ids) ids.forEach(ccText);
+            },
+            cbsDataServiceList: (v) => {
+                const rows=snap.cbsList(v);
+                sample('KombiInterface_2.cbsDataServiceList',v,rows===null?null:rows.length);
+            },
+        }, {readFields:['ccList','cbsDataServiceList'],readOnlyFields:['ccList','cbsDataServiceList'],pollMs:60000});
 
         // ----- Service history (method on its own instance) -----
+        let historyRetries=0;
         async function readHistory(reason) {
             if (historyBusy) return;
             historyBusy = true;
             try {
                 if (!historyProxy) {
                     historyProxy = await signals.proxy(HISTORY, HISTORY_INSTANCE);
-                    await signals.on(historyProxy, 'serviceHistoryUpdated', () => readHistory('updated'), log);
+                    try { await signals.on(historyProxy, 'serviceHistoryUpdated', () => readHistory('updated'), log); }
+                    catch(e) { snap.available('ServiceHistorySubscription',false,'serviceHistoryUpdated konnte nicht abonniert werden'); }
                 }
                 const r = await signals.call(historyProxy, 'readServiceHistory', {}, 8000);
-                firstRaw('readServiceHistory', r);
                 snap.serviceHistory(r);
+                const h=snap.state.history;
+                sample('ServiceHistory.readServiceHistory',r,h.status==='E_OK'?h.sets.length:null);
+                if (!h.status) throw new Error('Antwortformat von readServiceHistory unbekannt');
+                historyRetries=0;
                 snap.available('ServiceHistory', true);
                 notice = 'Service history read (' + reason + ')';
             } catch (e) {
+                const previous=historyProxy;
                 historyProxy = null;
-                snap.available('ServiceHistory', false, e);
+                if (previous && previous.shutdown) Promise.resolve().then(()=>previous.shutdown()).catch(()=>{});
+                snap.available('ServiceHistory', false, 'readServiceHistory fehlgeschlagen');
+                if (historyRetries<3) setTimeout(()=>readHistory('retry'),5000*Math.pow(2,historyRetries++));
                 notice = 'Service history not readable: ' + ascii(String(e)).slice(0, 80);
                 log.warn('service history: ' + e);
             } finally { historyBusy = false; flush(); }
@@ -153,6 +209,7 @@ mgu.run({
                 try { replies = await diag.functional(0x19, DTC_PARAMS, { idleMs: 4000, maxMs: 30000 }); }
                 catch (e) { faults.setDtc(requestId, null, DTC_PARAMS, e); throw e; }
                 const r = faults.setDtc(requestId, replies, DTC_PARAMS, null);
+                sample('UDS.1902',null,r.ecus.some(ecu=>ecu.ok)?r.dtcs.length:null);
                 if (!r.ecus.some((ecu) => ecu.ok)) {
                     r.error = r.ecus.length ? 'Kein Steuergerät hat positiv geantwortet' : 'Keine ECU-Antwort innerhalb des Diagnosefensters';
                     throw new Error(r.error);
@@ -165,12 +222,14 @@ mgu.run({
         async function readDpf() {
             const secondary = Date.now() - lastSecondary > DPF_SECONDARY_MS;
             await withDiag(async () => {
+                let count=0;
                 for (const field of DPF.READINGS) {
                     if (field.tier === 'secondary' && !secondary) continue;
                     const v = await dids.read(field.request);
-                    if (v !== null) faults.setDpf(field.name, v);
+                    if (v !== null) { faults.setDpf(field.name, v); count++; }
                     await pause(180);
                 }
+                sample('UDS.DPF',null,count||null);
                 if (secondary) lastSecondary = Date.now();
             });
         }

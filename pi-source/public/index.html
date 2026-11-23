@@ -195,6 +195,7 @@
       <h3>Laut Fahrzeug</h3>
       <span id="reportedAge" class="pill pill-off">–</span>
     </div>
+    <div id="bmwNextService"></div>
     <div id="cbsList"></div>
     <h3>Servicehistorie im Fahrzeug</h3>
     <div id="historyList"></div>
@@ -223,6 +224,11 @@
     </form>
     <div id="serviceEntries"></div>
   </div>
+  <details class="panel" id="vehicleTelemetry">
+    <summary>Technische Fahrzeugdaten-Diagnose</summary>
+    <div id="vehicleTelemetryRows"></div>
+    <button id="vehicleTelemetryExport" class="secondary">Bereinigten Mitschnitt als JSON speichern</button>
+  </details>
 </section>
 
 <!-- ===== Fehler ===== -->
@@ -249,12 +255,18 @@
     </div>
     <p class="hint" id="faultConnection"></p>
     <p class="hint" id="faultInfo">Wird bei jedem Fahrzeugstart einmal ausgelesen.</p>
+    <p class="hint" id="faultCounts"></p>
+    <div class="toolbar">
+      <label>Steuergerät <select id="faultEcu"><option value="">Alle</option></select></label>
+      <label>Status <select id="faultState"><option value="">Alle</option><option value="testFailed">Aktuell vorhanden</option><option value="pendingDTC">Vorläufig</option><option value="confirmedDTC">Bestätigt</option></select></label>
+      <label>Suche <input id="faultQuery" type="search" placeholder="Code oder Fehlertext"></label>
+    </div>
     <div id="faultList"></div>
     <details>
       <summary>Frühere Fehlercodes</summary>
       <div id="faultEarlier"></div>
     </details>
-    <p class="hint">Nur lesend (UDS 0x19), gelöscht wird nichts. Die Codes erscheinen ohne Klartext; die Texte stehen in den Beschreibungsdateien der Steuergeräte, die hier nicht vorliegen. Auslesen dauert bis zu 90 Sekunden.</p>
+    <p class="hint">Nur lesend (UDS 0x19), gelöscht wird nichts. Fehlertexte stammen aus dem lokal hinterlegten Steuergeräte-Katalog, sofern eine eindeutige Zuordnung vorliegt. Auslesen dauert bis zu 90 Sekunden.</p>
   </div>
 </section>
 

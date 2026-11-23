@@ -11,7 +11,7 @@ const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.9.1'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.0'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -285,9 +285,17 @@ function wasRecent(at,ms){
   const age=Date.now()-Date.parse(at);
   return Number.isFinite(age)&&age>=-10000&&age<=ms;
 }
+function nextBmwService(rows){
+  const eligible=rows.filter(c=>c.available!==false);
+  const date=c=>c.dueDate||(c.dueMonth?c.dueMonth+'-01':null);
+  const ordered=[...eligible].filter(date).sort((a,b)=>date(a).localeCompare(date(b)));
+  const km=eligible.filter(c=>Number.isInteger(c.remainingKm)).sort((a,b)=>a.remainingKm-b.remainingKm);
+  return {byDate:ordered[0]||null,byDistance:km[0]||null};
+}
 function vehicleView(){
   const cur=currentMileage(),rate=kmPerDay(),order={overdue:0,soon:1,unknown:2,ok:3};
   return {today:today(),mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
+    bmwNextService:nextBmwService(st.vehicle.live?.cbs||[]),
     mileageHistory:mileagePoints().slice(-40).reverse(),
     ownMileage:[...st.vehicle.mileage].sort((a,b)=>b.date.localeCompare(a.date)||b.km-a.km).slice(0,40),
     due:Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate)).sort((a,b)=>order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9'))),
@@ -324,7 +332,11 @@ function noteVehicleLive(v){
   const h=v.serviceHistory&&typeof v.serviceHistory==='object'?v.serviceHistory:null;
   const live={at:str(v.writtenAt,40),source:str(v.source,60),writtenAt:str(v.writtenAt,40),unverified:v.unverified!==false,
     mileageKm:int(v.mileageKm,2000000),mileageAt:str(v.mileageAt,40),mileageSource:str(v.mileageSource,60),
-    cbs:(Array.isArray(v.cbs)?v.cbs:[]).slice(0,20).map(c=>({scope:str(c&&c.scope,40),label:str(c&&c.label,60)||'Service',remainingKm:int(c&&c.remainingKm,65534),at:str(c&&c.at,40),dueDate:isoDay(c&&c.dueDate)})),
+    cbs:(Array.isArray(v.cbs)?v.cbs:[]).slice(0,50).filter(Boolean).map(c=>({scope:str(c.scope,40),label:str(c.label,100)||'Service',
+      remainingKm:int(c.remainingKm,65534),at:str(c.at,40),dueDate:isoDay(c.dueDate),available:c.available===false?false:null,
+      dueMonth:typeof c.dueMonth==='string'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(c.dueMonth)?c.dueMonth:null,
+      source:str(c.source,70)||'ConditionBasedServicesLegacy',status:str(c.status,50)??int(c.status,65535),
+      remainingAt:str(c.remainingAt,40),remainingSource:str(c.remainingSource,70)})),
     serviceHistory:h?{status:str(h.status,40),readAt:str(h.readAt,40),sets:(Array.isArray(h.sets)?h.sets:[]).slice(0,60).map(x=>({date:isoDay(x&&x.date),km:int(x&&x.km,2000000),dealer:str(x&&x.dealer,40)||'',status:str(x&&x.status,40),
       services:(Array.isArray(x&&x.services)?x.services:[]).slice(0,30).map(e=>({scope:str(e&&e.scope,40),label:str(e&&e.label,60)||'Service',status:str(e&&e.status,40)}))}))}:null};
   const previous=st.vehicle.live;
@@ -334,6 +346,12 @@ function noteVehicleLive(v){
     for(const k of ['mileageKm','mileageAt','mileageSource'])live[k]=previous[k];
   }
   if(live.mileageAvailable===undefined)live.mileageAvailable=Number.isInteger(live.mileageKm)&&wasRecent(live.mileageAt,7*60000);
+  const listAt=v.telemetry?.received?.['KombiInterface_2.cbsDataServiceList']?.validAt||null;
+  live.cbsListAt=listAt;
+  if(previous?.cbsListAt&&(!listAt||Date.parse(listAt)<Date.parse(previous.cbsListAt))){
+    live.cbs=previous.cbs;
+    live.cbsListAt=previous.cbsListAt;
+  }
   if(previous&&!live.serviceHistory)live.serviceHistory=previous.serviceHistory||null;
   const before=JSON.stringify(Object.assign({},previous||{},{at:null}));
   st.vehicle.live=live;
@@ -454,8 +472,52 @@ function noteCheckControl(cc){
     }else{cur.lastSeen=str(e.lastSeen||e.at||e.since,40)||cur.lastSeen;if(text&&!cur.text)cur.text=text;if(description&&!cur.description)cur.description=description;}
   };
   for(const e of Array.isArray(cc.events)?cc.events.slice(-50):[]){const k=e&&e.id+'@'+e.at+'@'+e.active;if(!k||seen.has(k))continue;seen.add(k);M.cc.seen.push(k);apply(e,true);}
-  for(const a of Array.isArray(cc.active)?cc.active.slice(0,50):[])apply(Object.assign({},a,{active:true}),false);
+  for(const a of Array.isArray(cc.active)?cc.active.slice(0,120):[])apply(Object.assign({},a,{active:true}),false);
+  if(Number.isFinite(Date.parse(cc.listAt))&&(!M.cc.listAt||Date.parse(cc.listAt)>Date.parse(M.cc.listAt))){
+    const ids=new Set((Array.isArray(cc.active)?cc.active:[]).filter(Boolean).map(e=>e.id));
+    for(const e of Object.values(M.cc.active)){
+      if(!ids.has(e.id))apply({...e,active:false,at:cc.listAt},true);
+    }
+    M.cc.listAt=cc.listAt;
+  }
   trim(M.cc.seen,300);trim(M.cc.events,300);
+}
+
+// The optional data file stays in private Pi storage. Match the configured vehicle's
+// ECU identity as well as the diagnostic address; never fall back to a bare DTC.
+let faultTextCatalog={mtime:null,values:new Map(),ecu:{},error:null};
+function localFaultTexts(){
+  const file=path.join(DATA,'dtc-texts.json');
+  let mtime;
+  try{
+    const stat=fs.statSync(file);
+    mtime=stat.mtimeMs;
+    if(mtime===faultTextCatalog.mtime)return faultTextCatalog;
+    if(!stat.isFile()||stat.size>4*1024*1024)throw Error('Dateigröße oder Dateityp ungültig');
+    const data=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(data.schema!==1||!Array.isArray(data.entries)||data.entries.length>30000)throw Error('Katalogformat ungültig');
+    const values=new Map();
+    for(const row of data.entries){
+      if(!row||!Number.isInteger(row.address)||row.address<0||row.address>255||!/^([A-Za-z0-9_/-]{1,40})$/.test(row.family)||
+        !/^[A-F0-9]{6}$/.test(row.code)||!/^[A-Z0-9_]{1,40}$/.test(row.sgbd)||
+        row.verified!==true||typeof row.title!=='string'||!row.title.trim()||typeof row.source!=='string'||!row.source.trim())continue;
+      const key=JSON.stringify([row.address,row.family,row.sgbd,row.variant||null,row.code]);
+      values.set(key,values.has(key)?null:row);
+    }
+    faultTextCatalog={mtime,values,ecu:data.ecu&&typeof data.ecu==='object'?data.ecu:{},error:null};
+  }catch(e){faultTextCatalog={mtime,values:new Map(),ecu:{},error:e.code==='ENOENT'?null:'Lokaler DTC-Katalog ungültig'};}
+  return faultTextCatalog;
+}
+function faultDetails(d,catalog){
+  const identity=Object.prototype.hasOwnProperty.call(catalog.ecu,d.ecu)?catalog.ecu[d.ecu]:null;
+  const row=identity&&catalog.values.get(JSON.stringify([d.ecu,identity.family,identity.sgbd,identity.variant||null,d.code]));
+  const names=['testFailed','testFailedThisOperationCycle','pendingDTC','confirmedDTC','testNotCompletedSinceLastClear','testFailedSinceLastClear','testNotCompletedThisOperationCycle','warningIndicatorRequested'];
+  const status=Number.isInteger(d.status)?d.status:null;
+  const bits=status===null?[]:names.filter((name,index)=>(status&(1<<index))!==0);
+  return {title:row?row.title.slice(0,200):'Fehlerbeschreibung nicht verfügbar',description:row?str(row.description,700):null,
+    textSource:row?str(row.source,200):null,textConfidence:row?'verified-local':'unavailable',
+    sgbd:identity?str(identity.sgbd,40):null,statusHex:status===null?null:'0x'+status.toString(16).toUpperCase().padStart(2,'0'),
+    bits,active:status===null?d.active===true:bits.includes('testFailed')};
 }
 
 // ----- Fehlerspeicher -----
@@ -465,27 +527,46 @@ function noteFaultMemory(fm){
   const read={readAt:str(fm.readAt,40),requestId:str(fm.requestId,64),error:str(fm.error,200),
     ecus:(Array.isArray(fm.ecus)?fm.ecus:[]).slice(0,120).map(e=>({ecu:int(e.ecu,255),ok:e.ok===true,nrc:str(e.nrc,8),count:int(e.count,999)})),
     dtcs:(Array.isArray(fm.dtcs)?fm.dtcs:[]).slice(0,600).filter(d=>/^[0-9A-F]{6}$/.test(String(d&&d.code))).map(d=>({ecu:int(d.ecu,255),code:d.code,status:int(d.status,255),label:str(d.label,20),active:d.active===true}))};
+  read.dtcs=[...new Map(read.dtcs.filter(d=>d.ecu!==null).map(d=>[d.ecu+':'+d.code,d])).values()];
   M.faults.reads.push(read);trim(M.faults.reads,30);
   if(read.error){save();return read;}
   const fresh=[];
+  const present=new Set(read.dtcs.map(d=>d.ecu+':'+d.code));
+  const responding=new Set(read.ecus.filter(e=>e.ok).map(e=>e.ecu));
+  for(const [key,prior] of Object.entries(M.faults.known)){
+    if(!present.has(key)&&responding.has(prior.ecu)&&!prior.noLongerReportedAt&&Date.parse(prior.lastSeen)<=Date.parse(read.readAt)){
+      prior.noLongerReportedAt=read.readAt;
+    }
+  }
   for(const d of read.dtcs){
     const key=d.ecu+':'+d.code,k=M.faults.known[key];
     if(!k){M.faults.known[key]={ecu:d.ecu,code:d.code,firstSeen:read.readAt,lastSeen:read.readAt,status:d.status,label:d.label,active:d.active};fresh.push(d);}
-    else Object.assign(k,{lastSeen:read.readAt,status:d.status,label:d.label,active:d.active});
+    else if(Date.parse(k.lastSeen)<=Date.parse(read.readAt))Object.assign(k,{lastSeen:read.readAt,status:d.status,label:d.label,active:d.active,noLongerReportedAt:null});
   }
   if(fresh.length&&M.faults.reads.length>1)notify('faults','faults:'+fresh.map(d=>d.ecu+':'+d.code).join(','),
     'BMW: '+fresh.length+(fresh.length===1?' neuer Fehlercode':' neue Fehlercodes'),fresh.slice(0,8).map(d=>ecuName(d.ecu)+': '+d.code+(d.active?' (aktiv)':'')).join('\n'),{priority:4,tags:['rotating_light']});
   save();return read;
 }
+function checkControlState(){
+  const list='KombiInterface_2.ccList';
+  const observed=M.poll.received?.[list], signal=M.poll.signals?.KombiInterface_2;
+  if(!M.poll.ok||M.poll.appState==='stale')return M.cc.listAt?'stale':'unknown';
+  if(observed?.valid===false||(signal?.error==='get ccList'&&Date.parse(signal.errorAt)>(observed?.at?Date.parse(observed.at):-Infinity)))return 'failed';
+  if(wasRecent(M.cc.listAt,3*60000))return 'read';
+  return signal?.available===false?'unavailable':M.cc.listAt?'stale':'unknown';
+}
 function faultsView(){
   const latest=[...M.faults.reads].reverse().find(r=>!r.error)||null,last=M.faults.reads[M.faults.reads.length-1]||null;
   const inLatest=new Set(latest?latest.dtcs.map(d=>d.ecu+':'+d.code):[]);
   const name=x=>Object.assign({},x,{ecuName:ecuName(x.ecu)});
-  return {diagnosis:{running:faultReadBusy,poll:M.poll,lastSuccess:latest&&latest.readAt},checkControl:{active:Object.values(M.cc.active).map(name).sort((a,b)=>String(b.since).localeCompare(String(a.since))),events:[...M.cc.events].reverse().slice(0,60).map(name)},
-    faultMemory:{lastAttempt:last?{readAt:last.readAt,error:last.error}:null,latest:latest?Object.assign({},latest,{ecus:latest.ecus.map(name),dtcs:latest.dtcs.map(d=>Object.assign(name(d),{firstSeen:(M.faults.known[d.ecu+':'+d.code]||{}).firstSeen,isNew:(M.faults.known[d.ecu+':'+d.code]||{}).firstSeen===latest.readAt&&M.faults.reads.filter(r=>!r.error).length>1}))}):null,
-      earlier:Object.values(M.faults.known).filter(k=>!inLatest.has(k.ecu+':'+k.code)).map(name).sort((a,b)=>String(b.lastSeen).localeCompare(String(a.lastSeen))).slice(0,100),
+  const catalog=localFaultTexts();
+  const details=d=>Object.assign(name(d),faultDetails(d,catalog));
+  return {diagnosis:{running:faultReadBusy,poll:M.poll,lastSuccess:latest&&latest.readAt},checkControl:{listAt:M.cc.listAt||null,status:checkControlState(),
+      active:Object.values(M.cc.active).map(name).sort((a,b)=>String(b.since).localeCompare(String(a.since))),events:[...M.cc.events].reverse().slice(0,60).map(name)},
+    faultMemory:{lastAttempt:last?{readAt:last.readAt,error:last.error}:null,latest:latest?Object.assign({},latest,{ecus:latest.ecus.map(name),dtcs:latest.dtcs.map(d=>Object.assign(details(d),{lastSeen:latest.readAt,firstSeen:(M.faults.known[d.ecu+':'+d.code]||{}).firstSeen,isNew:(M.faults.known[d.ecu+':'+d.code]||{}).firstSeen===latest.readAt&&M.faults.reads.filter(r=>!r.error).length>1}))}):null,
+      earlier:Object.values(M.faults.known).filter(k=>!inLatest.has(k.ecu+':'+k.code)).map(details).sort((a,b)=>String(b.lastSeen).localeCompare(String(a.lastSeen))).slice(0,100),
       reads:[...M.faults.reads].reverse().slice(0,10).map(r=>({readAt:r.readAt,error:r.error,count:r.dtcs.length,ecus:r.ecus.length}))},
-    note:'Fehlercodes ohne Klartext: Die Texte stehen in den Steuergeräte-Beschreibungen (PRG), die hier nicht vorliegen.'};
+    note:catalog.error||'Fehlertexte werden aus einem lokalen, ECU-spezifisch zugeordneten Katalog ergänzt.'};
 }
 let faultReadBusy=false;
 async function readFaultMemoryNow(){
@@ -505,7 +586,7 @@ async function readFaultMemoryNow(){
 // ----- Reifen -----
 function noteTyres(t){
   if(!t||!Array.isArray(t.wheels)||!wasRecent(t.at,3*60000))return;
-  const wheels=t.wheels.slice(0,5).map(w=>({position:str(w.position,20),p:Number.isFinite(w.pressureBar)?w.pressureBar:null,target:Number.isFinite(w.targetBar)?w.targetBar:null,temp:int(w.temperatureC,250),battery:str(w.battery,20)})).filter(w=>w.position);
+  const wheels=t.wheels.slice(0,5).map(w=>({position:str(w.position,20),p:Number.isFinite(w.pressureBar)?w.pressureBar:null,target:Number.isFinite(w.targetBar)?w.targetBar:null,temp:Number.isInteger(w.temperatureC)&&w.temperatureC>=-48&&w.temperatureC<=250?w.temperatureC:null,battery:str(w.battery,20)})).filter(w=>w.position);
   if(!wheels.length)return;
   const last=M.tyres[M.tyres.length-1];
   const changed=!last||wheels.some(w=>{const o=last.wheels.find(x=>x.position===w.position);return !o||o.p===null||w.p===null?o?o.p!==w.p:true:Math.abs(o.p-w.p)>=0.05;});
@@ -559,12 +640,14 @@ function checkServiceNotifications(){
 // ----- Hintergrundabfrage -----
 let pollTimer=null,pollBusy=false;
 M.poll=Object.assign({},M.poll,{ok:false,appState:'unknown'});
-let pollFailures=0;
+let pollFailures=0,vehicleRawSamples={};
 function recordMguStatus(s){
   noteVehicleMileage(s);
   const v=s.vehicle||{};
+  if(v.telemetry?.samples)vehicleRawSamples=v.telemetry.samples;
   M.poll={at:now(),ok:true,error:null,lastOk:now(),vehicle:v.status,appState:v.appState||'unknown',
     reason:v.reason||null,heartbeatAt:v.heartbeatAt||null,signals:v.signals||{},
+    received:v.telemetry?.received||M.poll.received||{},
     lastData:v.status==='ok'&&v.writtenAt&&v.appState!=='stale'?v.writtenAt:M.poll.lastData||null};
 }
 async function pollOnce(){
@@ -1243,6 +1326,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     const name=st.mcp.clients[dc[1]].name;revokeClient(dc[1]);audit('mcp_client_revoked',name);return send(res,200,diagView());
   }
   // ----- Fahrzeug und Service -----
+  if(req.method==='GET'&&p==='/api/v1/vehicle/diagnostics')return send(res,200,{poll:M.poll,samples:vehicleRawSamples});
   if(req.method==='GET'&&p==='/api/v1/vehicle')return send(res,200,Object.assign(vehicleView(),{tyres:tyresView(),dpf:dpfView(),poll:M.poll}));
   // ----- Fehler: Check-Control und Fehlerspeicher -----
   if(req.method==='GET'&&p==='/api/v1/faults')return send(res,200,faultsView());
@@ -1512,4 +1596,4 @@ if(require.main===module){http.createServer(route).listen(PORT,HOST,()=>console.
  setTimeout(()=>{pollOnce().finally(schedulePoll);},20000).unref();
  // Gefundene Logs, die beim letzten Versuch nicht geholt werden konnten (MGU offline), erneut anstoßen.
  setInterval(()=>{for(const r of Object.values(st.logLibrary.found))if(st.logLibrary.auto===true&&r.status==='failed'&&/MGU|fetch|timeout|aborted/i.test(r.error||''))r.status='queued';pumpLogQueue();},10*60000).unref();}
-module.exports={route,pollOnce,noteFaultMemory,faultsView,runJob,jobFor,exportChatDocument,setDiagMode,diagView};
+module.exports={nextBmwService,faultDetails,route,pollOnce,noteFaultMemory,faultsView,runJob,jobFor,exportChatDocument,setDiagMode,diagView};

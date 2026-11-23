@@ -32,6 +32,13 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   mguConnection:{url:'http://127.0.0.1:'+mgu.address().port,token:'a'.repeat(64)},
   notify:{enabled:true,server:'http://127.0.0.1:'+ntfy.address().port,topic:'bmw-ai-testtopic123',categories:{cc:true,service:true,faults:true,tyres:true},sent:{},log:[]}}));
  const server=require('../server.js');
+ const rows=[{label:'Datum',dueMonth:'2027-05',remainingKm:null},{label:'Strecke',dueDate:'2028-01-01',remainingKm:500},
+   {label:'Nicht verfügbar',dueDate:'2026-01-01',available:false,remainingKm:0}];
+ assert.equal(server.nextBmwService(rows).byDate.label,'Datum');
+ assert.equal(server.nextBmwService(rows).byDistance.label,'Strecke');
+ fs.writeFileSync(path.join(temp,'dtc-texts.json'),JSON.stringify({schema:1,ecu:{18:{family:'FIXTURE',sgbd:'TEST_DDE',variant:'TEST'}},
+  entries:[{address:18,family:'FIXTURE',sgbd:'TEST_DDE',variant:'TEST',code:'480A12',verified:true,title:'Testtitel',description:'Testbeschreibung',source:'Automatisierter Test'},
+   {address:64,family:'FIXTURE',sgbd:'TEST_DDE',variant:'TEST',code:'801234',verified:true,title:'Falsches Steuergerät',source:'Automatisierter Test'}]}));
  const srv=http.createServer(server.route);await new Promise(r=>srv.listen(0,'127.0.0.1',r));
  const base='http://127.0.0.1:'+srv.address().port,owner={authorization:'Bearer '+session,'content-type':'application/json'};
  const api=async(method,p,data)=>{const r=await fetch(base+'/api/v1'+p,{method,headers:owner,body:data?JSON.stringify(data):undefined});return {status:r.status,data:await r.json().catch(()=>null)};};
@@ -61,15 +68,31 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   f=(await api('GET','/faults')).data;
   assert.equal(f.checkControl.active.length,0);assert.deepEqual(f.checkControl.events.slice(0,2).map(e=>e.active),[false,true]);
 
+  vehicle.checkControl={listAt:iso(-1000),active:[{id:222,text:'BMW-Text A',ecu:0x12,lastSeen:iso(-1000)},{id:223,text:'BMW-Text B',ecu:0x40,lastSeen:iso(-1000)}]};
+  await server.pollOnce();
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.checkControl.status,'read');assert.equal(f.checkControl.active.length,2);
+  vehicle.checkControl={active:[]};
+  await server.pollOnce();
+  assert.equal((await api('GET','/faults')).data.checkControl.active.length,2);
+  vehicle.checkControl={listAt:iso(0),active:[]};
+  await server.pollOnce();
+  assert.equal((await api('GET','/faults')).data.checkControl.active.length,0);
+
   // ----- Fehlerspeicher: Lesen auf Knopfdruck, neue Codes melden -----
   faultReply={requestId:'r1',readAt:iso(0),error:null,ecus:[{ecu:0x12,ok:true,count:1},{ecu:0x40,ok:true,count:0}],dtcs:[{ecu:0x12,code:'480A12',status:9,label:'ACTIVE',active:true}]};
   f=(await api('POST','/faults/read')).data;
+  assert.equal(f.faultMemory.latest.dtcs[0].title,'Testtitel');
+  assert.deepEqual(f.faultMemory.latest.dtcs[0].bits,['testFailed','confirmedDTC']);
   assert.equal(f.faultMemory.latest.dtcs[0].ecuName,'DME/DDE Motor');assert.equal(f.faultMemory.latest.dtcs[0].isNew,false,'first read: nothing is "new"');
   await wait(50);const before=pushes.length;
   faultReply={requestId:'r2',readAt:iso(1000),error:null,ecus:[{ecu:0x12,ok:true,count:1},{ecu:0x40,ok:true,count:1}],dtcs:[{ecu:0x40,code:'801234',status:8,label:'STORED',active:false}]};
   f=(await api('POST','/faults/read')).data;
   await wait(50);
   assert.equal(f.faultMemory.latest.dtcs[0].isNew,true);
+  assert.equal(f.faultMemory.latest.dtcs[0].active,false);
+  assert.equal(f.faultMemory.latest.dtcs[0].title,'Fehlerbeschreibung nicht verfügbar');
+  assert.ok(f.faultMemory.earlier[0].noLongerReportedAt);
   assert.equal(f.faultMemory.earlier[0].code,'480A12','codes no longer reported are kept as earlier');
   assert.equal(pushes.length,before+1);assert.match(pushes[pushes.length-1].message,/BDC_BODY3 Karosserie: 801234/);
   faultReply={requestId:'r3',readAt:iso(2000),error:'busy',ecus:[],dtcs:[]};

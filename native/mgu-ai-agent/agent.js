@@ -38,12 +38,14 @@ function vehicleData(best){
  var doc=best.doc;
  var array=function(v){return Array.isArray(v)?v:[];};
  var m=doc.mileage,km=m&&Number.isInteger(m.km)&&m.km>0&&m.km<2000000?m.km:null;
- return {status:km!==null||array(doc.cbs).length||doc.serviceHistory||doc.dpf?'ok':'waiting',appState:best.state,appId:best.appId,heartbeatAt:doc.heartbeatAt||null,source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
+ return {status:km!==null||array(doc.cbs).length||doc.serviceHistory||doc.dpf||doc.tyres||doc.faultMemory||doc.checkControl&&doc.checkControl.listAt?'ok':'waiting',appState:best.state,appId:best.appId,heartbeatAt:doc.heartbeatAt||null,source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
   mileageKm:km,mileageAt:m?m.at:null,mileageSource:m?m.source:null,unverified:true,
-  cbs:Array.isArray(doc.cbs)?doc.cbs.slice(0,20).filter(Boolean).map(function(c){return {scope:c.scope,label:c.label,remainingKm:c.remainingKm,dueDate:c.dueDate,status:c.status,at:c.at};}):[],
+  cbs:Array.isArray(doc.cbs)?doc.cbs.slice(0,50).filter(Boolean).map(function(c){var item={scope:c.scope,label:c.label,remainingKm:c.remainingKm,dueDate:c.dueDate,status:c.status,at:c.at};
+    ['dueMonth','source','remainingAt','remainingSource','available'].forEach(function(key){if(c[key]!==undefined)item[key]=c[key];});
+    return item;}):[],
   serviceHistory:doc.serviceHistory?{status:doc.serviceHistory.status,readAt:doc.serviceHistory.readAt,sets:array(doc.serviceHistory.sets).slice(0,60)}:null,
-  signals:doc.signals||{},
-  checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{active:array(doc.checkControl.active).slice(0,50),events:array(doc.checkControl.events).slice(-50)}:null,
+  signals:doc.signals||{},telemetry:doc.telemetry||null,
+  checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{listAt:doc.checkControl.listAt||null,source:doc.checkControl.source||null,active:array(doc.checkControl.active).slice(0,120),events:array(doc.checkControl.events).slice(-50)}:null,
   tyres:doc.tyres&&Array.isArray(doc.tyres.wheels)?{at:doc.tyres.at,wheels:doc.tyres.wheels.slice(0,5).map(function(w){return {position:w.position,pressureBar:w.pressureBar,targetBar:w.targetBar,temperatureC:w.temperatureC,battery:w.battery};}),unverified:true}:null,
   faultMemory:doc.faultMemory&&typeof doc.faultMemory==='object'?{requestId:doc.faultMemory.requestId,readAt:doc.faultMemory.readAt,error:doc.faultMemory.error,ecus:array(doc.faultMemory.ecus).slice(0,120),dtcs:array(doc.faultMemory.dtcs).slice(0,600)}:null,
   dpf:doc.dpf&&typeof doc.dpf==='object'?doc.dpf:null};
@@ -187,7 +189,7 @@ function emitUI(){
  var dirs=appDataDirs();if(!dirs.length)return;
  var network=tsNetworkStatus();
  if(Date.now()-uiBridgeAt>=30000){uiBridge=bridgeInfo();uiBridgeAt=Date.now();}
- var value={version:'0.2.6',paired:!!latest.paired,tailscale:network,pairing:pairingInfo(network.tailIP),
+ var value={version:'0.2.7',paired:!!latest.paired,tailscale:network,pairing:pairingInfo(network.tailIP),
   webConsoleUrl:latest.webConsoleUrl||'',at:new Date().toISOString(),lastMessage:latest.message,lastDiagnostic:latest.lastDiagnostic,
   remoteAccess:'Tailscale backend only; no separate Tailscale app is required',vehicleDataVerified:false,vehicleControlsEnabled:false,bridge:uiBridge};
  dirs.forEach(function(dir){

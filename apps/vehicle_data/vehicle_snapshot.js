@@ -58,13 +58,13 @@ function isoDate(y, m, d) {
 
 /** SecureMileage.mileage -> km or null. Values close to 2^32 are "no value". */
 function decodeSecureMileage(v) {
-    const km = v ? uint(v.currentMileage, 0xFFFFFFF0) : null;
+    const km = v ? uint(v.currentMileage, 1999999) : null;
     return { km: km === 0 ? null : km, manipulationState: v ? v.manipulationState : null, raw: v || null };
 }
 /** MileageSupreme.mileageSupreme -> km or null (only with the "available" qualifier). */
 function decodeMileageSupreme(v) {
     const ok = v && QUALIFIER_OK.has(v.qualifierMileageSupreme);
-    const km = ok ? uint(v.mileageSupreme, 0xFFFFFFF0) : null;
+    const km = ok ? uint(v.mileageSupreme, 1999999) : null;
     return { km: km === 0 ? null : km, qualifier: v ? v.qualifierMileageSupreme : null, raw: v || null };
 }
 /** One legacy CBS message. Member names end in the field's own suffix. */
@@ -73,7 +73,7 @@ function decodeCbs(field, v) {
     const sfx = field.replace(/^cBS/, 'CBS');
     const pick = (prefix) => v[prefix + sfx];
     const scope = scopeOf(pick('iDScope'));
-    if (scope.name === 'SIGNAL_UNBEFUELLT' || scope.code === 65535) return null;
+    if (scope.name === null || scope.name === 'SIGNAL_UNBEFUELLT' || scope.code === 65535) return null;
     const remaining = uint(pick('remainingMileage'), 0xFFFE);
     const year = uint(pick('targetDateYear'), 0xFE), month = uint(pick('targetDateMonth'), 12), day = uint(pick('targetDateDay'), 31);
     return {
@@ -88,6 +88,7 @@ function decodeCbs(field, v) {
 function decodeServiceHistory(r) {
     if (!r || typeof r !== 'object') return { status: null, sets: [] };
     const status = enumName(r.statusOperation, READ_STATUS);
+    if (status === 'E_OK' && !Array.isArray(r.dataSets)) return {status:null,sets:[]};
     const sets = (Array.isArray(r.dataSets) ? r.dataSets : []).slice(0, 60).map((s) => {
         const d = s && s.dateOfService || {};
         const entries = Array.isArray(s && s.serviceEntries) ? s.serviceEntries :
@@ -109,6 +110,33 @@ function decodeServiceHistory(r) {
     return { status, sets };
 }
 
+// x_call 4.25.3 reads VehicleInformation.Range.mileageKilometre directly in km.
+function rangeMileage(v) {
+    const km = uint(v && v.mileageKilometre, 1999999);
+    return km > 0 ? km : null;
+}
+
+// The donor names the fields but does not interpret cBSServiceWay / cBSServiceDate.
+// Preserve those raw scalars for diagnosis; use the explicit display calendar only.
+function decodeCbsList(v) {
+    if (!Array.isArray(v)) return null;
+    const rows = [];
+    for (const entry of v) {
+        const item = entry && entry.cBSDataServiceWithSymbolID;
+        const data = item && item.cBSDataService;
+        if (!data || (typeof data.cBSIdentifier !== 'string' && !Number.isInteger(data.cBSIdentifier))) return null;
+        const scope = scopeOf(data.cBSIdentifier);
+        const year = uint(data.yearCBSDisplay, 9999), month = uint(data.monthCBSDisplay, 12), day = uint(item.dayCBSDisplay, 31);
+        const monthDate = year >= 2000 && year <= 2100 && month >= 1 ? String(year)+'-'+('0'+month).slice(-2) : null;
+        rows.push({scope:scope.name, label:typeof data.cBSServcieName === 'string' && data.cBSServcieName.trim() ?
+            data.cBSServcieName.replace(/\0/g,'').trim().slice(0,100) : scope.label || 'CBS '+scope.name,
+            status:typeof data.cBSColor === 'string' || Number.isInteger(data.cBSColor) ? data.cBSColor : null,
+            dueDate:monthDate ? isoDate(year,month,day) : null, dueMonth:monthDate, remainingKm:null,
+            source:'KombiInterface_2.cbsDataServiceList', available:typeof item.cBSAvail==='boolean'?item.cBSAvail:null});
+    }
+    return rows;
+}
+
 /** Collects decoded values and writes the snapshot atomically, only when something changed. */
 class VehicleSnapshot {
     constructor(opts) {
@@ -117,20 +145,56 @@ class VehicleSnapshot {
         this.now = opts.now || Date.now;
         this.onError = opts.onError || (() => {});
         this.state = { secure: null, supreme: null, cbs: {}, history: null, historyReadAt: null, signals: {} };
+        this.samples = {};
+        this.received = {};
         this.last = '';
         this.lastWrite = 0;
         this.heartbeatAt = null;
     }
-    available(name, ok, error) { this.state.signals[name] = { available: !!ok, error: error ? String(error).slice(0, 200) : null }; }
+    available(name, ok, error) {
+        const state = this.state.signals[name] || {};
+        state.available = !!ok;
+        if (error) { state.error = String(error).slice(0, 200); state.errorAt = new Date(this.now()).toISOString(); }
+        this.state.signals[name] = state;
+    }
+    receivedValue(name, raw, count) {
+        const old = this.received[name] || {};
+        const at = new Date(this.now()).toISOString();
+        this.received[name] = {at, validAt:count === null ? old.validAt || null : at,
+            count:count === null ? old.count || 0 : count, valid:count !== null};
+        // Export structural evidence and tightly allowlisted numeric fields only.
+        const shape = (v, depth) => {
+            if (v === null || v === undefined) return null;
+            if (Array.isArray(v)) return depth ? {length:v.length, sample:v.slice(0,2).map(x=>shape(x,depth-1))} : {length:v.length};
+            if (typeof v !== 'object' || !depth) return typeof v;
+            const fields = [];
+            for (const key of Object.keys(v).slice(0,24)) {
+                if (!/^[a-z_][a-z0-9_]{0,45}$/i.test(key) || /vin|token|secret|auth|password|key|dealer/i.test(key)) continue;
+                const number = /^(currentMileage|mileageSupreme|mileageKilometre|ccmId|cCIdentifer|activeState|qualifierMileageSupreme|statusOperation|cBSServiceWay|cBSServiceDate|yearCBSDisplay|monthCBSDisplay|dayCBSDisplay|actualValuePressureTyreFLH|actualValuePressureTyreFRH|targetPressureTyre(FLH|FRH|RLH|RRH)|tpmsInternalLast(PositionId|PressureMbarId|TargetPressureMbarId|TemperatureDegCId)[1-4])$/i.test(key);
+                fields.push([key,number && Number.isSafeInteger(v[key]) ? v[key] : shape(v[key],depth-1)]);
+            }
+            return fields;
+        };
+        this.samples[name] = shape(raw,3);
+    }
+    range(v) { this.state.range = {km:rangeMileage(v),at:this.now()}; return this.state.range.km; }
+    cbsList(v) {
+        const rows = decodeCbsList(v);
+        if (rows !== null) this.state.cbsList = rows.slice(0,50).map(row=>Object.assign(row,{at:this.now()}));
+        return rows;
+    }
     secureMileage(v) { this.state.secure = Object.assign(decodeSecureMileage(v), { at: this.now() }); }
     mileageSupreme(v) { this.state.supreme = Object.assign(decodeMileageSupreme(v), { at: this.now() }); }
     cbs(field, v) { const c = decodeCbs(field, v); if (c) this.state.cbs[field] = Object.assign(c, { at: this.now() }); else delete this.state.cbs[field]; }
     serviceHistory(r) { this.state.history = decodeServiceHistory(r); this.state.historyReadAt = this.now(); }
     mileage() {
-        const s = this.state.secure, p = this.state.supreme;
+        const s = this.state.secure, p = this.state.supreme, r = this.state.range;
+        if (r && r.km !== null && this.now()-r.at<=7*60000) {
+            return {km:r.km,source:'VehicleInformation.Range',at:r.at};
+        }
         if (s && s.km !== null && (!p || p.km === null || p.at - s.at <= 6 * 60000)) return { km: s.km, source: 'SecureMileage', at: s.at };
         if (p && p.km !== null) return { km: p.km, source: 'MileageSupreme', at: p.at };
-        return null;
+        return r && r.km !== null ? {km:r.km,source:'VehicleInformation.Range',at:r.at} : null;
     }
     document() {
         const m = this.mileage(), iso = (t) => (t ? new Date(t).toISOString() : null);
@@ -141,7 +205,13 @@ class VehicleSnapshot {
                 secure: this.state.secure && { km: this.state.secure.km, manipulationState: this.state.secure.manipulationState, at: iso(this.state.secure.at) },
                 supreme: this.state.supreme && { km: this.state.supreme.km, qualifier: this.state.supreme.qualifier, at: iso(this.state.supreme.at) },
             },
-            cbs: Object.values(this.state.cbs).map((c) => Object.assign({}, c, { at: iso(c.at) })),
+            cbs: (this.state.cbsList ? this.state.cbsList.map(row=>{
+                const legacy=Object.values(this.state.cbs).find(c=>c.scope===row.scope);
+                return Object.assign({},row,{remainingKm:legacy?legacy.remainingKm:null,
+                    remainingAt:legacy?iso(legacy.at):null,remainingSource:legacy?'ConditionBasedServicesLegacy':null,
+                    dueDate:row.dueDate || (legacy && legacy.dueDate) || null});
+            }) : Object.values(this.state.cbs)).map((c) => Object.assign({}, c, { at: iso(c.at) })),
+            telemetry: {received:this.received,samples:this.samples},
             serviceHistory: this.state.history ? { status: this.state.history.status, readAt: iso(this.state.historyReadAt), sets: this.state.history.sets } : null,
             signals: this.state.signals,
         }, this.extra ? this.extra() : {});
@@ -167,4 +237,4 @@ class VehicleSnapshot {
 }
 
 module.exports = { VehicleSnapshot, decodeSecureMileage, decodeMileageSupreme, decodeCbs, decodeServiceHistory,
-    CBS_FIELDS, CBS_LABELS, FILE };
+    CBS_FIELDS, CBS_LABELS, FILE, rangeMileage, decodeCbsList };

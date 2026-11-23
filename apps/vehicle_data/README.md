@@ -33,3 +33,8 @@ node tests/vehicle-data-app.js
 ```
 
 Bis 17.11.2026 lag die App in [NamelsMissing/mgu-apps](https://github.com/NamelsMissing/mgu-apps); sie gehört fachlich zu BMW AI und wird nur noch hier gepflegt.
+
+Ab 0.2.2 liest Vehicle Data zusätzlich die in BMW `x_call` belegten Getter
+`VehicleInformation.Range`, `KombiInterface_2.ccList` und
+`KombiInterface_2.cbsDataServiceList`. Herkunft, Grenzen und Schritte zur
+Fahrzeugprüfung stehen im [Prüfbericht](../../docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.0.md).

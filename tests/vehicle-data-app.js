@@ -42,6 +42,17 @@ assert.strictEqual(V.decodeMileageSupreme({ mileageSupreme: 143351, qualifierMil
 assert.strictEqual(V.decodeMileageSupreme({ mileageSupreme: 143351, qualifierMileageSupreme: 0 }).km, 143351, 'enum as wire number');
 assert.strictEqual(V.decodeMileageSupreme({ mileageSupreme: 143351, qualifierMileageSupreme: 'EVENT_DATA_INVALID_OR_TIMEOUT' }).km, null);
 
+assert.strictEqual(V.rangeMileage({mileageKilometre:143352}),143352);
+for(const invalid of [undefined,null,{}, {mileageKilometre:0}, {mileageKilometre:0xFFFFFF}, {mileageKilometre:'143352'}])assert.strictEqual(V.rangeMileage(invalid),null);
+const fullCbs=['OELSERVICE','BREMSFLUESSIGKEIT'].map(cBSIdentifier=>({cBSDataServiceWithSymbolID:{
+    cBSDataService:{cBSIdentifier,yearCBSDisplay:2027,monthCBSDisplay:5,cBSServiceWay:12345},dayCBSDisplay:0
+}}));
+assert.deepStrictEqual(V.decodeCbsList(fullCbs).map(c=>[c.scope,c.dueMonth,c.remainingKm]),[
+    ['OELSERVICE','2027-05',null],['BREMSFLUESSIGKEIT','2027-05',null]]);
+assert.strictEqual(V.decodeCbsList([{}]),null);
+assert.deepStrictEqual(V.decodeServiceHistory({statusOperation:0,dataSets:[]}),{status:'E_OK',sets:[]});
+assert.strictEqual(V.decodeServiceHistory({statusOperation:0}).status,null);
+
 // CBS: member names carry the field's suffix; enums may come as names or numbers.
 const oil = V.decodeCbs('cBSMessageEngineOil', { iDScopeCBSMessageEngineOil: 'OELSERVICE', statusScopeCBSMessageEngineOil: 1,
     counterCBSMessageEngineOil: 0, remainingMileageCBSMessageEngineOil: 850, forecastWayCBSMessageEngineOil: 0,
@@ -95,6 +106,27 @@ fs.rmSync(dir, { recursive: true, force: true });
 const roSrc = src.slice(src.indexOf('class ReadOnlyDiag'), src.indexOf('mgu.run('));
 const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag);
 (async () => {
+    // Inject only the native binding and interface configuration; run the real
+    // watch lifecycle. This source exposes a getter without an event notifier.
+    const vm=require('node:vm'), signalSource=fs.readFileSync(path.join(root,'kit/runtime/signals.js'),'utf8');
+    const events=[];
+    let attempt=0,available;
+    const proxy={init:async()=>{},subscribeToAvailability:fn=>{available=fn;},isAvailable:()=>false,
+      getValue:async(field)=>{events.push(field);if(!attempt++)throw Error('fixture timeout');return {mileageKilometre:143352};},
+      subscribe:()=>{throw Error('getter-only field was subscribed');}};
+    const mod={exports:{}};
+    vm.runInNewContext(signalSource,{module:mod,__dirname:path.join(root,'kit/runtime'),setImmediate,setInterval,clearInterval,
+      require:name=>name==='someip'?{buildProxy:async()=>proxy}:name==='fs'?{readFileSync:()=>JSON.stringify({})}:require(name)});
+    let result,err;
+    const watch=await mod.exports.watch('de.bmw.infrastructure.VehicleInformation','1',{Range:v=>{result=v;}},null,
+      {initialRead:true,readFields:['Range'],readOnlyFields:['Range'],onError:(field,stage)=>{err=field+' '+stage;}});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepStrictEqual(events,['Range']);assert.strictEqual(err,'Range get');
+    available(true);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.strictEqual(result.mileageKilometre,143352);
+    await watch.shutdown();
+
     const sent = [];
     const d = new ReadOnlyDiag({ call: async (p, m, args) => { sent.push(args.serviceID); return 'NO_ERROR'; } }, { info() {}, warn() {} });
     d.p = {}; d.quiet = true;
@@ -124,6 +156,16 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     assert.deepStrictEqual(doc.checkControl.active.map((c) => c.id), [39]);
     assert.deepStrictEqual(doc.checkControl.events.map((e) => [e.id, e.active]), [[220, true], [39, true], [220, false]]);
 
+    assert.deepStrictEqual(f.ccList([{cCListElement:{cCIdentifer:12}},{cCListElement:{cCIdentifer:39}}]),[12,39]);
+    assert.strictEqual(f.ccList([{invalid:true}]),null);
+    assert.deepStrictEqual(f.document().checkControl.active.map(c=>c.id),[39,12]);
+    t=4000;f.ccList([]);
+    assert.strictEqual(f.document().checkControl.active.length,0);
+    assert.strictEqual(f.document().checkControl.listAt,new Date(4000).toISOString());
+    assert.ok(f.document().checkControl.events.some(e=>e.id===12&&e.active===false));
+    assert.strictEqual(F.decodeCcText({cCMessageStruct:{cCIdentifier:12}}),null);
+    assert.strictEqual(F.decodeTyres({tpmsInternalLastPositionId1:0,tpmsInternalLastTemperatureDegCId1:-3})[0].temperatureC,-3);
+
     // Tyres (mbar and degC as the catalog's field names say)
     const w = f.setTyres({ tpmsInternalLastPositionId1: 'FRONT_LEFT', tpmsInternalLastPressureMbarId1: 2450, tpmsInternalLastTargetPressureMbarId1: 2500, tpmsInternalLastTemperatureDegCId1: 18, tpmsInternalLastBatteryStatusId1: 11,
         tpmsInternalLastPositionId2: 1, tpmsInternalLastPressureMbarId2: 65535, tpmsInternalLastPositionId3: 'SIGNAL_UNBEFUELLT', tpmsInternalLastPositionId4: 3, tpmsInternalLastPressureMbarId4: 2210, tpmsInternalLastTargetPressureMbarId4: 2700 });
@@ -146,7 +188,7 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     const d2 = JSON.parse(fs.readFileSync(path.join(dir2, V.FILE), 'utf8'));
     assert.strictEqual(d2.dpf.soot, 12.346); assert.ok(!('ash' in d2.dpf));
     assert.strictEqual(d2.faultMemory.requestId, 'req-2'); assert.strictEqual(d2.tyres.wheels.length, 3);
-    assert.strictEqual(d2.checkControl.active[0].id, 39);
+    assert.strictEqual(d2.checkControl.active.length,0);
     fs.rmSync(dir2, { recursive: true, force: true });
     console.log('vehicle_data: read-only manifest and diagnostics, mileage, CBS, service history, check-control, tyres, fault memory, DPF and snapshot passed');
 })().catch((e) => { console.error(e); process.exitCode = 1; });

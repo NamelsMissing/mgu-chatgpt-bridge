@@ -90,13 +90,18 @@ const barText=v=>v===null||v===undefined?'–':v.toFixed(2).replace('.',',')+' b
 const num1=v=>v===null||v===undefined?'–':(Math.round(v*10)/10).toLocaleString('de-DE');
 function renderTyres(t){
  const box=$('tyreList');box.replaceChildren();
- $('tyreAge').textContent=t?(t.stale?'Veraltet · ':'Gelesen · ')+stamp(t.at):'keine Daten';
+ $('tyreAge').textContent=t?(t.stale?'Veraltet · ':'TPMSInternalData · ')+stamp(t.at):'keine Daten';
  $('tyreAge').className='pill '+(t&&!t.stale?'pill-live':'pill-off');
- if(!t){box.appendChild(txt('p','Noch keine Reifendaten. Sie kommen von der App „Vehicle Data“, sobald das Fahrzeug sie sendet.','hint'));return;}
- for(const w of t.wheels){
+ if(!t){box.appendChild(txt('p','Keine auswertbaren Sensordaten. Ob das Fahrzeug direkten oder indirekten Reifendruckstatus liefert, ist noch offen.','hint'));return;}
+ const entries=new Map(t.wheels.map(w=>[w.position,w]));
+ const wheelLabels={FRONT_LEFT:'vorne links',FRONT_RIGHT:'vorne rechts',REAR_LEFT:'hinten links',REAR_RIGHT:'hinten rechts'};
+ const wheels=Object.entries(wheelLabels).map(([position,name])=>entries.get(position)||{name,p:null,target:null,temp:null,change7d:null});
+ if(entries.has('SPARE_TYRE'))wheels.push(entries.get('SPARE_TYRE'));
+ for(const w of wheels){
   const card=txt('div','','tyre'+(w.low?' tyre-low':''));
   card.appendChild(txt('span',w.name,'hint'));
   card.appendChild(txt('strong',barText(w.p)));
+  if(w.low)card.appendChild(txt('span','Druckhinweis','hint error'));
   card.appendChild(txt('span',[w.target?'Soll '+barText(w.target):'',w.temp!==null?w.temp+' °C':''].filter(Boolean).join(' · ')||'–','hint'));
   if(w.change7d!==null)card.appendChild(txt('span',(w.change7d>0?'+':'')+w.change7d.toFixed(2).replace('.',',')+' bar in 7 Tagen',Math.abs(w.change7d)>=0.15?'error':'hint'));
   box.appendChild(card);
@@ -122,9 +127,12 @@ function renderDpf(d){
 }
 
 // ----- Fehler: Check-Control und Fehlerspeicher -----
-const DTC_LABELS={ACTIVE:'aktiv','WARNING LAMP':'Warnleuchte',PENDING:'vorläufig',STORED:'gespeichert',HISTORY:'Historie'};
+const DTC_LABELS={ACTIVE:'aktuell vorhanden','WARNING LAMP':'Warnanzeige angefordert',PENDING:'vorläufig',STORED:'bestätigt',HISTORY:'Historie'};
+let displayedFaults=null;
+for(const id of ['faultEcu','faultState','faultQuery'])$(id).oninput=()=>{if(displayedFaults)renderFaults(displayedFaults);};
 function setFaultBadge(f){
  const n=f.checkControl.active.length+(f.faultMemory.latest?f.faultMemory.latest.dtcs.filter(d=>d.active).length:0);
+ $('faultBadge').title='Aktuell gemeldete Check-Control-Einträge plus aktuell vorhandene DTCs im letzten Scan';
  $('faultBadge').textContent=String(n);$('faultBadge').hidden=!n;
 }
 function dtcRow(d,extra){
@@ -132,19 +140,29 @@ function dtcRow(d,extra){
  const head=txt('span','');head.appendChild(txt('strong',d.code));
  head.appendChild(txt('span',DTC_LABELS[d.label]||d.label||'','pill '+(d.active?'due-pill-overdue':'pill-off')));
  if(d.isNew)head.appendChild(txt('span','neu','pill due-pill-soon'));
- info.appendChild(head);info.appendChild(txt('span',extra,'hint'));row.appendChild(info);return row;
+ info.appendChild(head);
+ info.appendChild(txt('strong',d.title||'Fehlerbeschreibung nicht verfügbar'));
+ if(d.description)info.appendChild(txt('p',d.description,'notes'));
+ info.appendChild(txt('span',extra,'hint'));
+ const detail=txt('details','','');
+ detail.append(txt('summary','Technische Details'),txt('p',[d.statusHex,(d.bits||[]).join(', '),d.sgbd,d.textSource].filter(Boolean).join(' · ')||'Keine Zusatzdaten','hint'));
+ info.appendChild(detail);row.appendChild(info);return row;
 }
 function renderFaults(f){
+ displayedFaults=f;
  setFaultBadge(f);
  const diagnosis=f.diagnosis||{},poll=diagnosis.poll||{},ecu=poll.signals&&poll.signals.Diagnostics;
  $('faultConnection').textContent=[poll.ok?'MGU erreichbar':'MGU-Status: '+(poll.error||'unbekannt'),vehicleState(poll),ecu?(ecu.available?'Diagnosedienst erreichbar':ecu.error||'Diagnosedienst nicht verfügbar'):'Keine Rückmeldung vom Diagnosedienst',diagnosis.running?'Abfrage läuft':''].filter(Boolean).join(' · ');
  const act=$('ccActive');act.replaceChildren();
- if(!f.checkControl.active.length)act.appendChild(txt('p','Keine aktive Meldung im letzten gespeicherten Stand.','hint'));
+ const ccReasons={failed:'Letzte Abfrage der vollständigen Meldungsliste fehlgeschlagen.',unavailable:'Schnittstelle für die vollständige Meldungsliste nicht verfügbar.',
+  stale:'Letzter vollständiger Stand ist veraltet.',unknown:'Aktive Meldungen noch nicht vollständig gelesen. Einzelereignisse können bereits vorliegen.'};
+ if(f.checkControl.status!=='read')act.appendChild(txt('p',ccReasons[f.checkControl.status]||ccReasons.unknown,'hint'));
+ else act.appendChild(txt('p',f.checkControl.active.length?'Vollständige Liste empfangen · '+stamp(f.checkControl.listAt):'Erfolgreich gelesen · keine aktiven Meldungen','hint'));
  for(const c of f.checkControl.active){
   const card=txt('div','','due due-overdue');
   card.appendChild(txt('strong',c.text||'Meldung '+c.id));
   if(c.description)card.appendChild(txt('p',c.description,'notes'));
-  card.appendChild(txt('p','seit '+stamp(c.since)+' · '+c.ecuName+' · ID '+c.id,'hint'));
+  card.appendChild(txt('p','Aktiv seit '+stamp(c.since)+' · zuletzt erfasst '+stamp(c.lastSeen)+' · '+c.ecuName+' · ID '+c.id,'hint'));
   act.appendChild(card);
  }
  const ev=$('ccEvents');ev.replaceChildren();
@@ -155,15 +173,22 @@ function renderFaults(f){
   ev.appendChild(row);
  }
  const fm=f.faultMemory,list=$('faultList');list.replaceChildren();
- const latest=fm.latest,last=fm.lastAttempt;
+ const latest=fm.latest,last=fm.lastAttempt,filter=$('faultEcu'),selected=filter.value;
+ const available=new Map([...(latest?.dtcs||[]),...fm.earlier].map(d=>[String(d.ecu),d.ecuName]));
+ filter.replaceChildren(new Option('Alle',''),...Array.from(available,([id,name])=>new Option(name,id)));
+ if(available.has(selected))filter.value=selected;
+ const query=$('faultQuery').value.trim().toLowerCase(),status=$('faultState').value;
+ const matches=d=>(!filter.value||filter.value===String(d.ecu))&&(!status||(d.bits||[]).includes(status))&&
+  (!query||[d.code,d.title,d.description,d.ecuName].some(x=>String(x||'').toLowerCase().includes(query)));
+ $('faultCounts').textContent=f.checkControl.active.length+' Check-Control im letzten Stand · '+(latest?latest.dtcs.length+' DTC insgesamt · '+latest.dtcs.filter(d=>d.active).length+' aktuell vorhanden im letzten Scan':'Noch kein DTC-Scan');
  $('faultInfo').textContent=!latest?(last&&last.error?'Letzter Versuch '+stamp(last.readAt)+' fehlgeschlagen: '+last.error:'Noch nicht ausgelesen. Das passiert bei jedem Fahrzeugstart einmal automatisch.')
   :'Ausgelesen '+stamp(latest.readAt)+': '+latest.dtcs.length+' Codes aus '+latest.ecus.length+' Steuergeräten'+(last&&last.error&&last.readAt!==latest.readAt?' · letzter Versuch fehlgeschlagen: '+last.error:'');
  if(latest){
-  const byEcu=new Map();for(const d of latest.dtcs){if(!byEcu.has(d.ecu))byEcu.set(d.ecu,[]);byEcu.get(d.ecu).push(d);}
-  if(!byEcu.size)list.appendChild(txt('p','Keine Fehlercodes gespeichert.','hint'));
+  const byEcu=new Map();for(const d of latest.dtcs.filter(matches)){if(!byEcu.has(d.ecu))byEcu.set(d.ecu,[]);byEcu.get(d.ecu).push(d);}
+  if(!byEcu.size)list.appendChild(txt('p',latest.dtcs.length?'Keine passenden Fehlercodes.':'Keine passenden Fehlercodes im abgefragten Statusfilter des Fahrzeugs.','hint'));
   for(const [ecu,codes] of byEcu){
    const box=txt('div','','service-entry');box.appendChild(txt('strong',codes[0].ecuName+' (0x'+ecu.toString(16).toUpperCase().padStart(2,'0')+')'));
-   for(const d of codes)box.appendChild(dtcRow(d,'Status 0x'+d.status.toString(16).toUpperCase().padStart(2,'0')+(d.firstSeen?' · zuerst gesehen '+stamp(d.firstSeen):'')));
+   for(const d of codes)box.appendChild(dtcRow(d,[d.statusHex,d.firstSeen?'erstmals '+stamp(d.firstSeen):'',d.lastSeen?'zuletzt '+stamp(d.lastSeen):''].filter(Boolean).join(' · ')));
    list.appendChild(box);
   }
   const refused=latest.ecus.filter(e=>!e.ok);
@@ -171,7 +196,8 @@ function renderFaults(f){
  }
  const earlier=$('faultEarlier');earlier.replaceChildren();
  if(!fm.earlier.length)earlier.appendChild(txt('p','Keine.','hint'));
- for(const k of fm.earlier)earlier.appendChild(dtcRow(k,k.ecuName+' · zuletzt '+stamp(k.lastSeen)));
+ for(const k of fm.earlier.filter(matches))earlier.appendChild(dtcRow(k,k.ecuName+' · zuletzt '+stamp(k.lastSeen)+
+  (k.noLongerReportedAt?' · seit '+stamp(k.noLongerReportedAt)+' im Scan nicht mehr gemeldet':' · im letzten Scan nicht beobachtet')));
 }
 async function refreshFaults(){if(!token)return;try{renderFaults(await api('/faults'));}catch(e){notice(e.message);}}
 $('refreshFaults').onclick=refreshFaults;
@@ -598,10 +624,11 @@ function renderVehicle(v){
  vehicleData=v;
  renderTyres(v.tyres||null);renderDpf(v.dpf||null);
  const m=v.mileage;
- $('mileageNow').textContent=m?kmText(m.km):'Noch kein Kilometerstand';
- $('mileageSource').textContent=m?MILEAGE_SOURCES[m.source]||m.source:'–';
- $('mileageSource').className='pill '+(m&&m.source==='vehicle'?'pill-live':'pill-off');
- $('mileageInfo').textContent=m?'Stand vom '+dateText(m.date)+(v.kmPerDay?' · Ø '+v.kmPerDay.toLocaleString('de-DE')+' km pro Tag im letzten Jahr':''):'Trag den aktuellen Stand ein. Er ist die Grundlage für die km-Fälligkeiten.';
+ const measured=v.live&&Number.isInteger(v.live.mileageKm)?v.live:null;
+ $('mileageNow').textContent=measured?kmText(measured.mileageKm):m?kmText(m.km):'Noch kein Kilometerstand';
+ $('mileageSource').textContent=measured?(measured.stale?'Fahrzeug · veraltet':'Fahrzeug · '+(measured.mileageSource||'Quelle unbekannt')):m?MILEAGE_SOURCES[m.source]||m.source:'–';
+ $('mileageSource').className='pill '+(measured&&!measured.stale?'pill-live':'pill-off');
+ $('mileageInfo').textContent=measured?'Gemessen '+stamp(measured.mileageAt)+' · '+(measured.mileageSource||'Quelle unbekannt'):m?'Stand vom '+dateText(m.date)+(v.kmPerDay?' · Ø '+v.kmPerDay.toLocaleString('de-DE')+' km pro Tag im letzten Jahr':''):'Trag den aktuellen Stand ein. Er ist die Grundlage für die km-Fälligkeiten.';
  if(!$('mileageDate').value)$('mileageDate').value=v.today;
  $('mileageDate').max=v.today;
  const hist=$('mileageHistory');hist.replaceChildren();
@@ -657,23 +684,41 @@ function renderVehicle(v){
  }
 }
 function renderReported(v){
- const live=v.live,box=$('cbsList'),hist=$('historyList');box.replaceChildren();hist.replaceChildren();
+ const live=v.live,box=$('cbsList'),hist=$('historyList'),next=$('bmwNextService');box.replaceChildren();hist.replaceChildren();next.replaceChildren();
+ const due=v.bmwNextService||{};
+ const until=c=>c.dueDate?dateText(c.dueDate):c.dueMonth?c.dueMonth.replace(/^(\d{4})-(\d{2})$/,'$2/$1'):'';
+ if(due.byDate||due.byDistance){
+  next.appendChild(txt('strong','Nächster fälliger BMW-Service'));
+  if(due.byDate)next.appendChild(txt('p','Nach Datum · '+due.byDate.label+' · bis '+until(due.byDate),'hint'));
+  if(due.byDistance)next.appendChild(txt('p','Nach Strecke · '+due.byDistance.label+' · '+kmText(due.byDistance.remainingKm),'hint'));
+ }
  $('reportedAge').textContent=live?(live.stale?'Letzter gespeicherter Stand':'Vehicle Data empfängt Werte'):'Keine Daten';
  $('reportedAge').className='pill '+(live&&!live.stale?'pill-live':'pill-off');
  if(!live){box.appendChild(txt('p','Noch nichts vom Fahrzeug. Dafür muss auf der MGU die App „Vehicle Data“ installiert sein und einmal gelaufen sein.','hint'));return;}
  if(live.mileageKm!==null)box.appendChild(txt('p','Kilometerstand laut Fahrzeug: '+kmText(live.mileageKm)+' · '+(live.mileageSource||'Quelle nicht übermittelt')+' · '+(stamp(live.mileageAt)||'Zeitpunkt unbekannt')+(live.stale?' · veraltet':'')));
+ if(live.cbsListAt)box.appendChild(txt('p','BMW-Liste gelesen · '+stamp(live.cbsListAt)+
+  ((!v.poll?.ok||Date.now()-Date.parse(live.cbsListAt)>3*60000)?' · veraltet':''),'hint'));
  if(!live.cbs.length)box.appendChild(txt('p','Noch keine Servicebedarf-Meldung empfangen.','hint'));
  for(const c of live.cbs){
   const row=txt('div','','list-row'),info=txt('div','','request-info');
   info.appendChild(txt('strong',c.label));
   row.appendChild(info);
-  const parts=[c.dueDate?'bis '+dateText(c.dueDate):'',c.remainingKm!==null?'noch '+kmText(c.remainingKm):'',c.at?'CBS · '+stamp(c.at):''].filter(Boolean);
+  const expired=c.dueDate?c.dueDate<v.today:c.dueMonth?c.dueMonth<v.today.slice(0,7):false;
+  const parts=[expired||c.remainingKm===0?'Fällig aus Datum oder Reststrecke':'',until(c)?'bis '+until(c):'',c.remainingKm!==null?'noch '+kmText(c.remainingKm):'',
+   c.status!==null&&c.status!==undefined?'BMW-Status '+c.status:'',c.available===false?'nicht verfügbar':'',
+   c.at?(c.source||'CBS')+' · '+stamp(c.at):'',c.remainingAt?'Reststrecke · '+stamp(c.remainingAt):''].filter(Boolean);
   row.appendChild(txt('span',parts.join(' · ')||'–',c.remainingKm===0?'error':''));
   box.appendChild(row);
  }
  const h=live.serviceHistory;
- if(!h)hist.appendChild(txt('p','Noch nicht gelesen.','hint'));
- else if(!h.sets.length)hist.appendChild(txt('p','Keine Einträge im Fahrzeug'+(h.status&&h.status!=='E_OK'?' ('+h.status+')':'')+'.','hint'));
+ const historySignal=v.poll?.signals?.ServiceHistory;
+ if(historySignal?.available===false)hist.appendChild(txt('p','Abfrage fehlgeschlagen · '+historySignal.error,'hint'));
+ if(!h&&!historySignal)hist.appendChild(txt('p','Noch nicht gelesen.','hint'));
+ if(h){
+  const reason={E_FILE_DOES_NOT_EXIST:'Datei nicht vorhanden',E_FILE_IS_EMPTY:'Datei leer',E_NO_READ_PERMISSION:'Lesezugriff verweigert'};
+  const state=h.status==='E_OK'?(h.sets.length?'Gelesen':'Erfolgreich gelesen · keine Einträge'):reason[h.status]||h.status||'Antwortformat unbekannt';
+  hist.appendChild(txt('p',state+' · ServiceHistory · '+stamp(h.readAt),'hint'));
+ }
  for(const x of h?h.sets:[]){
   const row=txt('div','','list-row'),info=txt('div','','request-info');
   const title=txt('span','');title.appendChild(txt('strong',dateText(x.date)));if(x.km!==null)title.appendChild(txt('span','  '+kmText(x.km),'hint'));
@@ -685,6 +730,53 @@ function renderReported(v){
   hist.appendChild(row);
  }
 }
+const telemetryGroups={
+ 'Kilometerstand':['VehicleInformation','SecureMileage','MileageSupreme'],
+ 'Check-Control':['CheckControlMaster','KombiInterface_2.ccList','KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage','CheckControlText'],
+ 'BMW-Servicebedarf':['KombiInterface_2.cbsDataServiceList','ConditionBasedServicesLegacy'],
+ 'Servicehistorie':['ServiceHistory'],
+ 'Reifen':['TPMSInternalData','TPMS'],
+ 'DPF':['UDS.DPF','Diagnostics'],
+ 'Fehlerspeicher':['UDS.1902','Diagnostics']
+};
+async function renderTelemetry(){
+ try{
+  const data=await api('/vehicle/diagnostics'),p=data.poll||{},box=$('vehicleTelemetryRows');
+  box.replaceChildren(txt('p',p.ok?'Snapshot empfangen · '+stamp(p.lastOk):'Übertragung unterbrochen oder noch ungeprüft','hint'));
+  for(const [label,sources] of Object.entries(telemetryGroups)){
+   const section=txt('div','','service-entry');
+   section.appendChild(txt('strong',label));
+   const keys=Object.keys(p.received||{}).filter(k=>sources.some(src=>k===src||k.startsWith(src+'.')));
+   for(const key of [...new Set([...sources,...keys])]){
+    const signal=(p.signals||{})[key.split('.')[0]],r=(p.received||{})[key];
+    const meta=[signal?(signal.available?'Schnittstelle verfügbar':'Schnittstelle nicht bestätigt'):null,
+      r?'Empfangen '+stamp(r.at):null,r?.validAt?'Gültig '+stamp(r.validAt)+' · '+r.count+' Datensätze':null,
+      r&&r.valid===false?'Letzte Antwort nicht auswertbar':null,signal?.error?'Letzter Fehler · '+signal.error+(signal.errorAt?' · '+stamp(signal.errorAt):''):null].filter(Boolean);
+    section.appendChild(txt('p',key+' · '+(meta.join(' · ')||'Noch keine Rückmeldung'),'hint'));
+   }
+   box.appendChild(section);
+  }
+ }catch(e){$('vehicleTelemetryRows').textContent=e.message;}
+}
+$('vehicleTelemetry').ontoggle=()=>{if($('vehicleTelemetry').open)renderTelemetry();};
+$('vehicleTelemetryExport').onclick=async()=>{
+ try{triggerFileDownload(new Blob([JSON.stringify(await api('/vehicle/diagnostics'),null,2)],{type:'application/json'}),'bmw-vehicle-diagnostics.json');}
+ catch(e){notice(e.message);}
+};
+
+setInterval(async()=>{
+ if(!token||document.hidden)return;
+ if(currentTab==='faults'&&!$('faultRead').disabled)refreshFaults();
+ if(currentTab==='vehicle'&&!$('vehicle').contains(document.activeElement)){
+  try{
+   const current=await api('/vehicle');
+   if(currentTab==='vehicle'){
+    renderVehicle(current);
+    if($('vehicleTelemetry').open)renderTelemetry();
+   }
+  }catch(e){$('vehicleLive').textContent=e.message;}
+ }
+},30000);
 async function refreshVehicle(){
  if(!token)return;
  try{renderVehicle(await api('/vehicle'));}catch(e){notice(e.message);}
@@ -693,6 +785,7 @@ async function refreshVehicle(){
   const s=await api('/status'),veh=s.mgu&&s.mgu.vehicle;
   $('vehicleLive').textContent=!s.mgu?'MGU nicht erreichbar · '+String(s.error||'').slice(0,120):vehicleState(veh||{});
   renderVehicle(await api('/vehicle'));
+  if($('vehicleTelemetry').open)renderTelemetry();
  }catch(e){$('vehicleLive').textContent='Live-Daten nicht abrufbar: '+e.message;}
 }
 $('refreshVehicle').onclick=refreshVehicle;

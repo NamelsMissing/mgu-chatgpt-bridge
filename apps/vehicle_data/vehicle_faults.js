@@ -34,6 +34,18 @@ function decodeCcEvent(v) {
     return { id, active, reason: enumName(v.reason, CC_REASON), ecu: uint(v.requestorDiagAddr, 0xFF),
         carTime: uint(v.timeStamp_s, 0xFFFFFFFE) };
 }
+// KombiInterface_2.ccList, as consumed by BMW x_call. A valid empty list is authoritative.
+function decodeCcList(v) {
+    if (!Array.isArray(v) || v.length>120) return null;
+    const ids = new Set();
+    for (const entry of v) {
+        const element = entry && entry.cCListElement;
+        const id = uint(element && element.cCIdentifer,0xFFFE);
+        if (!id) return null;
+        ids.add(id);
+    }
+    return Array.from(ids);
+}
 /** CCMessageUnion (newCCMessage / requestCCMessage) -> {id, text, description}. */
 function decodeCcText(u) {
     if (!u || typeof u !== 'object') return null;
@@ -54,7 +66,8 @@ function decodeTyres(v) {
         const pos = enumName(v['tpmsInternalLastPositionId' + i], POSITIONS);
         if (!pos || !/^(FRONT|REAR)_(LEFT|RIGHT)$|^SPARE_TYRE$/.test(pos)) continue;
         const p = uint(v['tpmsInternalLastPressureMbarId' + i], 0xFFFD), target = uint(v['tpmsInternalLastTargetPressureMbarId' + i], 0xFFFD);
-        const t = uint(v['tpmsInternalLastTemperatureDegCId' + i], 0xFD);
+        const temp = v['tpmsInternalLastTemperatureDegCId' + i];
+        const t = Number.isInteger(temp) && temp >= -48 && temp <= 0xFD ? temp : null;
         out.push({ position: pos, pressureBar: p === null || p > 10000 ? null : Math.round(p) / 1000,
             targetBar: target === null || target > 10000 ? null : Math.round(target) / 1000, temperatureC: t,
             battery: enumName(v['tpmsInternalLastBatteryStatusId' + i], BATTERY), rawPressure: v['tpmsInternalLastPressureMbarId' + i],
@@ -94,7 +107,23 @@ class FaultState {
     ccEvent(v) {
         const e = decodeCcEvent(v);
         if (!e) return null;
+        return this.updateCc(e);
+    }
+    ccList(v) {
+        const ids = decodeCcList(v);
+        if (!ids) return null;
+        const included = new Set(ids);
+        for (const e of this.cc.values()) {
+            if (e.active && !included.has(e.id)) this.updateCc(Object.assign({},e,{active:false}));
+        }
+        for (const id of ids) this.updateCc({id,active:true,ecu:null});
+        this.ccListAt = this.now();
+        return ids;
+    }
+    updateCc(e) {
         const t = this.now(), prev = this.cc.get(e.id);
+        if (prev && e.ecu == null) e.ecu = prev.ecu;
+
         if (!prev || prev.active !== e.active) {
             this.ccEvents.push({ id: e.id, active: e.active, ecu: e.ecu, reason: e.reason, at: t });
             if (this.ccEvents.length > 100) this.ccEvents.splice(0, this.ccEvents.length - 100);
@@ -104,7 +133,14 @@ class FaultState {
     }
     ccText(u) { const m = decodeCcText(u); if (m) this.ccTexts.set(m.id, { text: m.text, description: m.description }); return m; }
     needsText(id) { return !this.ccTexts.has(id); }
-    setTyres(v) { const w = decodeTyres(v); if (w.length) { this.tyres = w; this.tyresAt = this.now(); } return w; }
+    setTyres(v) {
+        const w = decodeTyres(v);
+        if (w.some(row=>row.pressureBar!==null||row.targetBar!==null||row.temperatureC!==null)) {
+            this.tyres = w;
+            this.tyresAt = this.now();
+        }
+        return w;
+    }
     setDtc(requestId, replies, params, error) {
         const r = replies ? decodeDtcScan(replies, params) : { ecus: [], dtcs: [] };
         this.dtc = { requestId: requestId || null, readAt: this.now(), error: error ? String(error).slice(0, 200) : null, ecus: r.ecus, dtcs: r.dtcs };
@@ -116,6 +152,7 @@ class FaultState {
         const withText = (c) => Object.assign({}, c, this.ccTexts.get(c.id) || { text: null, description: '' });
         return {
             checkControl: {
+                listAt:iso(this.ccListAt), source:this.ccListAt?'KombiInterface_2.ccList':'CheckControlMaster.basicList',
                 active: Array.from(this.cc.values()).filter((c) => c.active).map((c) => Object.assign(withText(c), { since: iso(c.since), lastSeen: iso(c.lastSeen) })),
                 events: this.ccEvents.slice(-50).map((e) => Object.assign(withText(e), { at: iso(e.at) })),
             },
@@ -126,4 +163,4 @@ class FaultState {
     }
 }
 
-module.exports = { FaultState, decodeCcEvent, decodeCcText, decodeTyres, decodeDtcScan };
+module.exports = { FaultState, decodeCcEvent, decodeCcList, decodeCcText, decodeTyres, decodeDtcScan };
