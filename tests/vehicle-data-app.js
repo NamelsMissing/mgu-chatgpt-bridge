@@ -90,6 +90,11 @@ assert.deepStrictEqual(h.sets[0].services.map((s) => s.label), ['Motoröl', 'Mik
 assert.strictEqual(h.sets[0].status, 'SERVICE_CARRIED_OUT_LATE'); assert.strictEqual(h.sets[1].dealer, '12345');
 assert.strictEqual(V.decodeServiceHistory({ statusOperation: 2 }).status, 'E_FILE_IS_EMPTY');
 
+const serviceCodes=V.decodeServiceHistory({statusOperation:0,dataSets:[{serviceEntries:
+    ['11','12','17',32].map(serviceText=>({serviceText}))}]});
+assert.deepStrictEqual(serviceCodes.sets[0].services.map(s=>[s.code,s.label]),[
+    ['11','Code 11'],['12','Code 12'],['17','Fahrzeug-Check'],[32,'Hauptuntersuchung']]);
+
 // Snapshot file: atomic, only on change, at most once per second, SecureMileage preferred.
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vd-'));
 let t = 1700000000000;
@@ -127,8 +132,8 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     odometerClock.t+=7*60000;
     assert.strictEqual(odometer.mileage(false),null,'an expired SOME/IP reading must allow the UDS fallback');
     assert.strictEqual(odometer.document().mileage.valid,false);
-    odometer.diagnosticMileage(123457);
-    assert.strictEqual(odometer.document().mileage.source,'DDE 0x558E');
+    odometer.diagnosticMileage(123457,U.ODOMETERS[0]);
+    assert.strictEqual(odometer.document().mileage.source,'KOMBI 0xD122');
     odometerClock.t+=1000;
     odometer.secureMileage({currentMileage:123458});
     assert.strictEqual(odometer.document().mileage.source,'SecureMileage','live SOME/IP retakes priority');
@@ -149,7 +154,7 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
         payload.writeUInt16BE(2275,8);
         return [0x62,...data,...payload];
     }};
-    assert.deepStrictEqual(await U.readMileage(mockDiag),{value:104660});
+    assert.strictEqual((await U.readMileage(mockDiag,U.ODOMETERS[3])).value,104660);
     const wheels=await Promise.all(U.RDC.map(wheel=>U.readWheel(mockDiag,wheel)));
     assert.deepStrictEqual(wheels.map(({value:w})=>[w.position,w.pressureBar,w.targetBar,w.temperatureC]),[
         ['FRONT_LEFT',2.425,2.275,15],['FRONT_RIGHT',2.426,2.275,15],
@@ -158,8 +163,37 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     const rdc=new F.FaultState(()=>odometerClock.t);
     rdc.setRdcTyres(wheels.map(w=>w.value));
     assert.strictEqual(rdc.document().tyres.source,'RDC 0x29');
-    assert.deepStrictEqual(await U.readMileage({physical:async()=>[0x62,0x55,0x8E,0xFF,0xFF,0xFF,0xFF]}),{reason:'invalid_value'});
-    assert.deepStrictEqual(await U.readMileage({physical:async()=>[0x7F,0x22,0x31]}),{reason:'nrc_31'});
+    const [display,ram,bdc]=U.ODOMETERS;
+    const read=(def,reply)=>U.readMileage({physical:async(ecu,sid,request)=>{
+        assert.strictEqual(ecu,def.ecu);assert.strictEqual(sid,0x22);
+        assert.strictEqual(request[0]*256+request[1],def.did);return reply;
+    }},def);
+    assert.strictEqual((await read(display,[0x62,0xD1,0x22,0,1,0x7F,0x85])).value,98181);
+    const ramResult=await read(ram,[0x62,0xD1,0x0D,0,1,0x7F,0x85,0,1,0x7F,0x40]);
+    assert.strictEqual(ramResult.value,98181);
+    assert.strictEqual(ramResult.detail.eepromKm,98112);
+    assert.strictEqual(ramResult.detail.warning,'ram_eeprom_difference');
+    assert.strictEqual((await read(bdc,[0x62,0x17,0,0,1,0x7F,0x85])).value,98181);
+    assert.strictEqual((await read(bdc,[0x62,0x17,0,0xFF,0xFF,0xFF])).reason,'unexpected_reply_length');
+    assert.strictEqual((await read(bdc,[0x62,0x17,0,0,0xFF,0xFF,0xFF])).reason,'invalid_value');
+    assert.strictEqual((await read(display,[0x62,0xD1,0x22,0,1,0x7F,0x85,0])).reason,'unexpected_reply_length');
+    assert.strictEqual((await read(display,[0x62,0xD1,0x23,0,1,0x7F,0x85])).reason,'unexpected_reply');
+    assert.strictEqual((await read(display,[0x7F,0x22,0x31])).reason,'nrc_31');
+    assert.strictEqual((await read(display,null)).reason,'no_reply');
+    let ms=1000;
+    const sources=new U.MileageSources(()=>ms);
+    assert.strictEqual(sources.candidates()[0],display);
+    sources.record(display,{reason:'nrc_31'});
+    assert.strictEqual(sources.candidates()[0],ram);
+    sources.record(ram,ramResult);
+    ms+=31*60000;
+    assert.strictEqual(sources.candidates()[0],ram);
+    sources.reset();
+    assert.strictEqual(sources.candidates()[0],display);
+    const hKm=await read(U.MILEAGE_HISTORY[0],[0x62,0x40,0xA3,0,1,0x7F,0x85,0,1,0,2,0,3,0,4,0,5]);
+    assert.strictEqual(hKm.historical,true);
+    assert.strictEqual(hKm.value,undefined);
+    assert.deepStrictEqual(hKm.detail.historyPrevious,[1,2,3,4,5]);
     assert.deepStrictEqual(await U.readWheel({physical:async()=>[0x62,0xDC,0x98,0,0]},U.RDC[0]),{reason:'unexpected_reply_length'});
     assert.deepStrictEqual(await U.readWheel({physical:async()=>null},U.RDC[0]),{reason:'no_reply'});
 

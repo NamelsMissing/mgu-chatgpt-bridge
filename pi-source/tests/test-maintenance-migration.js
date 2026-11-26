@@ -149,6 +149,7 @@ async function start(){
   performed(day(-100),92500,service('11','Code 11'),service('12','Code 12')),
   performed(day(-70),94000,service('KUEHLFLUESSIGKEIT','Kühlmittel nachgefüllt')),
   performed(day(-60),95000,{scope:'FREITEXT',label:'Motorluftfilter',status:'SERVICE_INCOMPLETE'}),
+  performed(day(-55),95400,{...service('17','Code 17'),code:17}),
  ];
  const savedBook={items:{oil},entries:{
   ownOil:local('ownOil',day(-15),'Ölwechsel'),
@@ -171,6 +172,9 @@ async function start(){
  assert.equal(find('inspection').basis,'own');
  assert.equal(saved.bmwNextService.byDate.dueDate,day(250));
  assert.equal(find('oil').intervalKm,8000);
+ assert.equal(find('check').dueDate,plusMonths(day(-55),48));
+ assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===17&&work.label==='Fahrzeug-Check')));
+ assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.label==='Code 11')));
  await stop();
 
  const documented=read();

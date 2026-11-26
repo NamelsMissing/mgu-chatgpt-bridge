@@ -13,7 +13,7 @@ const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.9'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.10'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -494,8 +494,14 @@ function maintenanceOverview(due,cbs,t,settings){
     unknownCount:statuses.filter(status=>status==='unknown').length,next,cbsStatuses,cbsKeys};
 }
 function vehicleView(){
-  const manual=currentMileage(),live=st.vehicle.live;
-  const cur=Number.isInteger(live?.mileageKm)?{km:live.mileageKm,date:live.mileageAt?.slice(0,10),source:'vehicle'}:manual;
+  const live=st.vehicle.live;
+  const manual=[...st.vehicle.mileage].filter(row=>row.source==='manual')
+    .sort((a,b)=>b.date.localeCompare(a.date)||String(b.at).localeCompare(String(a.at)))[0]||null;
+  const hasVehicle=Number.isInteger(live?.mileageKm);
+  const stale=live?.mileageAvailable!==true||!vehicleReadingFresh(live?.mileageAt,7*60000);
+  const preferManual=stale&&manual&&(!hasVehicle||manual.date>live.mileageAt?.slice(0,10));
+  const cur=hasVehicle&&!preferManual?{km:live.mileageKm,date:live.mileageAt?.slice(0,10),source:'vehicle'}:manual||currentMileage();
+  const mileageConflict=hasVehicle&&manual&&manual.km>live.mileageKm?{manualKm:manual.km,date:manual.date}:null;
   const rate=kmPerDay(),order={overdue:0,soon:1,ok:2,unknown:3};
   const date=today(),maintenance=st.vehicle.maintenance||{};
   const entries=Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0));
@@ -505,22 +511,22 @@ function vehicleView(){
   const due=Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate,work,originals,major)).sort((a,b)=>
     order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9')));
   const cbs=live?.cbs||[];
-  return {today:date,maintenance,mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
+  return {today:date,maintenance,mileage:cur,mileageConflict,kmPerDay:rate?Math.round(rate*10)/10:null,
     bmwNextService:nextBmwService(cbs),maintenanceOverview:maintenanceOverview(due,cbs,date,maintenance),
     mileageHistory:mileagePoints().slice(-40).reverse(),
     ownMileage:[...st.vehicle.mileage].sort((a,b)=>b.date.localeCompare(a.date)||b.km-a.km).slice(0,40),
     due,items:Object.values(st.vehicle.items),entries,history:serviceHistoryView(originals,entries),
     tyres:tyresView(),dpf:dpfView(),poll:M.poll,
     live:live?Object.assign({},live,{
-      stale:live.mileageAvailable!==true||!vehicleReadingFresh(live.mileageAt,7*60000),
+      stale,
       cbsStale:!vehicleReadingFresh(live.cbsAt||live.cbsListAt,15*60000),serviceHistory:live.serviceHistory?Object.assign({},live.serviceHistory,
       {sets:live.serviceHistory.sets.map(x=>Object.assign({},x,{reference:historyReference(x),imported:!!historyEntryFor(x,entries)}))}):null}):null};
 }
-function addMileage(km,date,source,measuredAt,mileageSource){
+function addMileage(km,date,source,measuredAt,mileageSource,mileageEcu,mileageDid){
   const d=checkDate(date||today(),'Datum'),k=checkInt(km,'Kilometerstand',2000000);
   const before=mileagePoints().filter(p=>p.date<=d).pop();
   if(source==='manual'&&before&&k<before.km)throw Error('Kleiner als der Stand vom '+before.date+' ('+before.km.toLocaleString('de-DE')+' km)');
-  const rec={id:uid(),date:d,km:k,source,at:measuredAt||now(),mileageSource:mileageSource||undefined};
+  const rec={id:uid(),date:d,km:k,source,at:measuredAt||now(),mileageSource:mileageSource||undefined,mileageEcu:int(mileageEcu,255)??undefined,mileageDid:int(mileageDid,65535)??undefined};
   st.vehicle.mileage.push(rec);
   if(st.vehicle.mileage.length>1000)st.vehicle.mileage.splice(0,st.vehicle.mileage.length-1000);
   save();return rec;
@@ -531,9 +537,10 @@ function noteVehicleMileage(status){
   noteVehicleLive(v);
   const km=v&&v.mileageKm;
   if(!Number.isInteger(km)||km<=0||km>2000000||v.appState==='stale'||v.mileageAvailable===false||!wasRecent(v.mileageAt,7*60000))return;
+  if(st.vehicle.live?.mileageAvailable!==true||st.vehicle.live.mileageAt!==v.mileageAt||st.vehicle.live.mileageKm!==km)return;
   const cur=[...st.vehicle.mileage].reverse().find(point=>point.source==='vehicle');
-  if(cur&&(km<cur.km||(cur.date===v.mileageAt.slice(0,10)&&cur.km===km)))return;
-  addMileage(km,v.mileageAt.slice(0,10),'vehicle',v.mileageAt,v.mileageSource);
+  if(cur&&(km<cur.km||(cur.date===v.mileageAt.slice(0,10)&&cur.km===km&&cur.mileageSource===v.mileageSource)))return;
+  addMileage(km,v.mileageAt.slice(0,10),'vehicle',v.mileageAt,v.mileageSource,v.mileageEcu,v.mileageDid);
 }
 // Servicebedarf (CBS) und Servicehistorie, wie sie die App "Vehicle Data" auf der MGU liest.
 const str=(v,max)=>typeof v==='string'?v.slice(0,max):null;
@@ -543,7 +550,7 @@ function noteVehicleLive(v){
   if(!v||v.appState==='stale'||(v.status!=='ok'&&v.status!=='waiting'))return;
   const h=v.serviceHistory&&typeof v.serviceHistory==='object'?v.serviceHistory:null;
   const live={at:str(v.writtenAt,40),source:str(v.source,60),writtenAt:str(v.writtenAt,40),unverified:v.unverified!==false,
-    mileageKm:Number.isInteger(v.mileageKm)&&v.mileageKm>0&&Number.isFinite(Date.parse(v.mileageAt))?int(v.mileageKm,2000000):null,mileageAt:str(v.mileageAt,40),mileageSource:str(v.mileageSource,60),
+    mileageKm:Number.isInteger(v.mileageKm)&&v.mileageKm>0&&Number.isFinite(Date.parse(v.mileageAt))?int(v.mileageKm,2000000):null,mileageAt:str(v.mileageAt,40),mileageSource:str(v.mileageSource,60),mileageEcu:int(v.mileageEcu,255),mileageDid:int(v.mileageDid,65535),
     cbs:(Array.isArray(v.cbs)?v.cbs:[]).slice(0,50).filter(Boolean).map(c=>({scope:str(c.scope,40),label:str(c.label,100)||'Service',
       remainingKm:int(c.remainingKm,65534),at:str(c.at,40),dueDate:isoDay(c.dueDate),available:c.available===false?false:null,
       dueMonth:typeof c.dueMonth==='string'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(c.dueMonth)?c.dueMonth:null,
@@ -552,10 +559,19 @@ function noteVehicleLive(v){
     serviceHistory:h?{status:str(h.status,40),readAt:str(h.readAt,40),sets:(Array.isArray(h.sets)?h.sets:[]).slice(0,60).map(x=>({date:isoDay(x&&x.date),km:int(x&&x.km,2000000),dealer:str(x&&x.dealer,40)||'',status:str(x&&x.status,40),correction:int(x&&x.correction,65535),
       services:(Array.isArray(x&&x.services)?x.services:[]).slice(0,30).map(e=>({scope:str(e&&e.scope,40),label:str(e&&e.label,60)||'Service',status:str(e&&e.status,40),code:int(e&&e.code,65535)??str(e&&e.code,60)}))}))}:null};
   const previous=st.vehicle.live;
+  live.mileageIngestReason=live.mileageKm===null?(v.mileageKm!=null?'invalid_value_or_timestamp':'no_measurement'):
+    v.mileageAvailable===false?'source_not_valid':!wasRecent(live.mileageAt,7*60000)?'stale_timestamp':null;
   if(previous&&Number.isInteger(previous.mileageKm)&&(live.mileageKm===null||live.mileageKm<previous.mileageKm||(!wasRecent(live.mileageAt,7*60000)&&live.mileageKm!==previous.mileageKm)||
     !Number.isFinite(Date.parse(live.mileageAt))||Date.parse(live.mileageAt)<Date.parse(previous.mileageAt))){
     live.mileageAvailable=false;
-    for(const k of ['mileageKm','mileageAt','mileageSource'])live[k]=previous[k];
+    if(!live.mileageIngestReason)live.mileageIngestReason=live.mileageKm<previous.mileageKm?'regression':'older_timestamp';
+    for(const k of ['mileageKm','mileageAt','mileageSource','mileageEcu','mileageDid'])live[k]=previous[k];
+  }
+  if(!live.mileageAvailable&&live.mileageIngestReason==='source_not_valid'&&Number.isInteger(previous?.mileageKm)){
+    for(const k of ['mileageKm','mileageAt','mileageSource','mileageEcu','mileageDid'])live[k]=previous[k];
+  }
+  if(!previous?.mileageKm&&live.mileageIngestReason==='source_not_valid'){
+    for(const k of ['mileageKm','mileageAt','mileageSource','mileageEcu','mileageDid'])live[k]=null;
   }
   if(live.mileageAvailable===undefined)live.mileageAvailable=v.mileageAvailable!==false&&Number.isInteger(live.mileageKm)&&wasRecent(live.mileageAt,7*60000);
   const listAt=v.telemetry?.received?.['KombiInterface_2.cbsDataServiceList']?.validAt||null;
@@ -629,6 +645,12 @@ function historyRecords(entries){
   }
   return originals;
 }
+function historyDisplay(set){
+  return {...set,services:set.services.map(row=>{
+    const code=row.code??row.scope,key=scopeToServiceKey.get(VERIFIED_SCOPE_CODES[code]);
+    return key&&row.label==='Code '+code?{...row,label:G21_SERVICE_ITEMS[key][0]}:row;
+  })};
+}
 function serviceHistoryView(originals,entries){
   const grouped=new Map(),rows=[];
   for(const entry of entries){
@@ -637,7 +659,7 @@ function serviceHistoryView(originals,entries){
       grouped.get(entry.bmwRef).push(entry);
     }else rows.push({date:entry.date,km:entry.km,localEntries:[entry]});
   }
-  for(const [ref,bmw] of originals)rows.push({date:bmw.date,km:bmw.km,bmw,reference:ref,localEntries:grouped.get(ref)||[]});
+  for(const [ref,bmw] of originals)rows.push({date:bmw.date,km:bmw.km,bmw:historyDisplay(bmw),reference:ref,localEntries:grouped.get(ref)||[]});
   return rows.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||(b.km??-1)-(a.km??-1));
 }
 function importHistory(date,km,reference){
@@ -1780,7 +1802,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
       try{capabilities=await(await mguRequest('GET','/v1/vehicle/capabilities',null,18000)).json();}
       catch(e){capabilities={state:'unverified',httpStatus:e.status||null};}
     }
-    return send(res,200,{poll:M.poll,samples:vehicleRawSamples,dtcCatalog:faultsView(false).texts,dpfFieldTimes:dpfView()?.latest.fieldTimes||{},capabilities});
+    return send(res,200,{poll:M.poll,samples:vehicleRawSamples,mileageIngest:st.vehicle.live?.mileageIngestReason||null,dtcCatalog:faultsView(false).texts,dpfFieldTimes:dpfView()?.latest.fieldTimes||{},capabilities});
   }
   if(req.method==='GET'&&p==='/api/v1/faults/ecu-worksheet'){
     const configured=localFaultTexts(),valid=[...M.faults.reads].reverse().find(x=>!x.error);

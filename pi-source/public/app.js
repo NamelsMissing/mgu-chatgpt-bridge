@@ -702,7 +702,11 @@ function renderVehicle(v){
  $('mileageNow').textContent=measured?kmText(measured.mileageKm):m?kmText(m.km):'Noch kein Kilometerstand';
  $('mileageSource').textContent=measured?(measured.stale?'Fahrzeug · veraltet':'Fahrzeug · '+(measured.mileageSource||'Quelle unbekannt')):m?MILEAGE_SOURCES[m.source]||m.source:'–';
  $('mileageSource').className='pill '+(measured&&!measured.stale?'pill-live':'pill-off');
- $('mileageInfo').textContent=measured?stamp(measured.mileageAt)+' · '+(measured.mileageSource||'Quelle unbekannt'):m?dateText(m.date):'';
+ $('mileageInfo').textContent=measured?[
+  stamp(measured.mileageAt),measured.mileageSource||'Quelle unbekannt',
+  v.mileageConflict?'Eigene Angabe: '+kmText(v.mileageConflict.manualKm)+' ('+dateText(v.mileageConflict.date)+')':null,
+  m?.source==='manual'?'Wartungsplan: eigene Angabe':null,
+ ].filter(Boolean).join(' · '):m?dateText(m.date):'';
  $('vehicleLive').textContent=[v.poll?.ok===true&&v.poll.appState==='running'?'Fahrzeugdaten verbunden':'Fahrzeug nicht erreichbar',
   v.poll?.lastData?'Letzter Empfang '+stamp(v.poll.lastData):null].filter(Boolean).join(' · ');
  if(!$('mileageDate').value)$('mileageDate').value=v.today;
@@ -838,7 +842,7 @@ $('maintenanceSettings').onsubmit=async e=>{
  }catch(err){notice(err.message);}
 };
 const telemetryGroups={
- 'Kilometerstand':['VehicleInformation','SecureMileage','MileageSupreme','UDS.558E'],
+ 'Kilometerstand':['VehicleInformation','SecureMileage','MileageSupreme','UDS.D122','UDS.D10D','UDS.1700','UDS.558E','UDS.40A3','UDS.4824'],
  'Check-Control':['CheckControlMaster','KombiInterface_2.ccList','KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage','CheckControlText'],
  'BMW-Servicebedarf':['KombiInterface_2.cbsDataServiceList','ConditionBasedServicesLegacy'],
  'Servicehistorie':['ServiceHistory'],
@@ -894,6 +898,7 @@ async function renderTelemetry(){
   for(const [label,sources] of Object.entries(telemetryGroups)){
    const section=txt('div','','service-entry');
    section.appendChild(txt('strong',label));
+   if(label==='Kilometerstand'&&data.mileageIngest)section.appendChild(txt('p','Pi · '+data.mileageIngest,'hint'));
    const keys=[...Object.keys(p.received||{}),...Object.keys(p.stages||{})].filter(k=>sources.some(src=>k===src||k.startsWith(src+'.')));
    for(const key of [...new Set([...sources,...keys])]){
     const family=key.split('.')[0],signal=(p.signals||{})[key]||(p.signals||{})[family],r=(p.received||{})[key];
@@ -914,6 +919,15 @@ async function renderTelemetry(){
       'Antwort '+yesNo(stage.responseReceived),'Dekodiert '+yesNo(stage.decoded)
      ].filter(Boolean).join(' · ');
      section.appendChild(txt('p',key+' · '+stages,'hint'));
+    }
+    if(stage.odometer){
+     const o=stage.odometer,hex=n=>Number.isInteger(n)?n.toString(16).toUpperCase().padStart(2,'0'):'–';
+     const summary=['ECU 0x'+hex(o.ecu),o.request?.map(hex).join(' '),String(o.actualLength??'–')+'/'+o.expectedLength+' Nutzbytes',
+      o.nrc!=null?'NRC 0x'+hex(o.nrc):null,o.rule,o.payload,o.km!=null?kmText(o.km):null,
+      o.eepromKm!=null?'EEPROM '+kmText(o.eepromKm):null,o.warning==='ram_eeprom_difference'?'RAM/EEPROM weichen ab':null,
+      o.historical?'Nur FEPM-Historie':null,Number.isInteger(o.failures)?o.failures+' Fehler in Folge':null,
+      stamp(o.lastSuccess?new Date(o.lastSuccess).toISOString():null)?'Letzter Erfolg '+stamp(new Date(o.lastSuccess).toISOString()):null,stamp(o.at)].filter(Boolean).join(' · ');
+     section.appendChild(txt('p',key+' · '+summary,'hint'));
     }
     const meta=[signal?(signal.available?'Schnittstelle verfügbar':'Schnittstelle nicht bestätigt'):null,
       r?'Empfangen '+stamp(r.at):null,r?.validAt?'Gültig '+stamp(r.validAt)+' · '+r.count+' Datensätze':null,

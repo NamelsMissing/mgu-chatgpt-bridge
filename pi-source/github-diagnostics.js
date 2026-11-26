@@ -8,7 +8,7 @@ const MIN_INTERVAL=5*60*1000;
 const REPO_NAME=/^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9_.-]{1,100}$/i;
 const TOKEN=/^github_pat_[A-Za-z0-9_]{20,248}$/;
 const SOURCES=[
- 'SecureMileage.mileage','MileageSupreme.mileageSupreme','VehicleInformation.Range','UDS.558E',
+ 'SecureMileage.mileage','MileageSupreme.mileageSupreme','VehicleInformation.Range','UDS.D122','UDS.D10D','UDS.1700','UDS.558E',
  'TPMSInternalData.tpmsInternalLastValues','TPMS.statusTyrePressure','TPMS.statusTargetTyrePressure',
  'UDS.DC98','UDS.DC99','UDS.DC9A','UDS.DC9B','CheckControlMaster.basicList','KombiInterface_2.ccList',
  'KombiInterface_2.cbsDataServiceList','ServiceHistory.readServiceHistory','UDS.DPF','UDS.1902',
@@ -17,7 +17,7 @@ const STAGES=['not_configured','not_requested','pending','ok','failed','paused']
 const STATES=['running','stale','unknown','not_detected','no_snapshot','snapshot_error','storage_unavailable'];
 const CONNECTIONS=['reachable','unreachable','unconfigured','invalid_response','agent_http_error'];
 const REASONS=['unexpected_shape_or_type','invalid_value','qualifier_unavailable','no_reply','unexpected_reply',
- 'unexpected_reply_length','transport_or_queue'];
+ 'unexpected_reply_length','transport_or_queue','diagnostic_provider_unavailable'];
 const ENDPOINTS=['/v1/status','/v1/vehicle/fault-memory','/v1/vehicle/capabilities'];
 const OUTCOMES=['Antwort empfangen','Timeout','Verbindungsfehler','HTTP-Fehler','Vehicle Data nicht gefunden','Snapshot fehlt',
  'Heartbeat veraltet','Snapshot fehlerhaft','OAP-Verzeichnis nicht erreichbar','Lokale Übergabe fehlgeschlagen','Diagnose-Timeout','Abfrage läuft'];

@@ -45,6 +45,7 @@ const uint = (v, max) => (Number.isInteger(v) && v >= 0 && v <= max ? v : null);
 const enumName = (v, table) => (typeof v === 'string' ? v : Number.isInteger(v) ? (table[v] || String(v)) : null);
 
 function scopeOf(v) {
+    if (typeof v === 'string' && /^\d{1,5}$/.test(v)) v = Number(v);
     const name = enumName(v, CBS_SCOPES);
     const code = typeof v === 'number' ? v : Number(Object.keys(CBS_SCOPES).find((k) => CBS_SCOPES[k] === v));
     const known = Object.values(CBS_SCOPES).includes(name);
@@ -208,13 +209,14 @@ class VehicleSnapshot {
         this.rememberMileage(this.state.supreme,'MileageSupreme');
     }
     rememberMileage(sample,source) {
-        if (sample.km!==null && (!this.lastMileage || sample.km>=this.lastMileage.km)) this.lastMileage={km:sample.km,source,at:sample.at,valid:false};
+        if (sample.km!==null && (!this.lastMileage || sample.km>=this.lastMileage.km)) this.lastMileage={km:sample.km,source,at:sample.at,ecu:sample.ecu,did:sample.did,valid:false};
     }
     cbs(field, v) { const c = decodeCbs(field, v); if (c) this.state.cbs[field] = Object.assign(c, { at: this.now() }); else delete this.state.cbs[field]; }
     serviceHistory(r) { this.state.history = decodeServiceHistory(r); this.state.historyReadAt = this.now(); }
-    diagnosticMileage(km) {
-        this.state.diagnosticMileage = {km, at:this.now()};
-        this.rememberMileage(this.state.diagnosticMileage,'DDE 0x558E');
+    diagnosticMileage(km,definition) {
+        const reading={km,at:this.now(),source:definition.source,ecu:definition.ecu,did:definition.did};
+        this.state.diagnosticMileage=reading;
+        this.rememberMileage(reading,reading.source);
     }
     mileage(includeDiagnostic) {
         const sources = [
@@ -222,11 +224,13 @@ class VehicleSnapshot {
             ['MileageSupreme', this.state.supreme],
             ['VehicleInformation.Range', this.state.range],
         ];
-        if (includeDiagnostic !== false) sources.push(['DDE 0x558E', this.state.diagnosticMileage]);
+        if (includeDiagnostic !== false && this.state.diagnosticMileage) {
+            sources.push([this.state.diagnosticMileage.source,this.state.diagnosticMileage]);
+        }
         const now = this.now();
         for (const [source, reading] of sources) {
             if (reading && reading.km !== null && now - reading.at <= 6 * 60000) {
-                return {km:reading.km, source, at:reading.at};
+                return {km:reading.km, source, at:reading.at, ecu:reading.ecu, did:reading.did};
             }
         }
         return includeDiagnostic === false ? null : this.lastMileage || null;
@@ -235,7 +239,7 @@ class VehicleSnapshot {
         const m = this.mileage(), iso = (t) => (t ? new Date(t).toISOString() : null);
         return Object.assign({
             schema: SCHEMA, app: 'vehicle_data', version: this.version,
-            mileage: m ? { km: m.km, source: m.source, at: iso(m.at), valid:m.valid!==false, unverified: true } : null,
+            mileage: m ? { km: m.km, source: m.source, at: iso(m.at), ...(m.ecu===undefined?{}:{ecu:m.ecu,did:m.did}), valid:m.valid!==false, unverified: true } : null,
             mileageSources: {
                 secure: this.state.secure && { km: this.state.secure.km, manipulationState: this.state.secure.manipulationState, at: iso(this.state.secure.at) },
                 supreme: this.state.supreme && { km: this.state.supreme.km, qualifier: this.state.supreme.qualifier, at: iso(this.state.supreme.at) },

@@ -10,7 +10,7 @@ var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.11';
+var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.12';
 function installedVehicleApps(){
  var result=[];
  try{fs.readdirSync(OAP_APPS).forEach(function(dir){
@@ -65,7 +65,8 @@ function vehicleData(best){
  var array=function(v){return Array.isArray(v)?v:[];};
  var m=doc.mileage,km=m&&Number.isInteger(m.km)&&m.km>0&&m.km<2000000?m.km:null;
  return {status:km!==null||array(doc.cbs).length||doc.serviceHistory||doc.dpf||doc.tyres||doc.faultMemory||doc.checkControl&&doc.checkControl.listAt?'ok':'waiting',appState:best.state,appId:best.appId,heartbeatAt:doc.heartbeatAt||null,source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
-  mileageKm:km,mileageAvailable:m?m.valid!==false:false,mileageAt:m?m.at:null,mileageSource:m?m.source:null,unverified:true,
+  mileageKm:km,mileageAvailable:m?m.valid!==false:false,mileageAt:m?m.at:null,mileageSource:m?m.source:null,
+  mileageEcu:m&&Number.isInteger(m.ecu)?m.ecu:null,mileageDid:m&&Number.isInteger(m.did)?m.did:null,unverified:true,
   cbs:Array.isArray(doc.cbs)?doc.cbs.slice(0,50).filter(Boolean).map(function(c){var item={scope:c.scope,label:c.label,remainingKm:c.remainingKm,dueDate:c.dueDate,status:c.status,at:c.at};
     ['dueMonth','source','remainingAt','remainingSource','available'].forEach(function(key){if(c[key]!==undefined)item[key]=c[key];});
     return item;}):[],

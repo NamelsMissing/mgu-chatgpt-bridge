@@ -84,7 +84,7 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
-  assert.equal(diag.poll.versions.agent,'0.2.11');
+  assert.equal(diag.poll.versions.agent,'0.2.12');
   assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');
   const checks=(await api('/vehicle/diagnostics?capabilities=1')).body.capabilities;
   assert.equal(checks.schema,1);
@@ -133,7 +133,10 @@ async function stop(child){
   await api('/monitor/poll','POST');
   v=(await api('/vehicle')).body.live;
   assert.equal(v.mileageKm,123456);assert.equal(v.mileageAt,measuredAt);assert.equal(v.stale,true);
-  snapshot.diagnosticMileage(123457);
+  assert.equal((await api('/vehicle/mileage','POST',{km:123999})).status,201);
+  const workDate=new Date(Date.now()-86400000).toISOString().slice(0,10);
+  assert.equal((await api('/vehicle/entries','POST',{date:workDate,km:120000,items:['oil']})).status,200);
+  snapshot.diagnosticMileage(123457,{source:'KOMBI 0xD122',ecu:0x60,did:0xD122});
   const previousExtra=snapshot.extra;
   snapshot.extra=()=>({...previousExtra(),tyres:{at:new Date().toISOString(),source:'RDC 0x29',
    wheels:[{position:'FRONT_LEFT',pressureBar:2.425,targetBar:2.275,temperatureC:15}]}});
@@ -141,7 +144,13 @@ async function stop(child){
   await api('/monitor/poll','POST');
   const latest=(await api('/vehicle')).body;
   assert.equal(latest.live.mileageKm,123457);
-  assert.equal(latest.live.mileageSource,'DDE 0x558E');
+  assert.equal(latest.live.mileageSource,'KOMBI 0xD122');
+  assert.equal(latest.live.mileageEcu,0x60);
+  assert.equal(latest.live.mileageDid,0xD122);
+  assert.equal(latest.mileage.km,123457);
+  assert.equal(latest.mileageConflict.manualKm,123999);
+  assert.equal(latest.due.find(row=>row.id==='oil').kmLeft,4543);
+  assert.equal(latest.due.find(row=>row.id==='oil').intervalMonths,12);
   assert.equal(latest.live.stale,false);
   assert.equal(latest.tyres.source,'RDC 0x29');
   assert.equal(latest.tyres.wheels[0].temp,15);

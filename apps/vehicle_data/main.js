@@ -232,6 +232,7 @@ mgu.run({
                     diag = new ReadOnlyDiag(signals, log);
                     diag.quiet = true;
                     await diag.init();
+                    if (!diag.error) diag.on('available',ok=>{if(ok)resetMileageSources();});
                     if (!diag.error && diag.p) dids = new DidReader(diag, { ecu: DPF.ECU });
                 }
                 if (!diag.p || diag.error) throw new Error(diag.error || 'diagnostic transport unavailable');
@@ -290,7 +291,7 @@ mgu.run({
         }
         // The existing TASU proxy also carries the two read-only fallbacks.
         // Each wheel yields the queue so a manual scan can take priority.
-        const lastVehicleRead = {mileage:0, tyres:0};
+        const lastVehicleRead = {tyres:0};
         async function readVehicleMeasure(key, operation) {
             snap.stage(key,'getter','pending');
             let result;
@@ -310,11 +311,6 @@ mgu.run({
             return result.value;
         }
         async function readVehicleFallback() {
-            if (!snap.mileage(false) && Date.now()-lastVehicleRead.mileage >= 5*60000) {
-                lastVehicleRead.mileage=Date.now();
-                const km=await readVehicleMeasure('UDS.558E',VUDS.readMileage);
-                if (km !== undefined) { snap.diagnosticMileage(km); flush(true); }
-            }
             const primary=faults.tyres;
             const complete=primary && Date.now()-primary.at < 150000 &&
                 primary.wheels.filter(w=>w.position!=='SPARE_TYRE'&&w.pressureBar!==null&&w.temperatureC!==null).length===4;
@@ -340,6 +336,48 @@ mgu.run({
             finally { fallbackRunning=false; }
         };
         setTimeout(() => { pollVehicleFallback(); setInterval(pollVehicleFallback,60000); }, 65000);
+        const mileageSources=new VUDS.MileageSources();
+        let mileageRunning=false,lastMileageAttempt=0,historyProbed=false;
+        function resetMileageSources() {
+            mileageSources.reset();lastMileageAttempt=0;historyProbed=false;
+        }
+        async function queryMileage(definition,history) {
+            const key='UDS.'+definition.did.toString(16).toUpperCase();
+            snap.stage(key,'getter','pending');
+            let result;
+            try { await withDiag('vehicle',key,async()=>{result=await VUDS.readMileage(diag,definition);}); }
+            catch (e) { result={reason:diag&&diag.error?'diagnostic_provider_unavailable':'transport_or_queue'}; }
+            const ok=result.value!==undefined||result.historical===true;
+            snap.stage(key,'getter',ok?'ok':'failed');
+            snap.stage(key,'decodeReason',result.reason||null);
+            snap.stage(key,'odometer',Object.assign({
+                ecu:definition.ecu,did:definition.did,expectedLength:definition.length,
+                request:[0x22,definition.did>>8,definition.did&0xFF],
+                at:new Date().toISOString(),historical:history===true,
+            },result.detail,history?{}:mileageSources.record(definition,result)));
+            snap.available(key,ok,result.reason);
+            if (result.detail&&result.detail.responseLength!==undefined) sample(key,null,ok?1:null);
+            else flush();
+            return result;
+        }
+        async function pollMileage() {
+            if (mileageRunning||snap.mileage(false)||Date.now()-lastMileageAttempt<3*60000) return;
+            mileageRunning=true;lastMileageAttempt=Date.now();
+            try {
+                for (const definition of mileageSources.candidates()) {
+                    const result=await queryMileage(definition,false);
+                    if (result.value!==undefined) {
+                        snap.diagnosticMileage(result.value,definition);flush(true);return;
+                    }
+                }
+                if (!historyProbed) {
+                    historyProbed=true;
+                    for (const definition of VUDS.MILEAGE_HISTORY) await queryMileage(definition,true);
+                }
+            } catch (e) { log.warn('Mileage diagnostics: '+e); }
+            finally { mileageRunning=false; }
+        }
+        setTimeout(()=>{pollMileage();setInterval(pollMileage,60000);},22000);
         setTimeout(() => readFaultMemory('start'), DTC_AUTO_AFTER_MS);
         setTimeout(() => { readDpf(); setInterval(readDpf, DPF_PRIMARY_MS); }, 45 * 1000);
 
@@ -354,7 +392,7 @@ mgu.run({
         }, 3000);
 
         ui.onClick('BTN_PAGE', () => { page = (page + 1) % 4; });
-        ui.onClick('BTN_REFRESH', () => { readHistory('button'); readFaultMemory('button'); });
+        ui.onClick('BTN_REFRESH', () => { readHistory('button'); readFaultMemory('button'); resetMileageSources();pollMileage(); });
         if (typeof ctx.onTab === 'function') ctx.onTab((i) => { if (i >= 0 && i < 4) page = i; });
 
         const label = (cv, t, x, y, size, colour, opt) => cv.text(ascii(t), x, y, size, colour || C.text, Object.assign({ literal: true }, opt || {}));
