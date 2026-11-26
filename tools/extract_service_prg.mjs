@@ -25,6 +25,7 @@ for (const [variant, mapping] of Object.entries(variants)) {
       if (!scope) row.table = table;
       row.de = de;
       if (!scope) row.description = statusLabel.length > 180 ? statusLabel.slice(0, 500) : '';
+      if (scope && code === 0x23 && /Automatik/i.test(raw)) row.work = 'automaticOil';
       row.category = scope ? 'wartungsumfang' : /EINHEIT/.test(table) ? 'einheit' : 'status';
       Object.assign(row, {interface: table, source, variant, version: 'PRG-Lieferstand', verification});
       seed.rows.push(row);

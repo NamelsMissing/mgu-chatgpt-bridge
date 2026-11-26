@@ -162,9 +162,15 @@
         <label>Erstzulassung <input type="date" id="maintenanceRegistration"></label>
         <label>Warnschwelle Tage <input type="number" id="maintenanceDays" min="0" max="365" value="30" required></label>
         <label>Warnschwelle km <input type="number" id="maintenanceKm" min="0" max="300000" value="1000" required></label>
+        <fieldset class="wide"><legend>Fahrzeugausstattung für den Wartungsplan</legend>
+          <label class="check"><input type="checkbox" id="maintenanceAutoGearbox"> Automatikgetriebe</label>
+          <label class="check"><input type="checkbox" id="maintenanceRearDifferential"> Hinterachsgetriebe</label>
+          <label class="check"><input type="checkbox" id="maintenanceTransferCase"> Verteilergetriebe vorhanden</label>
+        </fieldset>
         <button type="submit">Profil speichern</button>
       </form>
       <label>Wartungsart <select id="maintenanceItem"></select></label>
+      <button type="button" class="textbutton" id="newTransferCaseOil" hidden>Verteilergetriebeöl hinzufügen</button>
       <form id="itemForm" class="form-grid" autocomplete="off">
         <input type="hidden" id="itemId">
         <label class="wide">Name <input type="text" id="itemName" maxlength="60" placeholder="z. B. Bremsflüssigkeit"></label>

@@ -14,7 +14,7 @@ const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const serviceReference=require('./service-reference');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.11'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.12'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -247,6 +247,13 @@ const G21_SERVICE_ITEMS={
   coolant:['Kühlflüssigkeit',36,0,['KUEHLFLUESSIGKEIT']],
   inspection:['HU/AU',24,0,['HU_HAUPTUNTERSUCHUNG'],36]
 };
+const DRIVETRAIN_ITEMS={
+  automaticOil:['Automatikgetriebeöl',72,80000,'automaticTransmission'],
+  rearDifferentialOil:['Hinterachsgetriebeöl',72,80000,'rearDifferential'],
+};
+const DRIVETRAIN_FIELDS={
+  automaticOil:'automaticTransmission',rearDifferentialOil:'rearDifferential',transferCaseOil:'transferCase',
+};
 const SERVICE_ALIASES={
   oil:['Motoröl','Ölwechsel','Öl und Ölfilter','Ölservice','Engine oil','Oil change'],
   microfilter:['Innenraumfilter','Mikrofilter','Pollenfilter','Kabinenfilter','Cabin filter'],
@@ -255,12 +262,16 @@ const SERVICE_ALIASES={
   fuelFilter:['Kraftstofffilter','Dieselfilter','Diesel-Kraftstofffilter','Fuel filter diesel','Kraftstofffilterwechsel','Dieselfilterwechsel','Fuel filter replacement'],
   brakeFluid:['Bremsflüssigkeitswechsel','Bremsflüssigkeit wechseln','Brake fluid'],
   coolant:['Kühlmittel','Kühlmittelwechsel','Kühlflüssigkeitswechsel','Kühlwasser','Coolant','Kühlwasserwechsel','Frostschutzmittelwechsel','Frostschutzmittel','Coolant replacement','Coolant change'],
+  automaticOil:['Automatikgetriebeöl','Automatikgetriebeölwechsel','Getriebeöl Automatik','Getriebeölwechsel Automatik','ATF-Wechsel','Automatic transmission fluid'],
+  rearDifferentialOil:['Hinterachsgetriebeöl','Hinterachsgetriebeölwechsel','Hinterachsöl','Hinterachsölwechsel','Differentialöl hinten','Ölwechsel Hinterachsgetriebe','Rear differential oil'],
+  transferCaseOil:['Verteilergetriebeöl','Verteilergetriebeölwechsel','VTG-Öl','Transfer case oil'],
+  qmvOil:['QMV-H-Öl','QMV-H-Ölwechsel'],
   inspection:['HU','Hauptuntersuchung','Haupt- und Abgasuntersuchung','TÜV','TÜV HU/AU','HU bestanden','TÜV bestanden']
 };
 const serviceName=value=>String(value||'').toLowerCase().replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue')
   .replace(/ß/g,'ss').replace(/[^a-z0-9]/g,'');
-const SERVICE_KEYS=new Map(Object.entries(G21_SERVICE_ITEMS).flatMap(([key,[name]])=>
-  [name,key,...SERVICE_ALIASES[key]].map(alias=>[serviceName(alias),key])));
+const SERVICE_KEYS=new Map(Object.entries(SERVICE_ALIASES).flatMap(([key,aliases])=>
+  [G21_SERVICE_ITEMS[key]?.[0],key,...aliases].filter(Boolean).map(alias=>[serviceName(alias),key])));
 const serviceKey=item=>item?.planKey||(Object.hasOwn(G21_SERVICE_ITEMS,item?.id)?item.id:SERVICE_KEYS.get(serviceName(item?.name)));
 const majorServiceNames=new Set(['Großer BMW-Service','Großer Service','Große Inspektion','BMW Hauptservice',
   'BMW Major Service'].map(serviceName));
@@ -315,9 +326,41 @@ function regularMajorService(history,date){
   return last;
 }
 const usesG21Plan=profile=>profile==='g21-diesel'||profile==='legacy-plan';
+function maintenanceEquipment(settings={}){
+  const g21=usesG21Plan(settings.profile),equipment=settings.equipment||{};
+  return {automaticTransmission:equipment.automaticTransmission??g21,
+    rearDifferential:equipment.rearDifferential??g21,transferCase:equipment.transferCase===true};
+}
+function itemApplies(item,equipment){
+  const field=DRIVETRAIN_FIELDS[serviceKey(item)];
+  return !field||equipment[field];
+}
+function addDrivetrainItems(vehicle,selection){
+  for(const [id,[name,intervalMonths,intervalKm,field]] of Object.entries(DRIVETRAIN_ITEMS)){
+    if(!selection[field])continue;
+    const existing=Object.values(vehicle.items).find(item=>serviceKey(item)===id);
+    if(existing)existing.planKey=id;
+    else vehicle.items[id]={id,name,intervalMonths,intervalKm,standard:true,planKey:id};
+  }
+}
+function migrateDrivetrain(vehicle){
+  if(vehicle.maintenanceMigration>=2)return false;
+  const settings=vehicle.maintenance||{};
+  if(!usesG21Plan(settings.profile)&&!settings.equipment){
+    const existing=new Set(Object.values(vehicle.items).map(serviceKey));
+    if(existing.has('automaticOil')||existing.has('rearDifferentialOil')){
+      vehicle.maintenance={...settings,equipment:{
+        automaticTransmission:existing.has('automaticOil'),rearDifferential:existing.has('rearDifferentialOil'),transferCase:false,
+      }};
+    }
+  }
+  addDrivetrainItems(vehicle,maintenanceEquipment(vehicle.maintenance));
+  vehicle.maintenanceMigration=2;
+  return true;
+}
 
 function newVehicleBook(){
-  return {maintenanceMigration:1,mileage:[],entries:{},items:{oil:{id:'oil',name:'Motoröl und Ölfilter',intervalMonths:12,intervalKm:8000,initialDefault:true}}};
+  return {maintenanceMigration:2,mileage:[],entries:{},items:{oil:{id:'oil',name:'Motoröl und Ölfilter',intervalMonths:12,intervalKm:8000,initialDefault:true}}};
 }
 function maintenanceVehicleKey(){
   const target=st.mguConnection?.url||MGU;
@@ -331,6 +374,7 @@ function bindVehicleBook(){
     st.maintenanceArchives[st.maintenanceVehicle]=st.vehicle;
     st.vehicle=st.maintenanceArchives[key]||newVehicleBook();
     delete st.maintenanceArchives[key];
+    if(st.vehicle.maintenanceMigration>=1)migrateDrivetrain(st.vehicle);
   }
   st.maintenanceVehicle=key;
   return true;
@@ -366,6 +410,7 @@ function migrateVehicleBook(){
     vehicle.maintenanceMigration=1;
     changed=true;
   }
+  if(migrateDrivetrain(vehicle))changed=true;
   observeServiceHistory(vehicle);
   if(linkLegacyHistoryEntries(vehicle)||changed)save();
 }
@@ -375,9 +420,15 @@ function configureMaintenance(d){
   const registration=d.registration?checkDate(d.registration,'Erstzulassung'):null;
   const warningDays=checkInt(d.warningDays??30,'Warnschwelle Tage',365);
   const warningKm=checkInt(d.warningKm??1000,'Warnschwelle km',300000);
-  const previous=st.vehicle.maintenance?.profile;
-  st.vehicle.maintenance={profile:d.profile,registration,warningDays,warningKm};
-  if(usesG21Plan(d.profile)&&!usesG21Plan(previous)){
+  const previous=st.vehicle.maintenance||{},previousEquipment=maintenanceEquipment(previous);
+  let equipment=previous.equipment;
+  if(d.equipment!==undefined){
+    if(!d.equipment||Object.values(DRIVETRAIN_FIELDS).some(field=>typeof d.equipment[field]!=='boolean'))
+      throw Error('Fahrzeugausstattung ist ungültig');
+    equipment=Object.fromEntries(Object.values(DRIVETRAIN_FIELDS).map(field=>[field,d.equipment[field]]));
+  }
+  st.vehicle.maintenance={profile:d.profile,registration,warningDays,warningKm,equipment};
+  if(usesG21Plan(d.profile)&&!usesG21Plan(previous.profile)){
     const oil=st.vehicle.items.oil;
     if(oil?.initialDefault&&oil.intervalKm===8000&&oil.intervalMonths===12&&
       !Object.values(st.vehicle.entries).some(entry=>entry.items.includes('oil'))){
@@ -385,6 +436,9 @@ function configureMaintenance(d){
     }
     addG21ServiceItems(st.vehicle);
   }
+  const active=maintenanceEquipment(st.vehicle.maintenance);
+  addDrivetrainItems(st.vehicle,Object.fromEntries(Object.keys(active)
+    .map(field=>[field,active[field]&&!previousEquipment[field]])));
   save();
 }
 const DAY=86400000;
@@ -489,7 +543,10 @@ function maintenanceOverview(due,cbs,t,settings){
     const status=(days!==null&&days<=0)||(month&&month<t.slice(0,7))||(distanceKnown&&km<=0)?'overdue':
       (days!==null&&days<=(settings.warningDays??30))||month===t.slice(0,7)||(distanceKnown&&km<=(settings.warningKm??1000))?'soon':'ok';
     cbsStatuses[row.scope]=status;
-    cbsKeys[row.scope]=scopeToServiceKey.get(row.scope)||workKey(row.label);
+    let key=scopeToServiceKey.get(row.scope)||workKey(row.label);
+    if(row.scope==='GETRIEBEOEL_HAUPTGETRIEBE'&&due.some(item=>item.key==='automaticOil'))key='automaticOil';
+    if(DRIVETRAIN_FIELDS[key]&&!due.some(item=>item.key===key))key=null;
+    cbsKeys[row.scope]=key;
     add(cbsKeys[row.scope]||row.scope||row.label,status);
   }
   const statuses=[...groups.values()];
@@ -510,19 +567,20 @@ function vehicleView(){
   const cur=hasVehicle&&!preferManual?{km:live.mileageKm,date:live.mileageAt?.slice(0,10),source:'vehicle'}:manual||currentMileage();
   const mileageConflict=hasVehicle&&manual&&manual.km>live.mileageKm?{manualKm:manual.km,date:manual.date}:null;
   const rate=kmPerDay(),order={overdue:0,soon:1,ok:2,unknown:3};
-  const date=today(),maintenance=st.vehicle.maintenance||{};
+  const date=today(),maintenance=st.vehicle.maintenance||{},equipment=maintenanceEquipment(maintenance);
+  const items=Object.values(st.vehicle.items),activeItems=items.filter(item=>itemApplies(item,equipment));
   const entries=Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0));
   const originals=historyRecords(entries);
   const work=entries.map(e=>({...e,workKeys:localWorkKeys(e,st.vehicle.items)}));
   const major=regularMajorService(originals,date);
-  const due=Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate,work,originals,major)).sort((a,b)=>
+  const due=activeItems.map(i=>serviceDue(i,cur,rate,work,originals,major)).sort((a,b)=>
     order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9')));
   const cbs=live?.cbs||[];
-  return {today:date,maintenance,mileage:cur,mileageConflict,kmPerDay:rate?Math.round(rate*10)/10:null,
+  return {today:date,maintenance,equipment,mileage:cur,mileageConflict,kmPerDay:rate?Math.round(rate*10)/10:null,
     bmwNextService:nextBmwService(cbs),maintenanceOverview:maintenanceOverview(due,cbs,date,maintenance),
     mileageHistory:mileagePoints().slice(-40).reverse(),
     ownMileage:[...st.vehicle.mileage].sort((a,b)=>b.date.localeCompare(a.date)||b.km-a.km).slice(0,40),
-    due,items:Object.values(st.vehicle.items),entries,history:serviceHistoryView(originals,entries),
+    due,items,activeItems,entries,history:serviceHistoryView(originals,entries),
     tyres:tyresView(),dpf:dpfView(),poll:M.poll,
     live:live?Object.assign({},live,{
       stale,
@@ -706,6 +764,9 @@ function saveServiceItem(d){
   const id=d.id&&st.vehicle.items[d.id]?d.id:null;
   if(!id&&Object.keys(st.vehicle.items).length>=30)throw Error('Höchstens 30 Wartungsarten');
   const name=cleanText(d.name,60);if(!name)throw Error('Name fehlt');
+  const field=DRIVETRAIN_FIELDS[SERVICE_KEYS.get(serviceName(name))];
+  if(field==='transferCase'&&!maintenanceEquipment(st.vehicle.maintenance).transferCase&&
+    (!id||serviceKey(st.vehicle.items[id])!=='transferCaseOil'))throw Error('Bitte zuerst Verteilergetriebe in der Fahrzeugausstattung bestätigen.');
   const intervalMonths=checkInt(d.intervalMonths??0,'Intervall Monate',240),intervalKm=checkInt(d.intervalKm??0,'Intervall km',300000);
   let override=null;
   const oDate=d.dueDate?checkDate(d.dueDate,'Fällig am',true):null,oKm=checkInt(d.dueKm,'Fällig bei km',2000000,true);

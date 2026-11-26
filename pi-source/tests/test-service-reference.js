@@ -9,7 +9,7 @@ const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'bmw-service-reference-'));
 try{
  const file=path.join(tmp,'refs.sqlite'),db=catalog(file);
  db.start();
- assert.equal(db.view().version,'1.0.0');
+ assert.equal(db.view().version,'1.1.0');
  assert.equal(seed.rows.filter(r=>r.namespace.endsWith('.IDScopeCBS')).length,24);
  assert.equal(seed.rows.filter(r=>r.namespace.endsWith('.ServiceStatusEnum')).length,3);
  assert.equal(seed.rows.filter(r=>r.namespace==='uds.kombi.cbs').length,85);
@@ -18,6 +18,12 @@ try{
  assert.equal(db.resolve(cbs,17).row.de,'Fahrzeug-Check');
  assert.equal(db.resolve(cbs,65535).status,'reserved');
  assert.equal(db.resolve(HISTORY,17).status,'unknown');
+ assert.equal(db.resolve(cbs,18).row.original,'KUEHLFLUESSIGKEIT');
+ assert.equal(db.resolve(cbs,35).row.original,'GETRIEBEOEL_HAUPTGETRIEBE');
+ assert.equal(db.resolve(cbs,9).row.original,'GETRIEBEOEL');
+ for(const id of [9,18,35])assert.equal(db.resolve(HISTORY,id).status,'unknown');
+ assert.equal(db.resolve('uds.kombi.cbs',35,'','KOMB_G11').status,'ambiguous');
+ assert.equal(seed.rows.find(r=>r.variant==='KOMB_G11'&&r.original==='Oel_a').work,'automaticOil');
  assert.equal(db.resolve('uds.kombi.cbs',17,'','KOMBSP21').status,'verified');
  assert.equal(db.resolve('uds.kombi.cbs',17).status,'unknown');
  const vehicle='1'.repeat(64);

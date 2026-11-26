@@ -26,7 +26,7 @@ INFO = {
     'HU_HAUPTUNTERSUCHUNG': ('Hauptuntersuchung', 'inspection'),
     'AU_ABGASUNTERSUCHUNG': ('Abgasuntersuchung', ''),
     'DIESELPARTIKELFILTER': ('Dieselpartikelfilter', ''),
-    'GETRIEBEOEL': ('Getriebeöl', ''),
+    'GETRIEBEOEL': ('Getriebeöl (Getriebeart offen)', ''),
     'GETRIEBEOEL_HAUPTGETRIEBE': ('Hauptgetriebeöl', ''),
     'H2_CHECK': ('Wasserstoffsystemprüfung', ''),
     'NOX_ADDITIV': ('AdBlue/NOx-Additiv', ''),
@@ -83,7 +83,7 @@ def project(catalog):
                                        'ResetCBS': 'steuerwert'}.get(name, 'status'),
                              work=work, interface=interface, source='someip-interfaces.json',
                              version=catalog['version'], verification='reserved' if reserved else 'verified'))
-    return {'schema': 1, 'version': '1.0.0', 'rows': rows}
+    return {'schema': 1, 'version': '1.1.0', 'rows': rows}
 
 if __name__ == '__main__':
     print(json.dumps(project(json.loads(Path(sys.argv[1]).read_text())), ensure_ascii=False, indent=2))

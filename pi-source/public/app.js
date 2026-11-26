@@ -724,22 +724,36 @@ function renderVehicle(v){
  }
 
  renderMaintenance(v);
- const items=$('entryItems'),checked=new Set([...items.querySelectorAll('input:checked')].map(i=>i.value));items.replaceChildren();
- for(const it of v.items){const l=document.createElement('label');l.className='check';const c=document.createElement('input');c.type='checkbox';c.value=it.id;c.checked=checked.has(it.id);l.append(c,document.createTextNode(' '+it.name));items.appendChild(l);}
-
+ renderEntryItems(v);
  renderServiceHistory(v);
+}
+function renderEntryItems(v){
+ const items=$('entryItems'),checked=new Set([...items.querySelectorAll('input:checked')].map(i=>i.value));
+ items.replaceChildren();
+ const editedEntry=v.entries.find(e=>e.id===$('entryId').value);
+ const availableItems=new Set((v.activeItems||v.items).map(item=>item.id));
+ for(const id of editedEntry?.items||[])availableItems.add(id);
+ for(const it of v.items.filter(item=>availableItems.has(item.id))){
+  const label=document.createElement('label'),checkbox=document.createElement('input');
+  label.className='check';checkbox.type='checkbox';checkbox.value=it.id;checkbox.checked=checked.has(it.id);
+  label.append(checkbox,document.createTextNode(' '+it.name));items.appendChild(label);
+ }
 }
 function renderMaintenance(v){
  const box=$('dueList'),next=$('bmwNextService'),settings=v.maintenance||{};
  const select=$('maintenanceItem'),selected=select.value;
  select.replaceChildren(new Option('Neue Wartungsart',''),...v.items.map(item=>new Option(item.name,item.id)));
  select.value=selected;
+ const equipment=v.equipment||{};
+ $('newTransferCaseOil').hidden=!equipment.transferCase||v.items.some(item=>
+  item.planKey==='transferCaseOil'||v.due.some(row=>row.id===item.id&&row.key==='transferCaseOil'));
  if(!$('itemBox').open){
   $('maintenanceProfile').querySelector('[value=legacy-plan]').hidden=settings.profile!=='legacy-plan';
   $('maintenanceProfile').value=settings.profile||'custom';
   $('maintenanceRegistration').value=settings.registration||'';
   $('maintenanceDays').value=settings.warningDays??30;
   $('maintenanceKm').value=settings.warningKm??1000;
+  showMaintenanceEquipment(equipment);
  }
  const open=new Set([...box.querySelectorAll('details[open]')].map(el=>el.dataset.key));
  box.replaceChildren();next.replaceChildren();
@@ -776,7 +790,7 @@ function renderMaintenance(v){
   const head=txt('summary','','maintenance-row');
   const interval=d?[d.intervalKm?kmText(d.intervalKm):'',d.intervalMonths?d.intervalMonths+' Monate':''].filter(Boolean).join(' oder '):'';
   const schedule=c?cbsLine(c):planLine(d)||[interval?'Alle '+interval:null,
-   d.key==='coolant'&&!d.lastDone?'Letzter Wechsel unbekannt':'Fälligkeit unbekannt'].filter(Boolean).join(' · ');
+   ['coolant','automaticOil','rearDifferentialOil','transferCaseOil'].includes(d.key)&&!d.lastDone?'Letzter Wechsel unbekannt':'Fälligkeit unbekannt'].filter(Boolean).join(' · ');
   head.append(txt('strong',d?.name||c.label),txt('span',schedule,'hint'),
    txt('span',status==='overdue'?'Fällig':DUE_STATES[status],'pill due-pill-'+status));
   card.append(head);
@@ -788,7 +802,7 @@ function renderMaintenance(v){
    if(source||d.dueDate||d.dueKm!=null)card.append(txt('p',[source,dueLine(d)].filter(Boolean).join(' · '),'hint'));
    if(d.cycle)card.append(txt('p','Regulärer BMW-Service am '+dateText(d.cycle.date),'hint'));
    if(d.lastDone)card.append(txt('p','Zuletzt '+dateText(d.lastDone.date)+(d.lastDone.km!==null?' · '+kmText(d.lastDone.km):'')+' · '+(d.lastDone.source==='BMW'?'BMW':'Eigene Wartung'),'hint'));
-   if(interval)card.append(txt('p','Intervall '+interval,'hint'));
+   if(interval)card.append(txt('p',(['automaticOil','rearDifferentialOil','coolant','transferCaseOil'].includes(d.key)?'Vorsorgeintervall ':'Intervall ')+interval,'hint'));
    if(d.estimatedKmDate&&d.kmLeft>0)card.append(txt('p','Geschätzte km-Grenze '+dateText(d.estimatedKmDate),'hint'));
   }
   box.append(card);
@@ -833,11 +847,23 @@ $('openVehicleDiagnostics').onclick=()=>{
  openTab('diag');$('vehicleTelemetry').open=true;
  $('vehicleTelemetry').scrollIntoView({block:'start'});
 };
+const maintenanceEquipmentFields={automaticTransmission:'maintenanceAutoGearbox',
+ rearDifferential:'maintenanceRearDifferential',transferCase:'maintenanceTransferCase'};
+function showMaintenanceEquipment(equipment){
+ for(const [field,id] of Object.entries(maintenanceEquipmentFields))$(id).checked=equipment[field]===true;
+}
+$('maintenanceProfile').onchange=()=>{
+ if(vehicleData?.maintenance?.equipment)return;
+ const g21=['legacy-plan','g21-diesel'].includes($('maintenanceProfile').value);
+ showMaintenanceEquipment({automaticTransmission:g21,rearDifferential:g21,transferCase:$('maintenanceTransferCase').checked});
+};
+$('newTransferCaseOil').onclick=()=>{editItem(null);$('itemName').value='Verteilergetriebeöl';};
 $('maintenanceItem').onchange=()=>editItem($('maintenanceItem').value);
 $('maintenanceSettings').onsubmit=async e=>{
  e.preventDefault();
  try{renderVehicle(await api('/vehicle/maintenance','POST',{profile:$('maintenanceProfile').value,
-  registration:$('maintenanceRegistration').value,warningDays:Number($('maintenanceDays').value),warningKm:Number($('maintenanceKm').value)}));
+  registration:$('maintenanceRegistration').value,warningDays:Number($('maintenanceDays').value),warningKm:Number($('maintenanceKm').value),
+  equipment:Object.fromEntries(Object.entries(maintenanceEquipmentFields).map(([field,id])=>[field,$(id).checked]))}));
   notice('Wartungsprofil gespeichert.');
  }catch(err){notice(err.message);}
 };
@@ -979,7 +1005,7 @@ function editItem(id){
  $('maintenanceItem').value=it?it.id:'';
  $('itemId').value=it?it.id:'';$('itemName').value=it?it.name:'';
  $('itemMonths').value=it?it.intervalMonths||0:'';$('itemKm').value=it?it.intervalKm||0:'';
- const d=it&&vehicleData.due.find(x=>x.id===id),o=d&&d.override;
+ const d=it&&vehicleData.due.find(x=>x.id===id),o=d?d.override:it?.override;
  $('itemDueDate').value=o&&o.date||'';$('itemDueKm').value=o&&o.km!==null&&o.km!==undefined?o.km:'';
  $('itemDelete').hidden=!it;$('itemBox').open=true;$('itemName').focus();
 }
@@ -996,6 +1022,7 @@ $('itemDelete').onclick=async()=>{const id=$('itemId').value;if(!id)return;try{r
 function editEntry(id){
  const e=id&&vehicleData?vehicleData.entries.find(x=>x.id===id):null;
  $('serviceForm').hidden=false;$('entryId').value=e?e.id:'';
+ if(vehicleData)renderEntryItems(vehicleData);
  $('entryDate').value=e?e.date:vehicleData?vehicleData.today:'';
  $('entryKm').value=e&&e.km!==null?e.km:vehicleData&&vehicleData.mileage?vehicleData.mileage.km:'';
  $('entryTitle').value=e?e.title:'';$('entryWorkshop').value=e?e.workshop:'';$('entryNotes').value=e?e.notes:'';

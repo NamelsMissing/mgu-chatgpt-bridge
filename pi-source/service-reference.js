@@ -3,7 +3,7 @@
 const {execFileSync}=require('node:child_process');
 const seed=require('./service-reference-seed.json');
 const HISTORY='servicehistory.serviceText';
-const WORK=new Set(['oil','microfilter','check','airFilter','fuelFilter','brakeFluid','coolant','inspection']);
+const WORK=new Set(['oil','microfilter','check','airFilter','fuelFilter','brakeFluid','coolant','inspection','automaticOil','rearDifferentialOil','transferCaseOil','qmvOil']);
 const python=String.raw`
 import json, sqlite3, sys, os
 from datetime import datetime, timezone
