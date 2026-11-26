@@ -90,7 +90,7 @@ const barText=v=>v===null||v===undefined?'–':v.toFixed(2).replace('.',',')+' b
 const num1=v=>v===null||v===undefined?'–':(Math.round(v*10)/10).toLocaleString('de-DE');
 function renderTyres(t){
  const box=$('tyreList');box.replaceChildren();
- $('tyreAge').textContent=t?(t.stale?'Veraltet · ':'TPMSInternalData · ')+stamp(t.at):'keine Daten';
+ $('tyreAge').textContent=t?[t.stale?'Veraltet':null,t.source||'TPMSInternalData',stamp(t.at)].filter(Boolean).join(' · '):'keine Daten';
  $('tyreAge').className='pill '+(t&&!t.stale?'pill-live':'pill-off');
  if(!t){box.appendChild(txt('p','Keine Reifendaten empfangen.','hint'));return;}
  const entries=new Map(t.wheels.map(w=>[w.position,w]));
@@ -839,11 +839,11 @@ $('maintenanceSettings').onsubmit=async e=>{
  }catch(err){notice(err.message);}
 };
 const telemetryGroups={
- 'Kilometerstand':['VehicleInformation','SecureMileage','MileageSupreme'],
+ 'Kilometerstand':['VehicleInformation','SecureMileage','MileageSupreme','UDS.558E'],
  'Check-Control':['CheckControlMaster','KombiInterface_2.ccList','KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage','CheckControlText'],
  'BMW-Servicebedarf':['KombiInterface_2.cbsDataServiceList','ConditionBasedServicesLegacy'],
  'Servicehistorie':['ServiceHistory'],
- 'Reifen':['TPMSInternalData','TPMS'],
+ 'Reifen':['TPMSInternalData','TPMS','UDS.DC98','UDS.DC99','UDS.DC9A','UDS.DC9B'],
  'DPF':['UDS.DPF','Diagnostics'],
  'Fehlerspeicher':['UDS.1902','Diagnostics']
 };
@@ -902,7 +902,7 @@ async function renderTelemetry(){
     const states={config_missing_or_invalid:'Konfiguration fehlt oder ist ungültig',config_loaded:'Konfiguration geladen',
      native_unavailable:'SOME/IP-Bibliothek fehlt',not_configured:'Getter fehlt',not_requested:'entfällt',
      pending:'läuft',ok:'erfolgreich',failed:'fehlgeschlagen',paused:'nach 3 Fehlern pausiert'};
-    if(typeof stage.manifestRead==='boolean'||stage.manifestMethod||stage.interface){
+    if(typeof stage.manifestRead==='boolean'||stage.manifestMethod||stage.interface||stage.getter){
      const stages=[
       typeof stage.manifestRead==='boolean'?'Manifest Lesen '+yesNo(stage.manifestRead)+' / Abo '+yesNo(stage.manifestSubscribe):null,
       stage.manifestMethod?'Methode im Manifest':null,

@@ -65,11 +65,11 @@ function decodeTyres(v) {
     for (let i = 1; i <= 4; i++) {
         const pos = enumName(v['tpmsInternalLastPositionId' + i], POSITIONS);
         if (!pos || !/^(FRONT|REAR)_(LEFT|RIGHT)$|^SPARE_TYRE$/.test(pos)) continue;
-        const p = uint(v['tpmsInternalLastPressureMbarId' + i], 0xFFFD), target = uint(v['tpmsInternalLastTargetPressureMbarId' + i], 0xFFFD);
+        const p = uint(v['tpmsInternalLastPressureMbarId' + i], 10000), target = uint(v['tpmsInternalLastTargetPressureMbarId' + i], 10000);
         const temp = v['tpmsInternalLastTemperatureDegCId' + i];
         const t = Number.isInteger(temp) && temp >= -48 && temp <= 0xFD ? temp : null;
-        out.push({ position: pos, pressureBar: p === null || p > 10000 ? null : Math.round(p) / 1000,
-            targetBar: target === null || target > 10000 ? null : Math.round(target) / 1000, temperatureC: t,
+        out.push({ position: pos, pressureBar: p ? p / 1000 : null,
+            targetBar: target ? target / 1000 : null, temperatureC: t,
             battery: enumName(v['tpmsInternalLastBatteryStatusId' + i], BATTERY), rawPressure: v['tpmsInternalLastPressureMbarId' + i],
             rawTemperature: v['tpmsInternalLastTemperatureDegCId' + i] });
     }
@@ -100,7 +100,7 @@ class FaultState {
         this.cc = new Map();      // id -> {id, active, ecu, reason, since, lastSeen}
         this.ccTexts = new Map(); // id -> {text, description}
         this.ccEvents = [];       // newest last, max 100
-        this.tyres = null; this.tyresAt = null;
+        this.tyres = null; this.rdcTyres = null;
         this.dtc = null;
         this.dpf = {}; this.dpfAt = null;
     }
@@ -134,12 +134,21 @@ class FaultState {
     ccText(u) { const m = decodeCcText(u); if (m) this.ccTexts.set(m.id, { text: m.text, description: m.description }); return m; }
     needsText(id) { return !this.ccTexts.has(id); }
     setTyres(v) {
-        const w = decodeTyres(v);
-        if (w.some(row=>row.pressureBar!==null||row.targetBar!==null||row.temperatureC!==null)) {
-            this.tyres = w;
-            this.tyresAt = this.now();
-        }
-        return w;
+        const wheels = decodeTyres(v);
+        if (wheels.some(row=>row.pressureBar!==null||row.targetBar!==null||row.temperatureC!==null)) this.tyres = {wheels, at:this.now(), source:'TPMSInternalData'};
+        return wheels;
+    }
+    setRdcTyres(wheels) {
+        if (wheels.length) this.rdcTyres = {wheels, at:this.now(), source:'RDC 0x29'};
+    }
+    tyreReading() {
+        const [primary, fallback] = [this.tyres,this.rdcTyres];
+        const quality = sample => sample ? sample.wheels.reduce((score, wheel) =>
+            score + Number(wheel.pressureBar!==null)*2 + Number(wheel.temperatureC!==null), 0) : 0;
+        const fresh = sample => sample && this.now()-sample.at <= 150000;
+        if (fresh(primary) && (!fresh(fallback) || quality(primary) >= quality(fallback))) return primary;
+        if (fresh(fallback)) return fallback;
+        return [primary,fallback].filter(Boolean).sort((a,b)=>b.at-a.at)[0] || null;
     }
     setDtc(requestId, replies, params, error) {
         const r = replies ? decodeDtcScan(replies, params) : { ecus: [], dtcs: [] };
@@ -149,6 +158,7 @@ class FaultState {
     setDpf(name, value) { if (Number.isFinite(value)) { this.dpf[name] = Math.round(value * 1000) / 1000; this.dpfAt = this.now(); this.dpfTimes = this.dpfTimes || {}; this.dpfTimes[name] = new Date(this.dpfAt).toISOString(); } }
     document() {
         const iso = (t) => (t ? new Date(t).toISOString() : null);
+        const tyreReading = this.tyreReading();
         const withText = (c) => Object.assign({}, c, this.ccTexts.get(c.id) || { text: null, description: '' });
         return {
             checkControl: {
@@ -156,7 +166,7 @@ class FaultState {
                 active: Array.from(this.cc.values()).filter((c) => c.active).map((c) => Object.assign(withText(c), { since: iso(c.since), lastSeen: iso(c.lastSeen) })),
                 events: this.ccEvents.slice(-50).map((e) => Object.assign(withText(e), { at: iso(e.at) })),
             },
-            tyres: this.tyres ? { at: iso(this.tyresAt), wheels: this.tyres, unverified: true } : null,
+            tyres: tyreReading ? Object.assign({},tyreReading,{at:iso(tyreReading.at),unverified:true}) : null,
             faultMemory: this.dtc ? Object.assign({}, this.dtc, { readAt: iso(this.dtc.readAt) }) : null,
             dpf: this.dpfAt ? Object.assign({ at: iso(this.dpfAt), fieldTimes: this.dpfTimes }, this.dpf) : null,
         };

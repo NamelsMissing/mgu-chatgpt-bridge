@@ -84,7 +84,7 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
-  assert.equal(diag.poll.versions.agent,'0.2.10');
+  assert.equal(diag.poll.versions.agent,'0.2.11');
   assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');
   const checks=(await api('/vehicle/diagnostics?capabilities=1')).body.capabilities;
   assert.equal(checks.schema,1);
@@ -133,6 +133,19 @@ async function stop(child){
   await api('/monitor/poll','POST');
   v=(await api('/vehicle')).body.live;
   assert.equal(v.mileageKm,123456);assert.equal(v.mileageAt,measuredAt);assert.equal(v.stale,true);
+  snapshot.diagnosticMileage(123457);
+  const previousExtra=snapshot.extra;
+  snapshot.extra=()=>({...previousExtra(),tyres:{at:new Date().toISOString(),source:'RDC 0x29',
+   wheels:[{position:'FRONT_LEFT',pressureBar:2.425,targetBar:2.275,temperatureC:15}]}});
+  assert.ok(snapshot.flush(true));
+  await api('/monitor/poll','POST');
+  const latest=(await api('/vehicle')).body;
+  assert.equal(latest.live.mileageKm,123457);
+  assert.equal(latest.live.mileageSource,'DDE 0x558E');
+  assert.equal(latest.live.stale,false);
+  assert.equal(latest.tyres.source,'RDC 0x29');
+  assert.equal(latest.tyres.wheels[0].temp,15);
+  assert.equal(latest.tyres.stale,false);
   console.log('Vehicle pipeline: actual Agent and Pi HTTP, 503, timestamps, process restarts, reconnect and persistence passed.');
  }finally{
   await Promise.all([stop(agent),stop(pi)]);

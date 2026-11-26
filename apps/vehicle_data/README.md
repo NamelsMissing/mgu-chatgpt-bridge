@@ -43,3 +43,7 @@ Version 0.2.3 verwendet im Standardpaket die SOME/IP-Anforderungen von 0.2.1.
 Die fünf zusätzlichen Getter aus 0.2.2 können lokal nach Prüfung gegen den
 Zielkatalog freigegeben werden. Der [Installationsprüfbericht](../../docs/PRUEFBERICHT-VEHICLE-DATA-0.2.3.md)
 beschreibt die Paketprüfung und den kataloggebundenen Build.
+
+### Kilometerstand und Reifen ab 0.2.7
+
+Bleiben gültige SOME/IP-Daten aus, liest Vehicle Data den Motorsteuergerät-Kilometerstand (0x12, DID 0x558E) und die RDC-Radwerte (0x29, DIDs 0xDC98–0xDC9B) über die vorhandene TASU-Berechtigung. Die App nutzt ausschließlich UDS 0x22 und teilt den Transport mit der bisherigen Diagnose. Die ECU- und DID-Definitionen sind anhand veröffentlichter Antworten aus dem BMW-3er-Modelljahr 2021 geprüft. Details zu Quellen, Einheiten und den noch ausstehenden Tests am Ziel-G21 stehen im [Prüfbericht](../../docs/PRUEFBERICHT-KILOMETERSTAND-REIFEN-0.10.6.md).

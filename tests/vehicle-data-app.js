@@ -15,6 +15,7 @@ Module._resolveFilename = function (request, parent, ...rest) {
     return resolve0.call(this, request, parent, ...rest);
 };
 const F = require('../apps/vehicle_data/vehicle_faults.js');
+const U = require('../apps/vehicle_data/vehicle_uds.js');
 const { Diag } = require('../kit/runtime/diag');
 
 // Read-only: no setter flags, no CBS reset, no UDS transport.
@@ -119,6 +120,48 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     cache.secureMileage({currentMileage:0});
     assert.deepStrictEqual(cache.document().mileage,
       {km:123456,source:'SecureMileage',at:new Date(1234).toISOString(),valid:false,unverified:true});
+
+    const odometerClock={t:1000};
+    const odometer=new V.VehicleSnapshot({dir:os.tmpdir(),now:()=>odometerClock.t});
+    odometer.secureMileage({currentMileage:123456});
+    odometerClock.t+=7*60000;
+    assert.strictEqual(odometer.mileage(false),null,'an expired SOME/IP reading must allow the UDS fallback');
+    assert.strictEqual(odometer.document().mileage.valid,false);
+    odometer.diagnosticMileage(123457);
+    assert.strictEqual(odometer.document().mileage.source,'DDE 0x558E');
+    odometerClock.t+=1000;
+    odometer.secureMileage({currentMileage:123458});
+    assert.strictEqual(odometer.document().mileage.source,'SecureMileage','live SOME/IP retakes priority');
+
+    const mockDiag={physical:async(ecu,sid,data,timeout,accept)=>{
+        assert.strictEqual(sid,0x22);
+        assert.strictEqual(accept([0x62,data[0],data[1]^1]),false);
+        if (ecu===0x12) {
+            assert.deepStrictEqual(data,[0x55,0x8E]);
+            return [0x62,...data,0,1,0x98,0xD4];
+        }
+        assert.strictEqual(ecu,0x29);
+        assert.strictEqual(data[0],0xDC);
+        const payload=Buffer.alloc(24);
+        payload[4]=0xD0; // the packed position octet is not the selected corner
+        payload.writeUInt16BE(2425+data[1]-0x98,5);
+        payload[7]=59;
+        payload.writeUInt16BE(2275,8);
+        return [0x62,...data,...payload];
+    }};
+    assert.deepStrictEqual(await U.readMileage(mockDiag),{value:104660});
+    const wheels=await Promise.all(U.RDC.map(wheel=>U.readWheel(mockDiag,wheel)));
+    assert.deepStrictEqual(wheels.map(({value:w})=>[w.position,w.pressureBar,w.targetBar,w.temperatureC]),[
+        ['FRONT_LEFT',2.425,2.275,15],['FRONT_RIGHT',2.426,2.275,15],
+        ['REAR_LEFT',2.427,2.275,15],['REAR_RIGHT',2.428,2.275,15],
+    ]);
+    const rdc=new F.FaultState(()=>odometerClock.t);
+    rdc.setRdcTyres(wheels.map(w=>w.value));
+    assert.strictEqual(rdc.document().tyres.source,'RDC 0x29');
+    assert.deepStrictEqual(await U.readMileage({physical:async()=>[0x62,0x55,0x8E,0xFF,0xFF,0xFF,0xFF]}),{reason:'invalid_value'});
+    assert.deepStrictEqual(await U.readMileage({physical:async()=>[0x7F,0x22,0x31]}),{reason:'nrc_31'});
+    assert.deepStrictEqual(await U.readWheel({physical:async()=>[0x62,0xDC,0x98,0,0]},U.RDC[0]),{reason:'unexpected_reply_length'});
+    assert.deepStrictEqual(await U.readWheel({physical:async()=>null},U.RDC[0]),{reason:'no_reply'});
 
     // Inject only the native binding and interface configuration; run the real
     // watch lifecycle. This source exposes a getter without an event notifier.

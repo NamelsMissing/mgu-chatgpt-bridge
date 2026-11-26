@@ -10,7 +10,7 @@ var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.10';
+var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.11';
 function installedVehicleApps(){
  var result=[];
  try{fs.readdirSync(OAP_APPS).forEach(function(dir){
@@ -72,7 +72,7 @@ function vehicleData(best){
   serviceHistory:doc.serviceHistory?{status:doc.serviceHistory.status,readAt:doc.serviceHistory.readAt,sets:array(doc.serviceHistory.sets).slice(0,60)}:null,
   signals:doc.signals||{},telemetry:doc.telemetry?Object.assign({},doc.telemetry,{forwardedAt:new Date().toISOString(),snapshotAt:doc.writtenAt||null}):null,
   checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{listAt:doc.checkControl.listAt||null,source:doc.checkControl.source||null,active:array(doc.checkControl.active).slice(0,120),events:array(doc.checkControl.events).slice(-50)}:null,
-  tyres:doc.tyres&&Array.isArray(doc.tyres.wheels)?{at:doc.tyres.at,wheels:doc.tyres.wheels.slice(0,5).map(function(w){return {position:w.position,pressureBar:w.pressureBar,targetBar:w.targetBar,temperatureC:w.temperatureC,battery:w.battery};}),unverified:true}:null,
+  tyres:doc.tyres&&Array.isArray(doc.tyres.wheels)?{at:doc.tyres.at,source:doc.tyres.source,wheels:doc.tyres.wheels.slice(0,5).map(function(w){return {position:w.position,pressureBar:w.pressureBar,targetBar:w.targetBar,temperatureC:w.temperatureC,battery:w.battery};}),unverified:true}:null,
   faultMemory:doc.faultMemory&&typeof doc.faultMemory==='object'?{requestId:doc.faultMemory.requestId,readAt:doc.faultMemory.readAt,error:doc.faultMemory.error,ecus:array(doc.faultMemory.ecus).slice(0,120),dtcs:array(doc.faultMemory.dtcs).slice(0,600)}:null,
   dpf:doc.dpf&&typeof doc.dpf==='object'?doc.dpf:null};
 }

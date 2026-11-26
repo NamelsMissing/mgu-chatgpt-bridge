@@ -1,12 +1,12 @@
 'use strict';
 /**
- * Vehicle Data 0.2.0 - mileage, service due (CBS), the car's service history, check-control
+ * Vehicle Data - mileage, service due (CBS), the car's service history, check-control
  * messages, tyre pressures, fault memory and DPF values. Read-only. Starts with the car and
  * keeps a JSON snapshot in its data directory, which the BMW AI companion agent passes on
  * to the private Pi.
  *
  * Nothing is written to any control unit: no CBS reset, no fault clearing. Diagnostic
- * requests are limited to the two read services 0x19 (fault memory) and 0x22 (DPF values)
+ * requests are limited to the two read services 0x19 (fault memory) and 0x22 (vehicle measurements)
  * by ReadOnlyDiag below.
  */
 const fs = require('fs');
@@ -18,6 +18,7 @@ const { DidReader } = require('./kit/dids');
 const { VehicleSnapshot, CBS_FIELDS } = require('./vehicle_snapshot.js');
 const { FaultState } = require('./vehicle_faults.js');
 const DPF = require('./dpf_dids.js');
+const VUDS = require('./vehicle_uds.js');
 
 const SECURE = 'de.bmw.infrastructure.SecureMileage';
 const SUPREME = 'de.bmw.infrastructure.MileageSupreme';
@@ -122,10 +123,10 @@ mgu.run({
         };
         watch(SECURE, { mileage: (v) => {
             snap.secureMileage(v); snap.stage('SecureMileage.mileage','decodeReason',snap.state.secure.reason); sample('SecureMileage.mileage',v,snap.state.secure.km === null ? null : 1);
-        } }, { readFields:['mileage'],pollMs:5*60000 });
+        } }, { readFields:['mileage'],pollMs:5*60000, retryAfterMs:10*60000 });
         watch(SUPREME, { mileageSupreme: (v) => {
             snap.mileageSupreme(v); snap.stage('MileageSupreme.mileageSupreme','decodeReason',snap.state.supreme.reason); sample('MileageSupreme.mileageSupreme',v,snap.state.supreme.km === null ? null : 1);
-        } }, { readFields:['mileageSupreme'],pollMs:5*60000 });
+        } }, { readFields:['mileageSupreme'],pollMs:5*60000, retryAfterMs:10*60000 });
         watch('de.bmw.infrastructure.VehicleInformation', { Range: (v) =>
             sample('VehicleInformation.Range',v,snap.range(v) === null ? null : 1),
         }, {readFields:['Range'],readOnlyFields:['Range'],pollMs:5*60000});
@@ -135,9 +136,10 @@ mgu.run({
         };
         watch(CBS, cbsHandlers);
         watch(TPMS, { tpmsInternalLastValues: (v) => {
-            const wheels=faults.setTyres(v), valid=wheels.filter(w=>w.pressureBar!==null || w.temperatureC!==null).length;
-            sample('TPMSInternalData.tpmsInternalLastValues',v,valid || null);
-        } }, { readFields:['tpmsInternalLastValues'],pollMs:60000 });
+            const wheels=faults.setTyres(v);
+            const count=wheels.filter(w=>w.pressureBar!==null||w.targetBar!==null||w.temperatureC!==null).length;
+            sample('TPMSInternalData.tpmsInternalLastValues',v,count || null);
+        } }, { readFields:['tpmsInternalLastValues'],pollMs:60000,retryAfterMs:10*60000 });
         watch('de.bmw.infotainment.vehicle.TPMS', {
             statusTyrePressure:(v)=>sample('TPMS.statusTyrePressure',v,null),
             statusTargetTyrePressure:(v)=>sample('TPMS.statusTargetTyrePressure',v,null),
@@ -286,6 +288,58 @@ mgu.run({
             } catch(e) { log.warn('DPF transport unavailable: '+e); }
             finally { sample('UDS.DPF',null,count||null);dpfRunning=false;flush(); }
         }
+        // The existing TASU proxy also carries the two read-only fallbacks.
+        // Each wheel yields the queue so a manual scan can take priority.
+        const lastVehicleRead = {mileage:0, tyres:0};
+        async function readVehicleMeasure(key, operation) {
+            snap.stage(key,'getter','pending');
+            let result;
+            try {
+                await withDiag('vehicle',key,async ()=>{ result = await operation(diag); });
+            } catch (e) {
+                result = {reason:'transport_or_queue'};
+            }
+            snap.stage(key,'getter',result.value === undefined ? 'failed' : 'ok');
+            snap.stage(key,'decodeReason',result.reason || null);
+            snap.available(key,result.value !== undefined,result.reason);
+            // Raw RDC replies contain sensor identifiers. Only status and decoded
+            // output leave this code, never those raw bytes.
+            if (result.value !== undefined || /^(nrc_|unexpected_|invalid_value)/.test(result.reason)) {
+                sample(key,null,result.value === undefined ? null : 1);
+            } else flush();
+            return result.value;
+        }
+        async function readVehicleFallback() {
+            if (!snap.mileage(false) && Date.now()-lastVehicleRead.mileage >= 5*60000) {
+                lastVehicleRead.mileage=Date.now();
+                const km=await readVehicleMeasure('UDS.558E',VUDS.readMileage);
+                if (km !== undefined) { snap.diagnosticMileage(km); flush(true); }
+            }
+            const primary=faults.tyres;
+            const complete=primary && Date.now()-primary.at < 150000 &&
+                primary.wheels.filter(w=>w.position!=='SPARE_TYRE'&&w.pressureBar!==null&&w.temperatureC!==null).length===4;
+            if (complete || Date.now()-lastVehicleRead.tyres < 120000) return;
+            lastVehicleRead.tyres=Date.now();
+            const wheels=[];
+            for (const wheel of VUDS.RDC) {
+                const key='UDS.'+wheel.did.toString(16).toUpperCase();
+                const value=await readVehicleMeasure(key,transport=>VUDS.readWheel(transport,wheel));
+                if (value !== undefined) wheels.push(value);
+                // Absence of one wheel is not proof that the other wheels are unavailable.
+                // Let the native transport finish before the next request.
+                await pause(180);
+            }
+            if (wheels.length) { faults.setRdcTyres(wheels); flush(true); }
+        }
+        let fallbackRunning=false;
+        const pollVehicleFallback=async ()=>{
+            if (fallbackRunning) return;
+            fallbackRunning=true;
+            try { await readVehicleFallback(); }
+            catch (e) { log.warn('Vehicle measurements: '+e); }
+            finally { fallbackRunning=false; }
+        };
+        setTimeout(() => { pollVehicleFallback(); setInterval(pollVehicleFallback,60000); }, 65000);
         setTimeout(() => readFaultMemory('start'), DTC_AUTO_AFTER_MS);
         setTimeout(() => { readDpf(); setInterval(readDpf, DPF_PRIMARY_MS); }, 45 * 1000);
 
@@ -309,7 +363,7 @@ mgu.run({
             const doc = snap.document(), m = doc.mileage;
             card(cv, 43, 520, 'MILEAGE');
             label(cv, m ? km(m.km) : '--', 73, 240, 52, C.text, { font: 'bold' });
-            label(cv, m ? 'from ' + m.source : 'no value from the car yet', 73, 290, 20, C.dim);
+            label(cv, m ? (m.valid ? 'from ' : 'last known: ') + m.source : 'no value from the car yet', 73, 290, 20, C.dim);
             label(cv, 'Compare once with the instrument cluster.', 73, 430, 18, C.dim);
             card(cv, 593, 964, 'SERVICE DUE (CBS)');
             if (!doc.cbs.length) label(cv, 'No service messages received yet.', 623, 220, 24, C.dim);
@@ -360,6 +414,10 @@ mgu.run({
                 label(cv, (w.pressureBar === null ? '--' : w.pressureBar.toFixed(2) + ' bar') + (w.targetBar ? '  (target ' + w.targetBar.toFixed(2) + ')' : ''), 220, y, 24, low ? C.over : C.text);
                 label(cv, w.temperatureC === null ? '' : w.temperatureC + ' C', 900, y, 22, C.dim, { align: 'right' });
             });
+            if (f.tyres) {
+                const stale=Date.now()-Date.parse(f.tyres.at)>180000;
+                label(cv, f.tyres.source+(stale?' (last known)':''), 73, 438, 18, C.dim);
+            }
             card(cv, 973, 584, 'PARTICULATE FILTER');
             const p = f.dpf;
             if (!p) label(cv, 'No values yet.', 1003, 220, 24, C.dim);

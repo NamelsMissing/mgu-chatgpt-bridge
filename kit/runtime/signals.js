@@ -64,7 +64,7 @@ async function watch(iface, instance, handlers, log, opts) {
         const fields = Object.keys(handlers || {});
         const readOnly = opts && opts.readOnlyFields || [];
         const requestedReads = opts && opts.readFields || fields.filter((f) => cfg.fields && cfg.fields[f] && cfg.fields[f].getter);
-        const pending = new Set(), generations = {}, failures = {};
+        const pending = new Set(), generations = {}, failures = {}, retryAt = {};
         let ready = false, poll, stopped = false, availabilityGeneration = 0;
         const report = (f, stage, error) => {
             if (opts && opts.onError) opts.onError(f, stage, error);
@@ -79,7 +79,12 @@ async function watch(iface, instance, handlers, log, opts) {
             return false;
         });
         const fetchAll = () => reads.forEach((f) => {
-            if (stopped || !ready || pending.has(f) || (opts && opts.maxGetterFailures && failures[f]>=opts.maxGetterFailures)) return;
+            if (stopped || !ready || pending.has(f)) return;
+            if (opts && opts.maxGetterFailures && failures[f]>=opts.maxGetterFailures) {
+                if (!retryAt[f] || Date.now()<retryAt[f]) return;
+                failures[f]=0;
+                delete retryAt[f];
+            }
             trace(f,'getter','pending');
             pending.add(f);
             const generation = generations[f], availability = availabilityGeneration;
@@ -99,7 +104,9 @@ async function watch(iface, instance, handlers, log, opts) {
             }).catch((e) => {
                 if (!stopped && availability === availabilityGeneration) {
                     failures[f]=(failures[f]||0)+1;
-                    trace(f,'getter',opts && failures[f]===opts.maxGetterFailures?'paused':'failed');
+                    const paused=opts && failures[f]===opts.maxGetterFailures;
+                    if (paused && opts.retryAfterMs) retryAt[f]=Date.now()+opts.retryAfterMs;
+                    trace(f,'getter',paused?'paused':'failed');
                     report(f, 'get', e);
                 }
             })

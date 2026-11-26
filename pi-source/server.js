@@ -12,7 +12,7 @@ const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.5'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.6'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -774,12 +774,21 @@ async function readFaultMemoryNow(){
 // ----- Reifen -----
 function noteTyres(t){
   if(!t||!Array.isArray(t.wheels)||!wasRecent(t.at,3*60000))return;
-  const wheels=t.wheels.slice(0,5).map(w=>({position:str(w.position,20),p:Number.isFinite(w.pressureBar)?w.pressureBar:null,target:Number.isFinite(w.targetBar)?w.targetBar:null,temp:Number.isInteger(w.temperatureC)&&w.temperatureC>=-48&&w.temperatureC<=250?w.temperatureC:null,battery:str(w.battery,20)})).filter(w=>w.position);
+  const pressure=value=>Number.isFinite(value)&&value>0&&value<=10?value:null;
+  const wheels=t.wheels.slice(0,5).filter(Boolean).map(w=>({
+    position:str(w.position,20),p:pressure(w.pressureBar),target:pressure(w.targetBar),
+    temp:Number.isInteger(w.temperatureC)&&w.temperatureC>=-48&&w.temperatureC<=253?w.temperatureC:null,battery:str(w.battery,20)
+  })).filter(w=>Object.hasOwn(TYRE_NAMES,w.position)&&(w.p!==null||w.target!==null||w.temp!==null));
   if(!wheels.length)return;
-  const last=M.tyres[M.tyres.length-1];
-  const changed=!last||wheels.some(w=>{const o=last.wheels.find(x=>x.position===w.position);return !o||o.p===null||w.p===null?o?o.p!==w.p:true:Math.abs(o.p-w.p)>=0.05;});
-  if(last&&Date.parse(last.at)>=Date.parse(t.at))return;
-  const sample={at:t.at,wheels};
+  const last=M.tyres[M.tyres.length-1],latest=M.lastTyres||last;
+  if(latest&&Date.parse(latest.at)>=Date.parse(t.at))return;
+  const source=t.source==='RDC 0x29'?'RDC 0x29':'TPMSInternalData';
+  const changed=!last||last.source!==source||last.wheels.length!==wheels.length||wheels.some(w=>{
+    const old=last.wheels.find(x=>x.position===w.position);
+    return !old||old.target!==w.target||old.temp!==w.temp||
+      (old.p===null||w.p===null?old.p!==w.p:Math.abs(old.p-w.p)>=0.05);
+  });
+  const sample={at:t.at,source,wheels};
   M.lastTyres=sample;
   if(changed||!last||Date.parse(t.at)-Date.parse(last.at)>=60*60000){M.tyres.push(sample);trim(M.tyres,3000);save();}
   for(const w of wheels){
@@ -792,7 +801,7 @@ const TYRE_NAMES={FRONT_LEFT:'vorne links',FRONT_RIGHT:'vorne rechts',REAR_LEFT:
 function tyresView(){
   const last=M.lastTyres||M.tyres[M.tyres.length-1];if(!last)return null;
   const weekAgo=M.tyres.filter(s=>Date.parse(s.at)<=Date.parse(last.at)-7*86400000).pop()||M.tyres[0];
-  return {at:last.at,stale:!vehicleReadingFresh(last.at,3*60000),unverified:true,wheels:last.wheels.map(w=>{const o=weekAgo&&weekAgo.wheels.find(x=>x.position===w.position);
+  return {at:last.at,source:last.source||'TPMSInternalData',stale:!vehicleReadingFresh(last.at,3*60000),unverified:true,wheels:last.wheels.map(w=>{const o=weekAgo&&weekAgo.wheels.find(x=>x.position===w.position);
     return Object.assign({},w,{name:TYRE_NAMES[w.position]||w.position,low:w.p!==null&&w.p<(w.target?w.target*0.9:1.9),change7d:o&&o.p!==null&&w.p!==null&&weekAgo!==last?Math.round((w.p-o.p)*100)/100:null,since:weekAgo!==last?weekAgo.at:null});}),
     history:M.tyres.slice(-200)};
 }
@@ -1231,7 +1240,7 @@ async function mcpCall(name,args,client){
       due:v.due.map(d=>({item:d.name,status:d.status,due_date:d.dueDate,due_km:d.dueKm,days_left:d.daysLeft,km_left:d.kmLeft,estimated_date_by_km:d.estimatedKmDate,last_done:d.lastDone,interval:{months:d.intervalMonths,km:d.intervalKm},fixed_by_owner:!!d.override})),
       check_control_active:faultsView(false).checkControl.active.map(c=>({id:c.id,text:c.text,description:c.description,unit:c.ecuName,since:c.since})),
       fault_memory_latest:(f=>f?{read_at:f.readAt,codes:f.dtcs.map(d=>({unit:d.ecuName,address:'0x'+d.ecu.toString(16),code:d.code,status:d.label,active:d.active,first_seen:d.firstSeen}))}:null)(faultsView(false).faultMemory.latest),
-      tyres:(t=>t?{at:t.at,note:'Units from field names (mbar, degC), not yet confirmed',wheels:t.wheels.map(w=>({position:w.name,bar:w.p,target_bar:w.target,temp_c:w.temp,change_7d_bar:w.change7d}))}:null)(tyresView()),
+      tyres:(t=>t?{at:t.at,source:t.source,stale:t.stale,wheels:t.wheels.map(w=>({position:w.name,bar:w.p,target_bar:w.target,temp_c:w.temp,change_7d_bar:w.change7d}))}:null)(tyresView()),
       dpf:(d=>d?{latest:d.latest,regenerations:d.regens.slice(0,10)}:null)(dpfView()),
       reported_by_vehicle:v.live?{note:'From the MGU app Vehicle Data; units not yet confirmed against the iDrive screen.',read_at:v.live.mileageAt,mileage_source:v.live.mileageSource,stale:v.live.stale,mileage_km:v.live.mileageKm,service_due:v.live.cbs,service_history:v.live.serviceHistory}:null,
       recent_service:v.entries.slice(0,10).map(e=>({date:e.date,km:e.km,items:e.items.map(i=>st.vehicle.items[i]?st.vehicle.items[i].name:i),title:e.title,workshop:e.workshop,notes:e.notes})),

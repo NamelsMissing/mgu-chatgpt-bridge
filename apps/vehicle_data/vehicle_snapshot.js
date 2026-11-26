@@ -208,18 +208,28 @@ class VehicleSnapshot {
         this.rememberMileage(this.state.supreme,'MileageSupreme');
     }
     rememberMileage(sample,source) {
-        if (sample.km!==null) this.lastMileage={km:sample.km,source,at:sample.at,valid:false};
+        if (sample.km!==null && (!this.lastMileage || sample.km>=this.lastMileage.km)) this.lastMileage={km:sample.km,source,at:sample.at,valid:false};
     }
     cbs(field, v) { const c = decodeCbs(field, v); if (c) this.state.cbs[field] = Object.assign(c, { at: this.now() }); else delete this.state.cbs[field]; }
     serviceHistory(r) { this.state.history = decodeServiceHistory(r); this.state.historyReadAt = this.now(); }
-    mileage() {
-        const s = this.state.secure, p = this.state.supreme, r = this.state.range;
-        if (r && r.km !== null && this.now()-r.at<=7*60000) {
-            return {km:r.km,source:'VehicleInformation.Range',at:r.at};
+    diagnosticMileage(km) {
+        this.state.diagnosticMileage = {km, at:this.now()};
+        this.rememberMileage(this.state.diagnosticMileage,'DDE 0x558E');
+    }
+    mileage(includeDiagnostic) {
+        const sources = [
+            ['SecureMileage', this.state.secure],
+            ['MileageSupreme', this.state.supreme],
+            ['VehicleInformation.Range', this.state.range],
+        ];
+        if (includeDiagnostic !== false) sources.push(['DDE 0x558E', this.state.diagnosticMileage]);
+        const now = this.now();
+        for (const [source, reading] of sources) {
+            if (reading && reading.km !== null && now - reading.at <= 6 * 60000) {
+                return {km:reading.km, source, at:reading.at};
+            }
         }
-        if (s && s.km !== null && (!p || p.km === null || p.at - s.at <= 6 * 60000)) return { km: s.km, source: 'SecureMileage', at: s.at };
-        if (p && p.km !== null) return { km: p.km, source: 'MileageSupreme', at: p.at };
-        return r && r.km !== null ? {km:r.km,source:'VehicleInformation.Range',at:r.at} : this.lastMileage || null;
+        return includeDiagnostic === false ? null : this.lastMileage || null;
     }
     document() {
         const m = this.mileage(), iso = (t) => (t ? new Date(t).toISOString() : null);
