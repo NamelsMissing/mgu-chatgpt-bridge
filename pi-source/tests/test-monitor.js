@@ -59,6 +59,43 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   await server.pollOnce();
   assert.equal((await api('GET','/vehicle')).data.mileage.km,120000);
 
+  // ----- G21 maintenance profile and documented work -----
+  const profile={profile:'g21-diesel',registration:'2024-01-31',warningDays:30,warningKm:1000};
+  assert.equal((await api('POST','/vehicle/items',{id:'oil',name:'Motoröl und Ölfilter',intervalKm:8000,intervalMonths:12})).status,200);
+  assert.equal((await api('POST','/vehicle/maintenance',profile)).status,200);
+  let plan=(await api('GET','/vehicle')).data;
+  const byKey=key=>plan.due.find(item=>item.key===key);
+  assert.equal(byKey('oil').intervalKm,8000);
+  assert.equal(byKey('oil').source,'individual');
+  assert.equal(byKey('brakeFluid').dueDate,'2027-01-31');
+  assert.equal(byKey('inspection').dueDate,'2027-01-31');
+  assert.equal(byKey('coolant').dueDate,null);
+  assert.equal(byKey('coolant').intervalMonths,36);
+  assert.equal(byKey('microfilter').intervalKm,30000);
+  for(const key of ['check','airFilter','fuelFilter'])assert.equal(byKey(key).intervalKm,60000);
+  const row=(scope,label,status='SERVICE_PERFORMED')=>({scope,label,status});
+  vehicle.serviceHistory={status:'E_OK',readAt:iso(0),sets:[
+    {date:'2025-01-01',km:110000,services:[row('OELSERVICE','Motoröl'),row('BREMSFLUESSIGKEIT','Bremsflüssigkeit')]},
+    {date:'2025-01-02',km:110000,services:[row('11','Code 11'),row('MIKROFILTER','Mikrofilter','SERVICE_INCOMPLETE')]},
+    {date:'2025-01-03',km:110000,services:[row('KUEHLFLUESSIGKEIT','Kühlflüssigkeit')]}
+  ]};
+  vehicle.cbs=[{scope:'BREMSFLUESSIGKEIT',label:'Bremsflüssigkeit',dueDate:'2028-01-01',at:iso(0)}];
+  await server.pollOnce();
+  plan=(await api('GET','/vehicle')).data;
+  assert.equal(byKey('brakeFluid').dueDate,'2027-01-01');
+  assert.equal(plan.bmwNextService.byDate.dueDate,'2028-01-01');
+  assert.equal(byKey('coolant').dueDate,'2028-01-03');
+  assert.equal(byKey('oil').dueKm,118000);
+  for(const key of ['microfilter','check','airFilter','fuelFilter'])assert.equal(byKey(key).lastDone,null);
+  const customOil=byKey('oil').id;
+  assert.equal((await api('POST','/vehicle/entries',{date:'2025-02-01',km:115000,items:[customOil]})).status,200);
+  plan=(await api('GET','/vehicle')).data;
+  assert.equal(byKey('oil').dueKm,123000);
+  assert.equal(byKey('airFilter').lastDone,null);
+  vehicle.serviceHistory={status:'E_NO_READ_PERMISSION',readAt:iso(0),sets:[]};
+  await server.pollOnce();
+  assert.equal((await api('GET','/vehicle')).data.live.serviceHistory.sets.length,3);
+
   // ----- Check-Control -----
   vehicle.checkControl={active:[{id:220,text:'Kühlmittelstand zu niedrig',description:'Kühlmittel nachfüllen.',ecu:0x12,since:iso(-60000)}],
    events:[{id:220,active:true,text:'Kühlmittelstand zu niedrig',ecu:0x12,at:iso(-60000)}]};
@@ -149,7 +186,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
 
   vehicle.cbs=[];
   await server.pollOnce();
-  assert.equal((await api('GET','/vehicle')).data.live.cbs[0].label,'Motoröl','legacy startup must preserve service data');
+  assert.equal((await api('GET','/vehicle')).data.live.cbs.find(c=>c.scope==='OELSERVICE').label,'Motoröl','legacy startup must preserve service data');
 
   fs.unlinkSync(catalogFile);
   const catalog={sgbd:'TEST_DDE',faultTexts:{'480A12':'Importierter fiktiver Titel'}};

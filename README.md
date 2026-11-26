@@ -40,7 +40,7 @@ Fahrzeug ── SOME/IP und UDS (nur lesen) ──► Vehicle Data (App auf der 
 |---|---|
 | Chat | Fragen zum Fahrzeug und zu Diagnoseergebnissen, Import und Export von Chats |
 | Freigaben | Aufträge aus dem Chat und von Claude einzeln bestätigen oder ablehnen, mit Verlauf |
-| Fahrzeug | Kilometerstand mit Verlauf, Fälligkeiten (Öl standardmäßig 12 Monate oder 8.000 km, einstellbar), Serviceheft, Servicebedarf und Servicehistorie laut Fahrzeug, Reifendruck mit 7-Tage-Änderung, Dieselpartikelfilter mit Regenerationen |
+| Fahrzeug | Kilometerstand mit Verlauf, BMW-CBS und Wartungsplan, gemeinsame Servicehistorie, Reifendruck und Dieselpartikelfilter |
 | Fehler | Aktive Check-Control-Meldungen mit Fahrzeugtext und Verlauf, Fehlerspeicher aller Steuergeräte (Codes, Status, neu seit dem letzten Auslesen) |
 | Diagnose | Diagnosemodus für Claude, MGU-Status, Systemdiagnosen, Berichte |
 | Konsole | Einzelne Lesebefehle auf der MGU, jeweils mit Freigabe |
@@ -97,5 +97,7 @@ Der [Prüfbericht zu 0.10.1](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.1.md) besch
 Der [Prüfbericht zu 0.10.2](docs/PRUEFBERICHT-FAHRZEUGDIAGNOSE-0.10.2.md) beschreibt die Diagnosewarteschlange, den privaten MGU-Katalogexport und die ECU-Zuordnungsvorlage.
 
 Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokumentiert Datenübernahme, Wiederverbindung und den privaten MotorScope-Import in der Fehleransicht.
+
+**0.10.5:** Kompakte Fahrzeugübersicht, gemeinsame Servicehistorie und Wartungsprofil für den G21 Diesel. Aktivierung unter **Fahrzeug → Wartungsplan bearbeiten**. Fahrzeugdaten-Diagnose und JSON-Export liegen unter **Diagnose → Fahrzeugdaten**. [Prüfbericht](docs/PRUEFBERICHT-FAHRZEUG-0.10.5.md).
 
 **0.10.4:** Private, fahrzeugübergreifende SQLite-Fehlertexte mit Offline-Auflösung und Upload im System-Reiter. [Installation, Schema und Prüfbericht](docs/PRUEFBERICHT-DTC-0.10.4.md).

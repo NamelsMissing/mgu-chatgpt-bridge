@@ -92,7 +92,7 @@ function renderTyres(t){
  const box=$('tyreList');box.replaceChildren();
  $('tyreAge').textContent=t?(t.stale?'Veraltet · ':'TPMSInternalData · ')+stamp(t.at):'keine Daten';
  $('tyreAge').className='pill '+(t&&!t.stale?'pill-live':'pill-off');
- if(!t){box.appendChild(txt('p','Keine auswertbaren Sensordaten. Ob das Fahrzeug direkten oder indirekten Reifendruckstatus liefert, ist noch offen.','hint'));return;}
+ if(!t){box.appendChild(txt('p','Keine Reifendaten empfangen.','hint'));return;}
  const entries=new Map(t.wheels.map(w=>[w.position,w]));
  const wheelLabels={FRONT_LEFT:'vorne links',FRONT_RIGHT:'vorne rechts',REAR_LEFT:'hinten links',REAR_RIGHT:'hinten rechts'};
  const wheels=Object.entries(wheelLabels).map(([position,name])=>entries.get(position)||{name,p:null,target:null,temp:null,change7d:null});
@@ -103,6 +103,7 @@ function renderTyres(t){
   card.appendChild(txt('strong',barText(w.p)));
   if(w.low)card.appendChild(txt('span','Druckhinweis','hint error'));
   card.appendChild(txt('span',[w.target?'Soll '+barText(w.target):'',w.temp!==null?w.temp+' °C':''].filter(Boolean).join(' · ')||'–','hint'));
+  if(Number.isFinite(w.p)&&Number.isFinite(w.target))card.appendChild(txt('span','Abweichung '+(w.p>w.target?'+':'')+barText(w.p-w.target),'hint'));
   if(w.change7d!==null)card.appendChild(txt('span',(w.change7d>0?'+':'')+w.change7d.toFixed(2).replace('.',',')+' bar in 7 Tagen',Math.abs(w.change7d)>=0.15?'error':'hint'));
   box.appendChild(card);
  }
@@ -114,9 +115,9 @@ function renderDpf(d){
  if(!d){vals.appendChild(txt('p','Noch keine Werte. Sie kommen alle 5 Minuten bei laufendem Auto von der App „Vehicle Data“.','hint'));return;}
  const l=d.latest;
  for(const [label,key,unit] of [['Ruß','soot',' g'],['Asche','ash',' g'],['Seit Regeneration','distance',' km'],['Regenerationen','regenCount',''],['Ø Abstand','regenAverage',' km'],['Temperatur','temperature',' °C']]){
-  const value=l[key],at=l.fieldTimes&&l.fieldTimes[key];
+  const value=l[key];
   if(value===null||value===undefined)continue;
-  const c=txt('div','','stat');c.appendChild(txt('span',label,'hint'));c.appendChild(txt('strong',num1(value)+unit));c.appendChild(txt('span',at?'DDE · '+stamp(at)+(Date.now()-Date.parse(at)>8*60000?' · älter als 8 Min.':''):'Zeitpunkt je Messwert unbekannt','hint'));vals.appendChild(c);
+  const c=txt('div','','stat');c.appendChild(txt('span',label,'hint'));c.appendChild(txt('strong',num1(value)+unit));vals.appendChild(c);
  }
  if(!d.regens.length)regs.appendChild(txt('p','Noch keine Regeneration erkannt.','hint'));
  for(const r of d.regens){
@@ -696,18 +697,14 @@ function dueLine(d){
 function renderVehicle(v){
  vehicleData=v;
  renderTyres(v.tyres||null);renderDpf(v.dpf||null);
- if(!v.tyres){
-  const detail=missingSignal(v.poll||{},['TPMSInternalData.tpmsInternalLastValues','TPMS.statusTyrePressure']);
-  if(detail)$('tyreList').appendChild(txt('p',detail,'hint'));
- }
  const m=v.mileage;
  const measured=v.live&&Number.isInteger(v.live.mileageKm)?v.live:null;
  $('mileageNow').textContent=measured?kmText(measured.mileageKm):m?kmText(m.km):'Noch kein Kilometerstand';
  $('mileageSource').textContent=measured?(measured.stale?'Fahrzeug · veraltet':'Fahrzeug · '+(measured.mileageSource||'Quelle unbekannt')):m?MILEAGE_SOURCES[m.source]||m.source:'–';
  $('mileageSource').className='pill '+(measured&&!measured.stale?'pill-live':'pill-off');
- const mileageReason=missingSignal(v.poll||{},['SecureMileage.mileage','MileageSupreme.mileageSupreme','VehicleInformation.Range']);
- $('mileageInfo').textContent=measured?'Gemessen '+stamp(measured.mileageAt)+' · '+(measured.mileageSource||'Quelle unbekannt'):m?'Stand vom '+dateText(m.date)+(v.kmPerDay?' · Ø '+v.kmPerDay.toLocaleString('de-DE')+' km pro Tag im letzten Jahr':''):'Trag den aktuellen Stand ein. Er ist die Grundlage für die km-Fälligkeiten.';
-  if(!measured&&mileageReason)$('mileageInfo').textContent=mileageReason;
+ $('mileageInfo').textContent=measured?stamp(measured.mileageAt)+' · '+(measured.mileageSource||'Quelle unbekannt'):m?dateText(m.date):'';
+ $('vehicleLive').textContent=[v.poll?.ok===true&&v.poll.appState==='running'?'Fahrzeugdaten verbunden':'Fahrzeug nicht erreichbar',
+  v.poll?.lastData?'Letzter Empfang '+stamp(v.poll.lastData):null].filter(Boolean).join(' · ');
  if(!$('mileageDate').value)$('mileageDate').value=v.today;
  $('mileageDate').max=v.today;
  const hist=$('mileageHistory');hist.replaceChildren();
@@ -722,95 +719,125 @@ function renderVehicle(v){
   hist.appendChild(row);
  }
 
- const due=$('dueList');due.replaceChildren();
- for(const d of v.due){
-  const card=txt('div','','due due-'+d.status),head=txt('div','','job-head');
-  head.appendChild(txt('strong',d.name));head.appendChild(txt('span',DUE_STATES[d.status],'pill due-pill-'+d.status));
-  if(d.override)head.appendChild(txt('span','feste Fälligkeit','pill pill-off'));
-  card.appendChild(head);
-  if(d.status==='unknown')card.appendChild(txt('p',d.override?'':'Trag die letzte Durchführung im Serviceheft ein, dann wird die Fälligkeit berechnet.','hint'));
-  else{
-   card.appendChild(txt('p','Fällig '+dueLine(d)));
-   if(d.estimatedKmDate&&d.kmLeft>=0)card.appendChild(txt('p','km-Grenze voraussichtlich um den '+dateText(d.estimatedKmDate)+' (Schätzung aus deinem Durchschnitt)','hint'));
-  }
-  const meta=[];
-  if(d.intervalMonths||d.intervalKm)meta.push('Intervall: '+[d.intervalMonths?plural(d.intervalMonths,'Monat','Monate'):'',d.intervalKm?kmText(d.intervalKm):''].filter(Boolean).join(' oder '));
-  if(d.lastDone)meta.push('zuletzt '+dateText(d.lastDone.date)+(d.lastDone.km!==null?' bei '+kmText(d.lastDone.km):''));
-  if(meta.length)card.appendChild(txt('p',meta.join(' · '),'hint'));
-  const edit=txt('button','Ändern','textbutton');edit.onclick=()=>editItem(d.id);card.appendChild(edit);
-  due.appendChild(card);
- }
-
+ renderMaintenance(v);
  const items=$('entryItems'),checked=new Set([...items.querySelectorAll('input:checked')].map(i=>i.value));items.replaceChildren();
  for(const it of v.items){const l=document.createElement('label');l.className='check';const c=document.createElement('input');c.type='checkbox';c.value=it.id;c.checked=checked.has(it.id);l.append(c,document.createTextNode(' '+it.name));items.appendChild(l);}
 
- renderReported(v);
- const list=$('serviceEntries');list.replaceChildren();
- if(!v.entries.length)list.appendChild(txt('p','Noch keine Serviceeinträge.','hint'));
- const names=Object.fromEntries(v.items.map(i=>[i.id,i.name]));
+ renderServiceHistory(v);
+}
+function renderMaintenance(v){
+ const box=$('dueList'),next=$('bmwNextService'),settings=v.maintenance||{};
+ const select=$('maintenanceItem'),selected=select.value;
+ select.replaceChildren(new Option('Neue Wartungsart',''),...v.items.map(item=>new Option(item.name,item.id)));
+ select.value=selected;
+ if(!$('itemBox').open){
+  $('maintenanceProfile').value=settings.profile||'custom';
+  $('maintenanceRegistration').value=settings.registration||'';
+  $('maintenanceDays').value=settings.warningDays??30;
+  $('maintenanceKm').value=settings.warningKm??1000;
+ }
+ const open=new Set([...box.querySelectorAll('details[open]')].map(el=>el.dataset.key));
+ box.replaceChildren();next.replaceChildren();
+ const scopeByKey={oil:['OELSERVICE'],microfilter:['MIKROFILTER'],check:['SICHTPRUEFUNGEN','SICHTPRUEFUNG_ADAPTIV'],
+  brakeFluid:['BREMSFLUESSIGKEIT'],coolant:['KUEHLFLUESSIGKEIT'],inspection:['HU_HAUPTUNTERSUCHUNG']};
+ const cbs=(v.live?.cbs||[]).filter(c=>c.available!==false&&(c.dueDate||c.dueMonth||Number.isInteger(c.remainingKm)));
+ const cbsLine=c=>[Number.isInteger(c.remainingKm)?'Noch '+kmText(c.remainingKm):'',c.dueDate?dateText(c.dueDate):c.dueMonth?.split('-').reverse().join('/')].filter(Boolean).join(' · ');
+ const planLine=d=>[Number.isInteger(d.kmLeft)?(d.kmLeft<0?kmText(-d.kmLeft)+' überfällig':'Noch '+kmText(d.kmLeft)):d.dueKm!==null?'Bei '+kmText(d.dueKm):'',
+  d.dueDate?dateText(d.dueDate):''].filter(Boolean).join(' · ');
+ const cbsStatus=c=>{
+  const days=c.dueDate?Math.round((Date.parse(c.dueDate)-Date.parse(v.today))/86400000):null;
+  if(days!==null&&days<=0||c.dueMonth&&c.dueMonth<v.today.slice(0,7)||c.remainingKm===0)return 'overdue';
+  if(days!==null&&days<=(settings.warningDays??30)||c.dueMonth===v.today.slice(0,7)||Number.isInteger(c.remainingKm)&&c.remainingKm<=(settings.warningKm??1000))return 'soon';
+  return 'ok';
+ };
+ const rows=v.due.map(d=>({d,c:cbs.find(c=>(scopeByKey[d.key]||[]).includes(c.scope))}));
+ for(const c of cbs)if(!rows.some(row=>row.c===c))rows.push({c});
+ const rank={overdue:0,soon:1,ok:2,unknown:3};
+ const statusOf=({c,d})=>c?cbsStatus(c):d.status;
+ rows.sort((a,b)=>rank[statusOf(a)]-rank[statusOf(b)]);
+ const count=rows.filter(row=>statusOf(row)==='overdue').length;
+ next.appendChild(txt('strong','Nächster fälliger Service'));
+ const bmw=v.bmwNextService||{},fallback=v.due.find(d=>d.status!=='unknown');
+ const candidates=[...new Set([bmw.byDate,bmw.byDistance].filter(Boolean).map(c=>c.label+' · '+cbsLine(c)))];
+ next.appendChild(txt('p',candidates.length?candidates.join(' / ')+' · BMW CBS'+(v.live?.cbsStale?' · veraltet':''):
+  fallback?fallback.name+' · '+planLine(fallback):'Unbekannt','hint'));
+ next.appendChild(txt('span',count+' fällige Wartungen','hint'));
+ if(!rows.length)box.appendChild(txt('p','Wartungsprofil auswählen, um Standardintervalle anzulegen.','hint'));
+ for(const {c,d} of rows){
+  const status=c?cbsStatus(c):d.status;
+  const card=txt('details','','due due-'+status);
+  card.dataset.key=d?.id||c.scope;
+  card.open=open.has(card.dataset.key);
+  const head=txt('summary','','maintenance-row');
+  head.append(txt('strong',d?.name||c.label),txt('span',c?cbsLine(c):planLine(d)||(d.key==='coolant'?'Letzter Wechsel unbekannt':'Fälligkeit unbekannt'),'hint'),
+   txt('span',status==='overdue'?'Fällig':DUE_STATES[status],'pill due-pill-'+status));
+  card.append(head);
+  if(c)card.append(txt('p','BMW CBS'+(v.live?.cbsStale?' · veraltet':'')+(c.at?' · '+stamp(c.at):'')+(c.status!=null?' · Status '+c.status:''),'hint'));
+  if(d){
+   const source=d.source==='individual'?'Individuell festgelegt':'Automatisch berechnet';
+   card.append(txt('p',[source,dueLine(d)].filter(Boolean).join(' · '),'hint'));
+   if(d.lastDone)card.append(txt('p','Zuletzt '+dateText(d.lastDone.date)+(d.lastDone.km!==null?' · '+kmText(d.lastDone.km):'')+' · '+(d.lastDone.source==='BMW'?'BMW':'Eigene Wartung'),'hint'));
+   const interval=[d.intervalKm?kmText(d.intervalKm):'',d.intervalMonths?d.intervalMonths+' Monate':''].filter(Boolean).join(' oder ');
+   if(interval)card.append(txt('p','Intervall '+interval,'hint'));
+   if(d.estimatedKmDate&&d.kmLeft>0)card.append(txt('p','Geschätzte km-Grenze '+dateText(d.estimatedKmDate),'hint'));
+  }
+  box.append(card);
+ }
+}
+let fullServiceHistory=false;
+function renderServiceHistory(v){
+ const list=$('serviceEntries'),names=Object.fromEntries(v.items.map(i=>[i.id,i.name]));
+ const original=v.live?.serviceHistory?.sets||[],seen=new Set(),rows=[];
+ for(const x of original){
+  const signature=JSON.stringify([x.date,x.km,x.dealer,x.status,x.correction,x.services.map(s=>[s.code,s.scope,s.label,s.status]).sort()]);
+  if(seen.has(signature))continue;
+  seen.add(signature);
+  rows.push({...x,bmw:true,work:x.services.map(s=>s.label).join(' · ')});
+ }
  for(const e of v.entries){
-  const card=txt('div','','service-entry'),head=txt('div','','job-head');
-  head.appendChild(txt('strong',dateText(e.date)));
-  if(e.km!==null)head.appendChild(txt('span',kmText(e.km),'hint'));
-  if(e.cost!==null)head.appendChild(txt('span',e.cost.toLocaleString('de-DE',{style:'currency',currency:'EUR'}),'job-state'));
-  card.appendChild(head);
-  const what=[...e.items.map(i=>names[i]||'gelöschte Wartungsart'),e.title].filter(Boolean).join(' · ');
-  card.appendChild(txt('p',what));
-  if(e.workshop)card.appendChild(txt('p',e.workshop,'hint'));
-  if(e.notes)card.appendChild(txt('p',e.notes,'hint notes'));
-  const b=txt('button','Bearbeiten','textbutton');b.onclick=()=>editEntry(e.id);card.appendChild(b);
-  list.appendChild(card);
+  const duplicate=e.notes?.startsWith('Aus der Servicehistorie des Fahrzeugs übernommen')&&
+   e.createdAt===e.updatedAt&&rows.some(x=>x.bmw&&x.date===e.date&&x.km===e.km&&
+    e.workshop===(x.dealer?'Händler '+x.dealer:'')&&e.cost===null&&
+    e.items.every(id=>x.services.some(s=>s.label===names[id]||id==='oil'&&s.scope==='OELSERVICE'))&&
+    (!e.title||e.title==='Service laut Fahrzeug'||e.title.split(', ').every(label=>x.services.some(s=>s.label===label)))&&
+    x.services.every(s=>e.items.some(id=>s.label===names[id]||id==='oil'&&s.scope==='OELSERVICE')||e.title.split(', ').includes(s.label)));
+  if(!duplicate)rows.push({...e,work:[...e.items.map(i=>names[i]||'Gelöschte Wartungsart'),e.title].filter(Boolean).join(' · ')});
  }
+ rows.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||(b.km??-1)-(a.km??-1));
+ list.replaceChildren();
+ if(!rows.length)list.append(txt('p','Keine Serviceeinträge vorhanden.','hint'));
+ for(const e of fullServiceHistory?rows:rows.slice(0,5)){
+  const card=txt('details','','service-entry'),head=txt('summary','','maintenance-row');
+  head.append(txt('strong',dateText(e.date)+(e.km!==null?' · '+kmText(e.km):'')),txt('span',e.work||'Service','hint'),
+   txt('span',e.bmw?'BMW':'Eigene Wartung','pill pill-off'));
+  card.append(head);
+  if(e.bmw){
+   if(e.dealer)card.append(txt('p','Händler '+e.dealer,'hint'));
+   const codes=e.services.map(s=>s.code??s.scope).filter(s=>s!==null&&s!==undefined);
+   if(codes.length)card.append(txt('p',codes.join(' · '),'hint'));
+  }else{
+   for(const detail of [e.workshop,e.cost!==null?e.cost.toLocaleString('de-DE',{style:'currency',currency:'EUR'}):'',e.notes])
+    if(detail)card.append(txt('p',detail,'hint'));
+   const edit=txt('button','Bearbeiten','textbutton');edit.onclick=()=>editEntry(e.id);card.append(edit);
+  }
+  list.append(card);
+ }
+ $('toggleServiceHistory').hidden=rows.length<=5;
+ $('toggleServiceHistory').textContent=fullServiceHistory?'Letzte fünf Serviceeinträge anzeigen':'Gesamte Servicehistorie anzeigen';
 }
-function renderReported(v){
- const live=v.live,box=$('cbsList'),hist=$('historyList'),next=$('bmwNextService');box.replaceChildren();hist.replaceChildren();next.replaceChildren();
- const due=v.bmwNextService||{};
- const until=c=>c.dueDate?dateText(c.dueDate):c.dueMonth?c.dueMonth.replace(/^(\d{4})-(\d{2})$/,'$2/$1'):'';
- if(due.byDate||due.byDistance){
-  next.appendChild(txt('strong',live?.cbsStale?'Letzter gespeicherter BMW-Servicebedarf':'Nächster fälliger BMW-Service'));
-  if(due.byDate)next.appendChild(txt('p','Nach Datum · '+due.byDate.label+' · bis '+until(due.byDate),'hint'));
-  if(due.byDistance)next.appendChild(txt('p','Nach Strecke · '+due.byDistance.label+' · '+kmText(due.byDistance.remainingKm),'hint'));
- }
- $('reportedAge').textContent=live?(live.stale?'Letzter gespeicherter Stand':'Vehicle Data empfängt Werte'):'Keine Daten';
- $('reportedAge').className='pill '+(live&&!live.stale?'pill-live':'pill-off');
- if(!live){box.appendChild(txt('p','Noch nichts vom Fahrzeug. Dafür muss auf der MGU die App „Vehicle Data“ installiert sein und einmal gelaufen sein.','hint'));return;}
- if(live.mileageKm!==null)box.appendChild(txt('p','Kilometerstand laut Fahrzeug: '+kmText(live.mileageKm)+' · '+(live.mileageSource||'Quelle nicht übermittelt')+' · '+(stamp(live.mileageAt)||'Zeitpunkt unbekannt')+(live.stale?' · veraltet':'')));
- if(live.cbsListAt)box.appendChild(txt('p','BMW-Liste gelesen · '+stamp(live.cbsListAt)+
-  (live.cbsStale?' · veraltet':''),'hint'));
- if(!live.cbs.length)box.appendChild(txt('p',missingSignal(v.poll||{},['KombiInterface_2.cbsDataServiceList',
-  ...Object.keys(v.poll?.stages||{}).filter(key=>key.startsWith('ConditionBasedServicesLegacy.'))])||
-  'Noch keine Servicebedarf-Meldung empfangen.','hint'));
- for(const c of live.cbs){
-  const row=txt('div','','list-row'),info=txt('div','','request-info');
-  info.appendChild(txt('strong',c.label));
-  row.appendChild(info);
-  const expired=c.dueDate?c.dueDate<v.today:c.dueMonth?c.dueMonth<v.today.slice(0,7):false;
-  const parts=[expired||c.remainingKm===0?'Fällig aus Datum oder Reststrecke':'',until(c)?'bis '+until(c):'',c.remainingKm!==null?'noch '+kmText(c.remainingKm):'',
-   c.status!==null&&c.status!==undefined?'BMW-Status '+c.status:'',c.available===false?'nicht verfügbar':'',
-   c.at?(c.source||'CBS')+' · '+stamp(c.at):'',c.remainingAt?'Reststrecke · '+stamp(c.remainingAt):''].filter(Boolean);
-  row.appendChild(txt('span',parts.join(' · ')||'–',c.remainingKm===0?'error':''));
-  box.appendChild(row);
- }
- const h=live.serviceHistory;
- const historySignal=v.poll?.signals?.ServiceHistory;
- if(historySignal?.available===false)hist.appendChild(txt('p','Abfrage fehlgeschlagen · '+historySignal.error,'hint'));
- if(!h&&!historySignal)hist.appendChild(txt('p','Noch nicht gelesen.','hint'));
- if(h){
-  const reason={E_FILE_DOES_NOT_EXIST:'Datei nicht vorhanden',E_FILE_IS_EMPTY:'Datei leer',E_NO_READ_PERMISSION:'Lesezugriff verweigert'};
-  const state=h.status==='E_OK'?(h.sets.length?'Gelesen':'Erfolgreich gelesen · keine Einträge'):reason[h.status]||h.status||'Antwortformat unbekannt';
-  hist.appendChild(txt('p',state+' · ServiceHistory · '+stamp(h.readAt),'hint'));
- }
- for(const x of h?h.sets:[]){
-  const row=txt('div','','list-row'),info=txt('div','','request-info');
-  const title=txt('span','');title.appendChild(txt('strong',dateText(x.date)));if(x.km!==null)title.appendChild(txt('span','  '+kmText(x.km),'hint'));
-  info.appendChild(title);
-  info.appendChild(txt('span',[x.services.map(s=>s.label).join(', '),x.dealer?'Händler '+x.dealer:''].filter(Boolean).join(' · ')||'–','hint'));
-  row.appendChild(info);
-  if(x.imported)row.appendChild(txt('span','im Serviceheft','pill pill-live'));
-  else if(x.date){const b=txt('button','Ins Serviceheft','secondary');b.onclick=async()=>{b.disabled=true;try{renderVehicle(await api('/vehicle/import-history','POST',{date:x.date,km:x.km}));notice('Übernommen.');}catch(e){notice(e.message);b.disabled=false;}};row.appendChild(b);}
-  hist.appendChild(row);
- }
-}
+$('toggleServiceHistory').onclick=()=>{fullServiceHistory=!fullServiceHistory;if(vehicleData)renderServiceHistory(vehicleData);};
+$('openVehicleDiagnostics').onclick=()=>{
+ openTab('diag');$('vehicleTelemetry').open=true;
+ $('vehicleTelemetry').scrollIntoView({block:'start'});
+};
+$('maintenanceItem').onchange=()=>editItem($('maintenanceItem').value);
+$('maintenanceSettings').onsubmit=async e=>{
+ e.preventDefault();
+ try{renderVehicle(await api('/vehicle/maintenance','POST',{profile:$('maintenanceProfile').value,
+  registration:$('maintenanceRegistration').value,warningDays:Number($('maintenanceDays').value),warningKm:Number($('maintenanceKm').value)}));
+  notice('Wartungsprofil gespeichert.');
+ }catch(err){notice(err.message);}
+};
 const telemetryGroups={
  'Kilometerstand':['VehicleInformation','SecureMileage','MileageSupreme'],
  'Check-Control':['CheckControlMaster','KombiInterface_2.ccList','KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage','CheckControlText'],
@@ -852,6 +879,8 @@ $('faultEcuWorksheet').onclick=async()=>{
 async function renderTelemetry(){
  try{
   const data=await api('/vehicle/diagnostics'),p=data.poll||{},box=$('vehicleTelemetryRows');
+  const times=$('dpfMeasurementTimes');
+  times.replaceChildren(...Object.entries(data.dpfFieldTimes||{}).map(([field,at])=>txt('p','DPF · '+field+' · '+stamp(at),'hint')));
   const transfer=p.transfer||{},versions=p.versions||{};
   const installed=(versions.vehicleDataInstalled||[]).map(app=>app.version).join(', ');
   box.replaceChildren(txt('p',p.ok?'Snapshot empfangen · '+stamp(p.lastOk):'Übertragung unterbrochen oder noch ungeprüft','hint'));
@@ -905,12 +934,13 @@ $('vehicleTelemetryExport').onclick=async()=>{
 setInterval(async()=>{
  if(!token||document.hidden)return;
  if(currentTab==='faults'&&!$('faultRead').disabled)refreshFaults();
+ if(currentTab==='diag'&&$('vehicleTelemetry').open)renderTelemetry();
  if(currentTab==='vehicle'&&!$('vehicle').contains(document.activeElement)){
   try{
    const current=await api('/vehicle');
    if(currentTab==='vehicle'){
     renderVehicle(current);
-    if($('vehicleTelemetry').open)renderTelemetry();
+
    }
   }catch(e){$('vehicleLive').textContent=e.message;}
  }
@@ -920,10 +950,9 @@ async function refreshVehicle(){
  try{renderVehicle(await api('/vehicle'));}catch(e){notice(e.message);}
  // Liefert der MGU-Agent einen Kilometerstand, übernimmt der Server ihn dabei.
  try{
-  const s=await api('/status'),veh=s.mgu&&s.mgu.vehicle;
-  $('vehicleLive').textContent=!s.mgu?mguConnectionText(s):vehicleState(veh||{});
+  await api('/status');
   renderVehicle(await api('/vehicle'));
-  if($('vehicleTelemetry').open)renderTelemetry();
+
  }catch(e){$('vehicleLive').textContent='Live-Daten nicht abrufbar: '+e.message;}
 }
 $('refreshVehicle').onclick=refreshVehicle;
@@ -934,6 +963,7 @@ $('addMileage').onclick=async()=>{
 $('mileageKm').onkeydown=e=>{if(e.key==='Enter')$('addMileage').click();};
 function editItem(id){
  const it=vehicleData&&vehicleData.items.find(i=>i.id===id);
+ $('maintenanceItem').value=it?it.id:'';
  $('itemId').value=it?it.id:'';$('itemName').value=it?it.name:'';
  $('itemMonths').value=it?it.intervalMonths||0:'';$('itemKm').value=it?it.intervalKm||0:'';
  const d=it&&vehicleData.due.find(x=>x.id===id),o=d&&d.override;

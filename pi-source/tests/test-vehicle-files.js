@@ -55,7 +55,8 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
   assert.equal(v.entries[0].cost,189.9);
   let oil=v.due.find(d=>d.id==='oil');
   assert.equal(oil.dueDate,plusMonths(lastOil,12));assert.equal(oil.dueKm,108000);
-  assert.equal(oil.kmLeft,8000,'service km counts as current mileage');
+  assert.equal(v.mileage,null,'a historic service odometer reading is not current mileage');
+  assert.equal(oil.kmLeft,null,'remaining distance requires a measured or manually entered odometer');
   assert.equal(oil.status,'ok');
 
   v=(await api('POST','/vehicle/mileage',{km:106000,date:day(0)})).data;
@@ -162,8 +163,9 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
 
   // ----- Oberfläche -----
   const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8'),js=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
-  for(const id of ['vehicle','cbsList','historyList','mileageKm','addMileage','dueList','serviceForm','serviceEntries','itemForm','mguRoots','mguListing','mguSearchTerm','foundLogs','foundLogsAuto','libraryList','librarySearch'])
+  for(const id of ['vehicle','bmwNextService','maintenanceSettings','toggleServiceHistory','mileageKm','addMileage','dueList','serviceForm','serviceEntries','itemForm','mguRoots','mguListing','mguSearchTerm','foundLogs','foundLogsAuto','libraryList','librarySearch'])
    assert.match(html,new RegExp('id="'+id+'"'),'Missing UI element: '+id);
+  assert.match(html,/<section id="diag"[\s\S]*?id="vehicleTelemetry"[\s\S]*?<\/section>/);
   assert.match(js,/\/vehicle\/entries/);assert.match(js,/\/mgu\/browse/);assert.match(js,/\/found-logs/);
   console.log('BMW AI vehicle/files tests passed: service intervals, manual due values, mileage plausibility, vehicle mileage, file browser, dedupe, found logs manual/auto.');
  }finally{

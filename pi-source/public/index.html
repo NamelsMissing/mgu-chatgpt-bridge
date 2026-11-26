@@ -131,28 +131,40 @@
 
   <div class="panel">
     <div class="section-head">
-      <h3>Kilometerstand</h3>
+      <h3>Fahrzeugübersicht</h3>
       <span id="mileageSource" class="pill pill-off">–</span>
     </div>
     <p class="km-big" id="mileageNow">Noch kein Kilometerstand</p>
     <p class="hint" id="mileageInfo"></p>
+    <details><summary>Kilometerstand bearbeiten</summary>
     <div class="toolbar">
       <input type="text" id="mileageKm" inputmode="numeric" placeholder="Stand in km" autocomplete="off">
       <input type="date" id="mileageDate" aria-label="Datum">
       <button id="addMileage">Speichern</button>
     </div>
+    </details>
     <details>
       <summary>Verlauf</summary>
       <div id="mileageHistory"></div>
     </details>
-    <p class="hint" id="vehicleLive">Live-Daten vom Fahrzeug werden beim Öffnen abgefragt.</p>
+    <p class="hint" id="vehicleLive"></p>
+    <div id="bmwNextService"></div>
+    <button type="button" id="openVehicleDiagnostics" class="textbutton">Fahrzeugdaten-Diagnose</button>
   </div>
 
   <div class="panel">
-    <h3>Fällig</h3>
+    <h3>Service und Wartung</h3>
     <div id="dueList"></div>
     <details id="itemBox">
-      <summary>Wartungsart hinzufügen oder ändern</summary>
+      <summary>Wartungsplan bearbeiten</summary>
+      <form id="maintenanceSettings" class="form-grid">
+        <label>Wartungsprofil <select id="maintenanceProfile"><option value="custom">Individuell</option><option value="g21-diesel">BMW G21 Diesel · Standardwerte ergänzen</option></select></label>
+        <label>Erstzulassung <input type="date" id="maintenanceRegistration"></label>
+        <label>Warnschwelle Tage <input type="number" id="maintenanceDays" min="0" max="365" value="30" required></label>
+        <label>Warnschwelle km <input type="number" id="maintenanceKm" min="0" max="300000" value="1000" required></label>
+        <button type="submit">Profil speichern</button>
+      </form>
+      <label>Wartungsart <select id="maintenanceItem"></select></label>
       <form id="itemForm" class="form-grid" autocomplete="off">
         <input type="hidden" id="itemId">
         <label class="wide">Name <input type="text" id="itemName" maxlength="60" placeholder="z. B. Bremsflüssigkeit"></label>
@@ -172,39 +184,7 @@
 
   <div class="panel">
     <div class="section-head">
-      <h3>Reifen</h3>
-      <span id="tyreAge" class="pill pill-off">–</span>
-    </div>
-    <div id="tyreList" class="tyre-grid"></div>
-    <p class="hint">Druck und Temperatur aus der Reifendruckkontrolle (Einheiten laut Fahrzeugschnittstelle: mbar und °C, noch nicht mit iDrive abgeglichen). Gewarnt wird unter 90 % des Solldrucks.</p>
-  </div>
-
-  <div class="panel" id="dpfPanel">
-    <div class="section-head">
-      <h3>Dieselpartikelfilter</h3>
-      <span id="dpfAge" class="pill pill-off">–</span>
-    </div>
-    <div id="dpfValues" class="stat-grid"></div>
-    <h3>Regenerationen</h3>
-    <div id="dpfRegens"></div>
-    <p class="hint">Werte vom Motorsteuergerät (DDE, gleiche Kennungen wie DPF Monitor), alle 5 Minuten bei laufendem Auto. Eine Regeneration wird erkannt, wenn die Strecke seit der letzten Regeneration zurückspringt.</p>
-  </div>
-
-  <div class="panel" id="vehicleReported">
-    <div class="section-head">
-      <h3>Laut Fahrzeug</h3>
-      <span id="reportedAge" class="pill pill-off">–</span>
-    </div>
-    <div id="bmwNextService"></div>
-    <div id="cbsList"></div>
-    <h3>Servicehistorie im Fahrzeug</h3>
-    <div id="historyList"></div>
-    <p class="hint" id="reportedHint">Kommt von der App „Vehicle Data“ auf der MGU. Die Einheiten sind noch nicht mit der Anzeige im Auto abgeglichen: vergleiche einmal Kilometerstand und Servicebedarf mit iDrive.</p>
-  </div>
-
-  <div class="panel">
-    <div class="section-head">
-      <h3>Serviceheft</h3>
+      <h3>Servicehistorie</h3>
       <button id="newServiceEntry" class="secondary">Eintrag hinzufügen</button>
     </div>
     <form id="serviceForm" class="form-grid" autocomplete="off" hidden>
@@ -223,12 +203,25 @@
       </div>
     </form>
     <div id="serviceEntries"></div>
+    <button id="toggleServiceHistory" type="button" class="textbutton" hidden>Gesamte Servicehistorie anzeigen</button>
   </div>
-  <details class="panel" id="vehicleTelemetry">
-    <summary>Technische Fahrzeugdaten-Diagnose</summary>
-    <div id="vehicleTelemetryRows"></div>
-    <button id="vehicleTelemetryExport" class="secondary">Bereinigten Mitschnitt als JSON speichern</button>
-  </details>
+  <div class="panel">
+    <div class="section-head">
+      <h3>Reifen</h3>
+      <span id="tyreAge" class="pill pill-off">–</span>
+    </div>
+    <div id="tyreList" class="tyre-grid"></div>
+  </div>
+
+  <div class="panel" id="dpfPanel">
+    <div class="section-head">
+      <h3>Dieselpartikelfilter</h3>
+      <span id="dpfAge" class="pill pill-off">–</span>
+    </div>
+    <div id="dpfValues" class="stat-grid"></div>
+    <details><summary>Regenerationen</summary><div id="dpfRegens"></div></details>
+  </div>
+
 </section>
 
 <!-- ===== Fehler ===== -->
@@ -370,6 +363,12 @@
     </div>
     <div id="reportList"></div>
   </div>
+  <details class="panel" id="vehicleTelemetry">
+    <summary>Fahrzeugdaten</summary>
+    <div id="vehicleTelemetryRows"></div>
+    <div id="dpfMeasurementTimes"></div>
+    <button id="vehicleTelemetryExport" class="secondary">Bereinigten Mitschnitt als JSON speichern</button>
+  </details>
 </section>
 
 <!-- ===== Konsole ===== -->

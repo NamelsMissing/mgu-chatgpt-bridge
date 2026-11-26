@@ -12,7 +12,7 @@ const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.4'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.5'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -233,11 +233,38 @@ function listing(obj){return Object.values(obj).sort((a,b)=>String(b.createdAt||
 // Alles hier liegt nur auf dem Pi. Ein Kilometerstand kommt von dir oder, sobald der MGU-Agent
 // einen geprüften Wert liefert (vehicle.mileageKm), vom Fahrzeug. Nichts wird geschätzt und als
 // Messwert ausgegeben; Prognosen sind als solche gekennzeichnet.
-const DEFAULT_SERVICE_ITEMS={oil:{id:'oil',name:'Motoröl und Ölfilter',intervalMonths:12,intervalKm:8000}};
+const G21_SERVICE_ITEMS={
+  oil:['Motoröl und Ölfilter',24,30000,['OELSERVICE']],
+  microfilter:['Innenraumfilter/Mikrofilter',24,30000,['MIKROFILTER']],
+  check:['Fahrzeug-Check',48,60000,['SICHTPRUEFUNGEN','SICHTPRUEFUNG_ADAPTIV']],
+  airFilter:['Motorluftfilter',48,60000,[]],
+  fuelFilter:['Kraftstofffilter Diesel',48,60000,[]],
+  brakeFluid:['Bremsflüssigkeit',24,0,['BREMSFLUESSIGKEIT'],36],
+  coolant:['Kühlflüssigkeit',36,0,['KUEHLFLUESSIGKEIT']],
+  inspection:['HU/AU',24,0,['HU_HAUPTUNTERSUCHUNG'],36]
+};
 if(!st.vehicle||typeof st.vehicle!=='object')st.vehicle={};
 if(!Array.isArray(st.vehicle.mileage))st.vehicle.mileage=[];
 if(!st.vehicle.entries||typeof st.vehicle.entries!=='object')st.vehicle.entries={};
-if(!st.vehicle.items||typeof st.vehicle.items!=='object')st.vehicle.items=JSON.parse(JSON.stringify(DEFAULT_SERVICE_ITEMS));
+if(!st.vehicle.items||typeof st.vehicle.items!=='object')st.vehicle.items={oil:{id:'oil',name:'Motoröl und Ölfilter',intervalMonths:12,intervalKm:8000,initialDefault:true}};
+function configureMaintenance(d){
+  if(!['g21-diesel','custom'].includes(d.profile))throw Error('Unbekanntes Wartungsprofil');
+  const registration=d.registration?checkDate(d.registration,'Erstzulassung'):null;
+  const warningDays=checkInt(d.warningDays??30,'Warnschwelle Tage',365);
+  const warningKm=checkInt(d.warningKm??1000,'Warnschwelle km',300000);
+  st.vehicle.maintenance={profile:d.profile,registration,warningDays,warningKm};
+  if(d.profile==='g21-diesel'){
+    for(const [id,[name,intervalMonths,intervalKm]] of Object.entries(G21_SERVICE_ITEMS)){
+      if(st.vehicle.items[id]?.initialDefault)st.vehicle.items[id]={id,name,intervalMonths,intervalKm,standard:true};
+      else if(!st.vehicle.items[id]){
+        const existing=Object.values(st.vehicle.items).find(i=>i.name.toLowerCase()===name.toLowerCase());
+        if(existing)existing.planKey=id;
+        else st.vehicle.items[id]={id,name,intervalMonths,intervalKm,standard:true};
+      }
+    }
+  }
+  save();
+}
 const DAY=86400000;
 const today=()=>new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD in Ortszeit des Pi
 function dayNumber(d){return Math.round(Date.parse(d+'T12:00:00Z')/DAY);}
@@ -267,7 +294,7 @@ function mileagePoints(){
   for(const e of Object.values(st.vehicle.entries))if(e.km!==null&&e.km!==undefined)pts.push({date:e.date,km:e.km,source:'service',at:e.createdAt||''});
   return pts.sort((a,b)=>a.date.localeCompare(b.date)||a.km-b.km||a.at.localeCompare(b.at));
 }
-function currentMileage(){const pts=mileagePoints();return pts.length?pts[pts.length-1]:null;}
+function currentMileage(){const pts=mileagePoints().filter(p=>p.source!=='service');return pts[pts.length-1]||null;}
 // Durchschnitt aus dem letzten Jahr, nur wenn mindestens 14 Tage und eine Steigerung vorliegen.
 function kmPerDay(){
   const pts=mileagePoints();if(pts.length<2)return null;
@@ -276,21 +303,34 @@ function kmPerDay(){
   return days>=14&&km>0?km/days:null;
 }
 function serviceDue(item,cur,rate){
-  const done=Object.values(st.vehicle.entries).filter(e=>e.items.includes(item.id)).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0));
-  const last=done[0]||null;
+  const key=item.planKey||item.id;
+  const def=G21_SERVICE_ITEMS[key];
+  const scopes=def?.[3]||[];
+  const done=Object.values(st.vehicle.entries).filter(e=>e.items.includes(item.id))
+    .map(e=>({...e,source:'own'}));
+  for(const set of st.vehicle.live?.serviceHistory?.sets||[]){
+    if(set.date&&set.date<=today()&&set.services.some(row=>scopes.includes(row.scope)&&
+      ['SERVICE_PERFORMED','SERVICE_CARRIED_OUT_LATE'].includes(row.status))){
+      done.push({date:set.date,km:set.km,source:'BMW'});
+    }
+  }
+  done.sort((a,b)=>b.date.localeCompare(a.date)||(b.km??-1)-(a.km??-1)||Number(b.source==='BMW')-Number(a.source==='BMW'));
+  const last=done[0]||null,settings=st.vehicle.maintenance||{};
+  const firstDate=!last&&settings.profile==='g21-diesel'&&settings.registration&&def?.[4]?
+    addMonths(settings.registration,def[4]):null;
   // Eine von Hand gesetzte Fälligkeit gilt, bis danach ein passender Serviceeintrag folgt.
   const o=item.override,override=o&&(!last||last.date<o.setOn||(last.date===o.setOn&&String(last.createdAt||'')<String(o.setAt||'')))?o:null;
-  const dueDate=override&&override.date?override.date:(last&&item.intervalMonths?addMonths(last.date,item.intervalMonths):null);
+  const dueDate=override&&override.date?override.date:(last&&item.intervalMonths?addMonths(last.date,item.intervalMonths):firstDate);
   const dueKm=override&&override.km!==null&&override.km!==undefined?override.km:(last&&last.km!==null&&last.km!==undefined&&item.intervalKm?last.km+item.intervalKm:null);
   const t=today(),daysLeft=dueDate?dayNumber(dueDate)-dayNumber(t):null,kmLeft=dueKm!==null&&cur?dueKm-cur.km:null;
   const kmDate=kmLeft!==null&&rate?addDays(t,Math.max(0,Math.round(kmLeft/rate))):null;
   let status='ok';
   if(dueDate===null&&dueKm===null)status='unknown';
-  else if((daysLeft!==null&&daysLeft<0)||(kmLeft!==null&&kmLeft<0))status='overdue';
-  else if((daysLeft!==null&&daysLeft<=30)||(kmLeft!==null&&kmLeft<=1000)||(kmDate&&dayNumber(kmDate)-dayNumber(t)<=30))status='soon';
+  else if((daysLeft!==null&&daysLeft<=0)||(kmLeft!==null&&kmLeft<=0))status='overdue';
+  else if((daysLeft!==null&&daysLeft<=(settings.warningDays??30))||(kmLeft!==null&&kmLeft<=(settings.warningKm??1000))||(kmDate&&dayNumber(kmDate)-dayNumber(t)<=(settings.warningDays??30)))status='soon';
   const firstBy=dueDate&&kmDate?(kmDate<dueDate?'km':'date'):dueDate?'date':dueKm!==null?'km':null;
   return {id:item.id,name:item.name,intervalMonths:item.intervalMonths||0,intervalKm:item.intervalKm||0,override:override||null,
-    lastDone:last?{entryId:last.id,date:last.date,km:last.km}:null,dueDate,dueKm,daysLeft,kmLeft,estimatedKmDate:kmDate,firstBy,status};
+    key,source:item.standard&&!override?'plan':'individual',lastDone:last?{entryId:last.id,date:last.date,km:last.km,source:last.source}:null,dueDate,dueKm,daysLeft,kmLeft,estimatedKmDate:kmDate,firstBy,status};
 }
 function wasRecent(at,ms){
   const age=Date.now()-Date.parse(at);
@@ -309,14 +349,17 @@ function nextBmwService(rows){
   return {byDate:ordered[0]||null,byDistance:km[0]||null};
 }
 function vehicleView(){
-  const cur=currentMileage(),rate=kmPerDay(),order={overdue:0,soon:1,unknown:2,ok:3};
-  return {today:today(),mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
+  const manual=currentMileage(),live=st.vehicle.live;
+  const cur=Number.isInteger(live?.mileageKm)?{km:live.mileageKm,date:live.mileageAt?.slice(0,10),source:'vehicle'}:manual;
+  const rate=kmPerDay(),order={overdue:0,soon:1,ok:2,unknown:3};
+  return {today:today(),maintenance:st.vehicle.maintenance||{},mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
     bmwNextService:nextBmwService(st.vehicle.live?.cbs||[]),
     mileageHistory:mileagePoints().slice(-40).reverse(),
     ownMileage:[...st.vehicle.mileage].sort((a,b)=>b.date.localeCompare(a.date)||b.km-a.km).slice(0,40),
     due:Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate)).sort((a,b)=>order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9'))),
     items:Object.values(st.vehicle.items),
     entries:Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0)),
+    tyres:tyresView(),dpf:dpfView(),poll:M.poll,
     live:st.vehicle.live?Object.assign({},st.vehicle.live,{
       stale:st.vehicle.live.mileageAvailable!==true||!vehicleReadingFresh(st.vehicle.live.mileageAt,7*60000),
       cbsStale:!vehicleReadingFresh(st.vehicle.live.cbsAt||st.vehicle.live.cbsListAt,15*60000),serviceHistory:st.vehicle.live.serviceHistory?Object.assign({},st.vehicle.live.serviceHistory,
@@ -337,7 +380,8 @@ function noteVehicleMileage(status){
   noteVehicleLive(v);
   const km=v&&v.mileageKm;
   if(!Number.isInteger(km)||km<=0||km>2000000||v.appState==='stale'||v.mileageAvailable===false||!wasRecent(v.mileageAt,7*60000))return;
-  const cur=currentMileage();if(cur&&(km<cur.km||(cur.date===today()&&cur.km===km)))return;
+  const cur=[...st.vehicle.mileage].reverse().find(point=>point.source==='vehicle');
+  if(cur&&(km<cur.km||(cur.date===v.mileageAt.slice(0,10)&&cur.km===km)))return;
   addMileage(km,v.mileageAt.slice(0,10),'vehicle',v.mileageAt,v.mileageSource);
 }
 // Servicebedarf (CBS) und Servicehistorie, wie sie die App "Vehicle Data" auf der MGU liest.
@@ -348,16 +392,16 @@ function noteVehicleLive(v){
   if(!v||v.appState==='stale'||(v.status!=='ok'&&v.status!=='waiting'))return;
   const h=v.serviceHistory&&typeof v.serviceHistory==='object'?v.serviceHistory:null;
   const live={at:str(v.writtenAt,40),source:str(v.source,60),writtenAt:str(v.writtenAt,40),unverified:v.unverified!==false,
-    mileageKm:int(v.mileageKm,2000000),mileageAt:str(v.mileageAt,40),mileageSource:str(v.mileageSource,60),
+    mileageKm:Number.isInteger(v.mileageKm)&&v.mileageKm>0&&Number.isFinite(Date.parse(v.mileageAt))?int(v.mileageKm,2000000):null,mileageAt:str(v.mileageAt,40),mileageSource:str(v.mileageSource,60),
     cbs:(Array.isArray(v.cbs)?v.cbs:[]).slice(0,50).filter(Boolean).map(c=>({scope:str(c.scope,40),label:str(c.label,100)||'Service',
       remainingKm:int(c.remainingKm,65534),at:str(c.at,40),dueDate:isoDay(c.dueDate),available:c.available===false?false:null,
       dueMonth:typeof c.dueMonth==='string'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(c.dueMonth)?c.dueMonth:null,
       source:str(c.source,70)||'ConditionBasedServicesLegacy',status:str(c.status,50)??int(c.status,65535),
       remainingAt:str(c.remainingAt,40),remainingSource:str(c.remainingSource,70)})),
-    serviceHistory:h?{status:str(h.status,40),readAt:str(h.readAt,40),sets:(Array.isArray(h.sets)?h.sets:[]).slice(0,60).map(x=>({date:isoDay(x&&x.date),km:int(x&&x.km,2000000),dealer:str(x&&x.dealer,40)||'',status:str(x&&x.status,40),
-      services:(Array.isArray(x&&x.services)?x.services:[]).slice(0,30).map(e=>({scope:str(e&&e.scope,40),label:str(e&&e.label,60)||'Service',status:str(e&&e.status,40)}))}))}:null};
+    serviceHistory:h?{status:str(h.status,40),readAt:str(h.readAt,40),sets:(Array.isArray(h.sets)?h.sets:[]).slice(0,60).map(x=>({date:isoDay(x&&x.date),km:int(x&&x.km,2000000),dealer:str(x&&x.dealer,40)||'',status:str(x&&x.status,40),correction:int(x&&x.correction,65535),
+      services:(Array.isArray(x&&x.services)?x.services:[]).slice(0,30).map(e=>({scope:str(e&&e.scope,40),label:str(e&&e.label,60)||'Service',status:str(e&&e.status,40),code:int(e&&e.code,65535)??str(e&&e.code,60)}))}))}:null};
   const previous=st.vehicle.live;
-  if(previous&&Number.isInteger(previous.mileageKm)&&(live.mileageKm===null||live.mileageKm<previous.mileageKm||
+  if(previous&&Number.isInteger(previous.mileageKm)&&(live.mileageKm===null||live.mileageKm<previous.mileageKm||(!wasRecent(live.mileageAt,7*60000)&&live.mileageKm!==previous.mileageKm)||
     !Number.isFinite(Date.parse(live.mileageAt))||Date.parse(live.mileageAt)<Date.parse(previous.mileageAt))){
     live.mileageAvailable=false;
     for(const k of ['mileageKm','mileageAt','mileageSource'])live[k]=previous[k];
@@ -378,7 +422,7 @@ function noteVehicleLive(v){
     live.cbs=[...entries.values()].slice(0,50);
   }
   live.cbsAt=live.cbsListAt||live.cbs.map(c=>c.at).filter(at=>Number.isFinite(Date.parse(at))).sort().pop()||null;
-  if(previous&&!live.serviceHistory)live.serviceHistory=previous.serviceHistory||null;
+  if(previous&&(!live.serviceHistory||previous.serviceHistory?.status==='E_OK'&&live.serviceHistory.status!=='E_OK'))live.serviceHistory=previous.serviceHistory||null;
   const before=JSON.stringify(Object.assign({},previous||{},{at:null}));
   st.vehicle.live=live;
   if(JSON.stringify(Object.assign({},live,{at:null}))!==before)save();
@@ -410,7 +454,8 @@ function saveServiceItem(d){
   if(oDate||oKm!==null)override={date:oDate,km:oKm,setOn:today(),setAt:now()};
   if(!intervalMonths&&!intervalKm&&!override)throw Error('Intervall (Monate oder km) oder eine feste Fälligkeit angeben');
   const item=id?st.vehicle.items[id]:{id:uid()};
-  Object.assign(item,{name,intervalMonths,intervalKm,override});
+  delete item.initialDefault;
+  Object.assign(item,{name,intervalMonths,intervalKm,override,standard:false});
   st.vehicle.items[item.id]=item;save();return item;
 }
 function saveServiceEntry(d){
@@ -1502,7 +1547,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
       try{capabilities=await(await mguRequest('GET','/v1/vehicle/capabilities',null,18000)).json();}
       catch(e){capabilities={state:'unverified',httpStatus:e.status||null};}
     }
-    return send(res,200,{poll:M.poll,samples:vehicleRawSamples,dtcCatalog:faultsView(false).texts,capabilities});
+    return send(res,200,{poll:M.poll,samples:vehicleRawSamples,dtcCatalog:faultsView(false).texts,dpfFieldTimes:dpfView()?.latest.fieldTimes||{},capabilities});
   }
   if(req.method==='GET'&&p==='/api/v1/faults/ecu-worksheet'){
     const configured=localFaultTexts(),valid=[...M.faults.reads].reverse().find(x=>!x.error);
@@ -1513,7 +1558,8 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     }
     return send(res,200,{schema:1,ecu});
   }
-  if(req.method==='GET'&&p==='/api/v1/vehicle')return send(res,200,Object.assign(vehicleView(),{tyres:tyresView(),dpf:dpfView(),poll:M.poll}));
+  if(req.method==='GET'&&p==='/api/v1/vehicle')return send(res,200,vehicleView());
+  if(req.method==='POST'&&p==='/api/v1/vehicle/maintenance'){configureMaintenance(await body(req,4096));return send(res,200,vehicleView());}
   // ----- Fehler: Check-Control und Fehlerspeicher -----
   if(req.method==='GET'&&p==='/api/v1/faults/reference')return send(res,200,faultsView().texts.reference);
   if(req.method==='POST'&&['/api/v1/faults/reference','/api/v1/faults/reference/restore'].includes(p)){

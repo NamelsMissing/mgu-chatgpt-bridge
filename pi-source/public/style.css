@@ -243,3 +243,12 @@ input.full{width:100%;margin:8px 0}
 .tyre strong,.stat strong{font-size:1.25rem}
 .tyre-low{border-color:#c24f5b;background:#2a171c}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:10px}
+
+.maintenance-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:.45rem .8rem;align-items:center;cursor:pointer}
+.maintenance-row strong::before{content:'▸ ';color:var(--muted)}
+details[open]>.maintenance-row strong::before{content:'▾ '}
+@media(max-width:560px){
+  .maintenance-row{grid-template-columns:minmax(0,1fr) auto}
+  .maintenance-row>.hint{grid-column:1;grid-row:2}
+  .maintenance-row>.pill{grid-column:2;grid-row:1 / span 2}
+}
