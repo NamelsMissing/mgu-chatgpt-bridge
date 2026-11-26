@@ -739,14 +739,12 @@ function renderMaintenance(v){
  }
  const open=new Set([...box.querySelectorAll('details[open]')].map(el=>el.dataset.key));
  box.replaceChildren();next.replaceChildren();
- const scopeByKey={oil:['OELSERVICE'],microfilter:['MIKROFILTER'],check:['SICHTPRUEFUNGEN','SICHTPRUEFUNG_ADAPTIV'],
-  brakeFluid:['BREMSFLUESSIGKEIT'],coolant:['KUEHLFLUESSIGKEIT'],inspection:['HU_HAUPTUNTERSUCHUNG']};
  const cbs=(v.live?.cbs||[]).filter(c=>c.available!==false&&(c.dueDate||c.dueMonth||Number.isInteger(c.remainingKm)));
  const cbsLine=c=>[Number.isInteger(c.remainingKm)?'Noch '+kmText(c.remainingKm):'',c.dueDate?dateText(c.dueDate):c.dueMonth?.split('-').reverse().join('/')].filter(Boolean).join(' · ');
  const planLine=d=>[Number.isInteger(d.kmLeft)?(d.kmLeft<0?kmText(-d.kmLeft)+' überfällig':'Noch '+kmText(d.kmLeft)):d.dueKm!==null?'Bei '+kmText(d.dueKm):'',
   d.dueDate?dateText(d.dueDate):''].filter(Boolean).join(' · ');
  const overview=v.maintenanceOverview;
- const rows=v.due.map(d=>({d,c:cbs.find(c=>(scopeByKey[d.key]||[]).includes(c.scope))}));
+ const rows=v.due.map(d=>({d,c:cbs.find(c=>overview.cbsKeys[c.scope]===d.key)}));
  for(const c of cbs)if(!rows.some(row=>row.c===c))rows.push({c});
  const rank={overdue:0,soon:1,ok:2,unknown:3};
  const statusOf=({c,d})=>[d?.status,c?overview.cbsStatuses[c.scope]:null].filter(Boolean)
@@ -780,8 +778,11 @@ function renderMaintenance(v){
   card.append(head);
   if(c)card.append(txt('p','BMW CBS'+(v.live?.cbsStale?' · veraltet':'')+(c.at?' · '+stamp(c.at):'')+(c.status!=null?' · Status '+c.status:''),'hint'));
   if(d){
-   const source=d.source==='individual'?'Individuell festgelegt':'Automatisch berechnet';
-   card.append(txt('p',[source,dueLine(d)].filter(Boolean).join(' · '),'hint'));
+   const bases={BMW:'Durch BMW-Servicehistorie bestätigt',own:'Durch eigene Wartung bestätigt',
+    cycle:'Aus Servicehistorie abgeleitet',registration:'Aus Erstzulassung geschätzt'};
+   const source=[d.override?'Manuell festgelegt':null,bases[d.basis]].filter(Boolean).join(' · ');
+   if(source||d.dueDate||d.dueKm!=null)card.append(txt('p',[source,dueLine(d)].filter(Boolean).join(' · '),'hint'));
+   if(d.cycle)card.append(txt('p','Regulärer BMW-Service am '+dateText(d.cycle.date),'hint'));
    if(d.lastDone)card.append(txt('p','Zuletzt '+dateText(d.lastDone.date)+(d.lastDone.km!==null?' · '+kmText(d.lastDone.km):'')+' · '+(d.lastDone.source==='BMW'?'BMW':'Eigene Wartung'),'hint'));
    if(interval)card.append(txt('p','Intervall '+interval,'hint'));
    if(d.estimatedKmDate&&d.kmLeft>0)card.append(txt('p','Geschätzte km-Grenze '+dateText(d.estimatedKmDate),'hint'));

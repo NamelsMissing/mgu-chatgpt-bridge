@@ -107,3 +107,5 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 **0.10.7:** Unter **System → Diagnoseberichte auf GitHub** lässt sich die automatische Übertragung technischer Zustandswechsel in ein privates Repository freigeben. [Einrichtung und Inhalt des Diagnoseberichts](docs/PI-GITHUB-DIAGNOSE.md).
 
 **0.10.8:** Der Pi ergänzt beim Update fehlende Wartungsarten in bestehenden Öl-Wartungsplänen und verknüpft eindeutig zuordenbare BMW-Serviceimporte mit ihrem Original. [Prüfbericht zur Datenmigration](docs/PRUEFBERICHT-WARTUNG-0.10.8.md).
+
+**0.10.9:** Die Wartungsplanung wertet vorhandene BMW-Servicehistorie und lokale Wartungstexte beim Öffnen neu aus. Filtertermine aus dem BMW-Ölservicezyklus und Schätzungen ab Erstzulassung sind in den Details gekennzeichnet. [Prüfbericht](docs/PRUEFBERICHT-WARTUNG-0.10.9.md).

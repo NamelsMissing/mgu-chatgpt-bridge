@@ -133,9 +133,62 @@ async function start(){
  assert.equal(saved.items.find(item=>item.id==='existing').intervalKm,18000);
  assert.equal(saved.due.find(item=>item.key==='brakeFluid').dueDate,plusMonths(day(-700),36));
  assert.equal(saved.due.find(item=>item.key==='inspection').dueDate,plusMonths(day(-700),36));
- assert.equal(saved.due.find(item=>item.key==='coolant').dueDate,null);
+ assert.equal(saved.due.find(item=>item.key==='coolant').dueDate,plusMonths(day(-700),36));
+ assert.equal(saved.due.find(item=>item.key==='coolant').basis,'registration');
  await stop();
 
+
+ // Known work, timed-only deadlines, and large-service estimation from cached history.
+ const performed=(on,km,...services)=>({date:on,km,status:'SERVICE_PERFORMED',services});
+ const older=day(-500),majorDate=day(-200);
+ const initialOil=performed(older,60000,service('OELSERVICE','Motoröl'));
+ const secondOil=performed(majorDate,87921,service('OELSERVICE','Motoröl'));
+ const local=(id,on,title,notes='')=>({id,date:on,km:null,items:[],title,notes});
+ const records=[
+  initialOil,secondOil,secondOil,
+  performed(day(-100),92500,service('11','Code 11'),service('12','Code 12')),
+  performed(day(-70),94000,service('KUEHLFLUESSIGKEIT','Kühlmittel nachgefüllt')),
+  performed(day(-60),95000,{scope:'FREITEXT',label:'Motorluftfilter',status:'SERVICE_INCOMPLETE'}),
+ ];
+ const savedBook={items:{oil},entries:{
+  ownOil:local('ownOil',day(-15),'Ölwechsel'),
+  fluid:local('fluid',day(-30),'Kühlmittel-Füllstand kontrolliert'),
+  hu:local('hu',day(-90),'HU bestanden'),
+ },mileage:[],live:{cbs:[{scope:'HU_HAUPTUNTERSUCHUNG',label:'Hauptuntersuchung',dueDate:day(250)}],
+  serviceHistory:{status:'E_OK',sets:records}}};
+ write({vehicle:savedBook});
+ await start();
+ saved=(await api('GET','/vehicle')).data;
+ const find=key=>saved.due.find(item=>item.key===key);
+ for(const key of ['airFilter','fuelFilter']){
+  assert.equal(find(key).dueDate,plusMonths(majorDate,48));
+  assert.equal(find(key).dueKm,147921);
+  assert.equal(find(key).basis,'cycle');
+  assert.equal(find(key).lastDone,null);
+ }
+ assert.equal(find('coolant').dueDate,null);
+ assert.equal(find('inspection').dueDate,plusMonths(day(-90),24));
+ assert.equal(find('inspection').basis,'own');
+ assert.equal(saved.bmwNextService.byDate.dueDate,day(250));
+ assert.equal(find('oil').intervalKm,8000);
+ await stop();
+
+ const documented=read();
+ documented.vehicle.live.serviceHistory.sets.push(
+  performed(day(-40),null,service('FREITEXT','Motorluftfilter erneuert')),
+  performed(day(-35),null,service('FREITEXT','Dieselfilter gewechselt')));
+ documented.vehicle.entries.realCoolant=local('realCoolant',day(-22),'Rechnung','Frostschutzmittel gewechselt');
+ write(documented);
+ await start();
+ saved=(await api('GET','/vehicle')).data;
+ assert.equal(find('airFilter').basis,'BMW');
+ assert.equal(find('airFilter').dueDate,plusMonths(day(-40),48));
+ assert.equal(find('airFilter').dueKm,null);
+ assert.equal(find('fuelFilter').basis,'BMW');
+ assert.equal(find('fuelFilter').dueDate,plusMonths(day(-35),48));
+ assert.equal(find('coolant').dueDate,plusMonths(day(-22),36));
+ assert.equal(find('coolant').basis,'own');
+ await stop();
  write({vehicle:{items:{oil},entries:{},mileage:[],maintenance:{profile:'custom'}}});
  await start();
  saved=(await api('GET','/vehicle')).data;

@@ -13,7 +13,7 @@ const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.8'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.9'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -249,17 +249,66 @@ const SERVICE_ALIASES={
   oil:['Motoröl','Ölwechsel','Öl und Ölfilter','Ölservice','Engine oil','Oil change'],
   microfilter:['Innenraumfilter','Mikrofilter','Pollenfilter','Kabinenfilter','Cabin filter'],
   check:['Fahrzeugcheck','Vehicle check'],
-  airFilter:['Luftfilter','Luftfilter Motor','Motor-Luftfilter','Engine air filter'],
-  fuelFilter:['Kraftstofffilter','Dieselfilter','Diesel-Kraftstofffilter','Fuel filter diesel'],
+  airFilter:['Luftfilter','Luftfilter Motor','Motor-Luftfilter','Engine air filter','Ansaugluftfilter','Motorluftfilterwechsel','Luftfilterwechsel','Air filter replacement'],
+  fuelFilter:['Kraftstofffilter','Dieselfilter','Diesel-Kraftstofffilter','Fuel filter diesel','Kraftstofffilterwechsel','Dieselfilterwechsel','Fuel filter replacement'],
   brakeFluid:['Bremsflüssigkeitswechsel','Bremsflüssigkeit wechseln','Brake fluid'],
-  coolant:['Kühlmittel','Kühlmittelwechsel','Kühlflüssigkeitswechsel','Kühlwasser','Coolant'],
-  inspection:['HU','Hauptuntersuchung','Haupt- und Abgasuntersuchung','TÜV','TÜV HU/AU']
+  coolant:['Kühlmittel','Kühlmittelwechsel','Kühlflüssigkeitswechsel','Kühlwasser','Coolant','Kühlwasserwechsel','Frostschutzmittelwechsel','Frostschutzmittel','Coolant replacement','Coolant change'],
+  inspection:['HU','Hauptuntersuchung','Haupt- und Abgasuntersuchung','TÜV','TÜV HU/AU','HU bestanden','TÜV bestanden']
 };
 const serviceName=value=>String(value||'').toLowerCase().replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue')
   .replace(/ß/g,'ss').replace(/[^a-z0-9]/g,'');
 const SERVICE_KEYS=new Map(Object.entries(G21_SERVICE_ITEMS).flatMap(([key,[name]])=>
   [name,key,...SERVICE_ALIASES[key]].map(alias=>[serviceName(alias),key])));
 const serviceKey=item=>item?.planKey||(Object.hasOwn(G21_SERVICE_ITEMS,item?.id)?item.id:SERVICE_KEYS.get(serviceName(item?.name)));
+// Numeric values documented in the IDScopeCBS catalog used by Vehicle Data.
+const VERIFIED_SCOPE_CODES={1:'OELSERVICE',3:'BREMSFLUESSIGKEIT',4:'MIKROFILTER',17:'SICHTPRUEFUNGEN',
+  18:'KUEHLFLUESSIGKEIT',32:'HU_HAUPTUNTERSUCHUNG',100:'SICHTPRUEFUNG_ADAPTIV'};
+const majorServiceNames=new Set(['Großer BMW-Service','Großer Service','Große Inspektion','BMW Hauptservice',
+  'BMW Major Service'].map(serviceName));
+const incompleteWork=/\b(?:nicht|kein(?:e[rmns]?)?|geplant|offen|empfohlen|empfehlung|ausstehend|faellig|unvollstaendig|nachfuellen|nachgefuellt|fuellstand\w*|kontroll\w*|pruefen|geprueft|topped up|check only|recommended|planned)\b/;
+const serviceWords=text=>String(text||'').toLowerCase().replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss').trim();
+function workKey(text,description=false){
+  const words=serviceWords(text);
+  if(incompleteWork.test(words))return null;
+  const name=serviceName(words);
+  if(majorServiceNames.has(name))return 'major';
+  // A recorded work title can name a part. Free-form notes need an explicit
+  // action to distinguish service work from a mention of a component.
+  const action=/\b(?:gewechselt|erneuert|ersetzt|getauscht|durchgefuehrt|gemacht|bestanden|replaced|changed)\b/;
+  if(description&&!action.test(words))return null;
+  return SERVICE_KEYS.get(name)||SERVICE_KEYS.get(serviceName(words.replace(action,'')))||null;
+}
+function bmwWorkKey(row){
+  const scope=String(row.scope??'');
+  if(incompleteWork.test(serviceWords(row.label)))return null;
+  return scopeToServiceKey.get(scope)||scopeToServiceKey.get(VERIFIED_SCOPE_CODES[row.code??scope])||workKey(row.label);
+}
+const workParts=text=>String(text||'').split(/[,;·\n]+/);
+function localWorkKeys(entry,items){
+  const keys=new Set((incompleteWork.test(serviceWords(entry.title))?[]:(entry.items||[])).map(id=>serviceKey(items[id])||id));
+  for(const text of workParts(entry.title))keys.add(workKey(text));
+  for(const text of workParts(entry.notes))keys.add(workKey(text,true));
+  keys.delete(null);
+  return keys;
+}
+const finishedBmw=(set,row)=>['SERVICE_PERFORMED','SERVICE_CARRIED_OUT_LATE'].includes(row.status||set.status);
+function regularMajorService(history,date){
+  const visits=new Map();
+  for(const set of history.values()){
+    if(!set.date||set.date>date)continue;
+    const keys=set.services.filter(row=>finishedBmw(set,row)).map(bmwWorkKey);
+    const anchor=keys.includes('major')||keys.includes('oil')&&(keys.includes('airFilter')||keys.includes('fuelFilter'));
+    if(!anchor&&!keys.includes('oil'))continue;
+    // A correction or second line for a visit cannot advance the oil cycle.
+    const previous=visits.get(set.date);
+    visits.set(set.date,{date:set.date,km:set.km??previous?.km??null,anchor:anchor||previous?.anchor});
+  }
+  let count=0,last=null;
+  for(const visit of [...visits.values()].sort((a,b)=>a.date.localeCompare(b.date))){
+    if(visit.anchor||++count===2){last=visit;count=0;}
+  }
+  return last;
+}
 const usesG21Plan=profile=>profile==='g21-diesel'||profile==='legacy-plan';
 
 function newVehicleBook(){
@@ -369,27 +418,31 @@ function kmPerDay(){
   const days=dayNumber(last.date)-dayNumber(first.date),km=last.km-first.km;
   return days>=14&&km>0?km/days:null;
 }
-function serviceDue(item,cur,rate,entries,history){
+function serviceDue(item,cur,rate,entries,history,major){
   const key=serviceKey(item)||item.id;
-  const def=G21_SERVICE_ITEMS[key];
-  const scopes=def?.[3]||[];
-  const done=entries.filter(e=>e.items.includes(item.id)&&
-    !e.bmwOriginal?.services?.some(row=>scopes.includes(row.scope))).map(e=>({...e,source:'own'}));
+  const def=G21_SERVICE_ITEMS[key],t=today();
+  const done=entries.filter(e=>e.date<=t&&e.workKeys.has(key)&&
+    !e.bmwOriginal?.services?.some(row=>bmwWorkKey(row)===key)&&
+    !(LEGACY_HISTORY_IMPORT.test(e.notes||'')&&!e.bmwRef))
+    .map(e=>({...e,source:'own'}));
   for(const set of history.values()){
-    if(set.date&&set.date<=today()&&set.services.some(row=>scopes.includes(row.scope)&&
-      ['SERVICE_PERFORMED','SERVICE_CARRIED_OUT_LATE'].includes(row.status||set.status))){
+    if(set.date&&set.date<=t&&set.services.some(row=>bmwWorkKey(row)===key&&finishedBmw(set,row))){
       done.push({date:set.date,km:set.km,source:'BMW'});
     }
   }
   done.sort((a,b)=>b.date.localeCompare(a.date)||(b.km??-1)-(a.km??-1)||Number(b.source==='BMW')-Number(a.source==='BMW'));
   const last=done[0]||null,settings=st.vehicle.maintenance||{};
-  const firstDate=!last&&usesG21Plan(settings.profile)&&settings.registration&&def?.[4]?
-    addMonths(settings.registration,def[4]):null;
-  // Eine von Hand gesetzte Fälligkeit gilt, bis danach ein passender Serviceeintrag folgt.
+  const usePlan=usesG21Plan(settings.profile);
+  const cycle=!last&&usePlan&&['airFilter','fuelFilter'].includes(key)?major:null;
+  const baseline=last||cycle;
+  const firstMonths=def?.[4]||(key==='coolant'?item.intervalMonths:0);
+  const firstDate=!baseline&&usePlan&&settings.registration&&firstMonths?
+    addMonths(settings.registration,firstMonths):null;
   const o=item.override,override=o&&(!last||last.date<o.setOn||(last.date===o.setOn&&String(last.createdAt||'')<String(o.setAt||'')))?o:null;
-  const dueDate=override&&override.date?override.date:(last&&item.intervalMonths?addMonths(last.date,item.intervalMonths):firstDate);
-  const dueKm=override&&override.km!==null&&override.km!==undefined?override.km:(last&&last.km!==null&&last.km!==undefined&&item.intervalKm?last.km+item.intervalKm:null);
-  const t=today(),daysLeft=dueDate?dayNumber(dueDate)-dayNumber(t):null,kmLeft=dueKm!==null&&cur?dueKm-cur.km:null;
+  const dueDate=override?.date||(baseline&&item.intervalMonths?addMonths(baseline.date,item.intervalMonths):firstDate);
+  const dueKm=override?.km??(baseline?.km!=null&&item.intervalKm?baseline.km+item.intervalKm:null);
+  const basis=last?.source||(cycle?'cycle':firstDate?'registration':null);
+  const daysLeft=dueDate?dayNumber(dueDate)-dayNumber(t):null,kmLeft=dueKm!==null&&cur?dueKm-cur.km:null;
   const kmDate=kmLeft!==null&&rate?addDays(t,Math.max(0,Math.round(kmLeft/rate))):null;
   let status='ok';
   if(daysLeft===null&&kmLeft===null)status='unknown';
@@ -397,7 +450,7 @@ function serviceDue(item,cur,rate,entries,history){
   else if((daysLeft!==null&&daysLeft<=(settings.warningDays??30))||(kmLeft!==null&&kmLeft<=(settings.warningKm??1000))||(kmDate&&dayNumber(kmDate)-dayNumber(t)<=(settings.warningDays??30)))status='soon';
   const firstBy=dueDate&&kmDate?(kmDate<dueDate?'km':'date'):dueDate?'date':dueKm!==null?'km':null;
   return {id:item.id,name:item.name,intervalMonths:item.intervalMonths||0,intervalKm:item.intervalKm||0,override:override||null,
-    key,source:item.standard&&!override?'plan':'individual',lastDone:last?{entryId:last.id,date:last.date,km:last.km,source:last.source}:null,dueDate,dueKm,daysLeft,kmLeft,estimatedKmDate:kmDate,firstBy,status};
+    key,basis,cycle,source:item.standard&&!override?'plan':'individual',lastDone:last?{entryId:last.id,date:last.date,km:last.km,source:last.source}:null,dueDate,dueKm,daysLeft,kmLeft,estimatedKmDate:kmDate,firstBy,status};
 }
 function wasRecent(at,ms){
   const age=Date.now()-Date.parse(at);
@@ -419,7 +472,7 @@ function maintenanceOverview(due,cbs,t,settings){
   const rank={overdue:0,soon:1,ok:2,unknown:3};
   const groups=new Map();
   const add=(key,status)=>{if(!groups.has(key)||rank[status]<rank[groups.get(key)])groups.set(key,status);};
-  const cbsStatuses=Object.create(null);
+  const cbsStatuses=Object.create(null),cbsKeys=Object.create(null);
   for(const item of due)add(item.key,item.status);
   for(const row of cbs){
     if(row.available===false)continue;
@@ -429,7 +482,8 @@ function maintenanceOverview(due,cbs,t,settings){
     const status=(days!==null&&days<=0)||(month&&month<t.slice(0,7))||(distanceKnown&&km<=0)?'overdue':
       (days!==null&&days<=(settings.warningDays??30))||month===t.slice(0,7)||(distanceKnown&&km<=(settings.warningKm??1000))?'soon':'ok';
     cbsStatuses[row.scope]=status;
-    add(scopeToServiceKey.get(row.scope)||row.scope||row.label,status);
+    cbsKeys[row.scope]=bmwWorkKey(row);
+    add(cbsKeys[row.scope]||row.scope||row.label,status);
   }
   const statuses=[...groups.values()];
   const next={
@@ -437,7 +491,7 @@ function maintenanceOverview(due,cbs,t,settings){
     byDistance:due.filter(row=>row.kmLeft!==null).sort((a,b)=>a.kmLeft-b.kmLeft)[0]||null,
   };
   return {dueCount:statuses.filter(status=>status==='overdue').length,
-    unknownCount:statuses.filter(status=>status==='unknown').length,next,cbsStatuses};
+    unknownCount:statuses.filter(status=>status==='unknown').length,next,cbsStatuses,cbsKeys};
 }
 function vehicleView(){
   const manual=currentMileage(),live=st.vehicle.live;
@@ -446,7 +500,9 @@ function vehicleView(){
   const date=today(),maintenance=st.vehicle.maintenance||{};
   const entries=Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0));
   const originals=historyRecords(entries);
-  const due=Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate,entries,originals)).sort((a,b)=>
+  const work=entries.map(e=>({...e,workKeys:localWorkKeys(e,st.vehicle.items)}));
+  const major=regularMajorService(originals,date);
+  const due=Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate,work,originals,major)).sort((a,b)=>
     order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9')));
   const cbs=live?.cbs||[];
   return {today:date,maintenance,mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
@@ -542,20 +598,13 @@ function linkLegacyHistoryEntries(vehicle){
   let changed=false;
   for(const entry of Object.values(vehicle.entries)){
     if(entry.bmwRef||!LEGACY_HISTORY_IMPORT.test(entry.notes||''))continue;
-    const localNames=new Set();
-    for(const id of entry.items||[]){
-      const item=vehicle.items[id];
-      if(item)localNames.add(serviceKey(item)||serviceName(item.name));
-    }
-    for(const part of String(entry.title||'').split(/[,;·]/)){
-      const name=serviceName(part);
-      if(name)localNames.add(SERVICE_KEYS.get(name)||name);
-    }
+    const localNames=localWorkKeys(entry,vehicle.items);
+    for(const part of workParts(entry.title))localNames.add(serviceName(part));
     const candidates=[...originals].filter(([,set])=>set.date===entry.date&&
       (entry.km==null||set.km==null||entry.km===set.km));
     const matches=candidates.map(([ref,set])=>{
       const count=(set.services||[]).filter(row=>
-        localNames.has(scopeToServiceKey.get(row.scope)||serviceName(row.label))).length;
+        localNames.has(bmwWorkKey(row)||serviceName(row.label))).length;
       return {ref,set,count};
     });
     const complete=matches.filter(({set,count})=>count>0&&count===set.services.length);
@@ -601,7 +650,8 @@ function importHistory(date,km,reference){
   const byName=Object.fromEntries(Object.values(st.vehicle.items).map(i=>[serviceName(i.name),i.id]));
   const items=[],rest=[];
   for(const sv of set.services){
-    const id=sv.scope==='OELSERVICE'&&st.vehicle.items.oil?'oil':byName[serviceName(sv.label)];
+    const key=bmwWorkKey(sv);
+    const id=key&&Object.values(st.vehicle.items).find(item=>serviceKey(item)===key)?.id||byName[serviceName(sv.label)];
     if(id&&!items.includes(id))items.push(id);else if(!id)rest.push(sv.label);
   }
   return saveServiceEntry({date:set.date,km:set.km,items,title:rest.length?rest.join(', '):(items.length?'':'Service laut Fahrzeug'),
