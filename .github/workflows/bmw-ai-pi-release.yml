@@ -65,6 +65,8 @@ jobs:
           node --check pi-source/siwc.js
           node --check pi-source/mgu-ssh.js
           node --check pi-source/dtc-import.js
+          node --check pi-source/github-diagnostics.js
+          node pi-source/tests/test-github-diagnostics.js
           node tests/motorscope-import.mjs
           python3 tests/dtc-reference-test.py
           node --check pi-source/public/app.js
@@ -89,7 +91,7 @@ jobs:
             paths=[entry['path'] for entry in json.loads(baseline.read('manifest.json'))['files']]
           contents={x:(root/x).read_bytes() for x in paths}
           server=contents['server.js'].decode()
-          for variable, module in [('ssh','mgu-ssh'),('dtcImport','dtc-import')]:
+          for variable, module in [('ssh','mgu-ssh'),('dtcImport','dtc-import'),('githubDiagnostics','github-diagnostics')]:
             source_import="const "+variable+"=require('./"+module+"');"
             assert server.count(source_import)==1, 'Could not locate module import: '+module
             local_source=(root/(module+'.js')).read_text()

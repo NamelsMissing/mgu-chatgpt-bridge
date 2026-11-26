@@ -103,3 +103,5 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 **0.10.4:** Private, fahrzeugübergreifende SQLite-Fehlertexte mit Offline-Auflösung und Upload im System-Reiter. [Installation, Schema und Prüfbericht](docs/PRUEFBERICHT-DTC-0.10.4.md).
 
 **0.10.6:** Vehicle Data 0.2.7 ergänzt lesende UDS-Ersatzquellen für Kilometerstand und vier RDC-Räder. Für Quellenanzeige und Diagnose den Companion Agent auf 0.2.11 und den Pi auf 0.10.6 aktualisieren. [Prüfbericht und Fahrzeugabnahme](docs/PRUEFBERICHT-KILOMETERSTAND-REIFEN-0.10.6.md).
+
+**0.10.7:** Unter **System → Diagnoseberichte auf GitHub** lässt sich die automatische Übertragung technischer Zustandswechsel in ein privates Repository freigeben. [Einrichtung und Inhalt des Diagnoseberichts](docs/PI-GITHUB-DIAGNOSE.md).

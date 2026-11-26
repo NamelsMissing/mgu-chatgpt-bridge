@@ -1444,6 +1444,49 @@ $('connectionLogCopy').onclick=()=>navigator.clipboard.writeText(logText()).catc
 $('connectionLogText').onclick=()=>triggerFileDownload(new Blob([logText()],{type:'text/plain'}),'bmw-ai-verbindungen.txt');
 $('connectionLogJson').onclick=()=>triggerFileDownload(new Blob([JSON.stringify(connectionEntries,null,2)],{type:'application/json'}),'bmw-ai-verbindungen.json');
 setInterval(()=>{if(token&&currentTab==='system')refreshConnection();},5000);
+function showGithubDiagnostics(state){
+ const error=state.lastError;
+ const messages={
+  repository_not_private:'GitHub bestätigt kein privates Ziel-Repository.',
+  unexpected_github_file:'GitHub hat einen unerwarteten Dateityp gemeldet.',
+  network_or_storage:'Die Verbindung oder das Speichern auf dem Pi ist fehlgeschlagen.'
+ };
+ const parts=[state.enabled?'Automatik aktiv':'Automatik aus',state.sending?'Übertragung läuft':null,
+  state.lastSuccessAt?'Letzter bestätigter Bericht '+stamp(state.lastSuccessAt):null,
+  error?(messages[error]||'GitHub antwortet mit HTTP '+error.split('_').pop()+'.'):null];
+ $('githubDiagnosticsStatus').textContent=parts.filter(Boolean).join(' · ');
+}
+async function refreshGithubDiagnostics(loadForm=false){
+ try{
+  const state=await api('/github-diagnostics');
+  if(loadForm){
+   $('githubDiagnosticsRepo').value=state.repo;
+   $('githubDiagnosticsEnabled').checked=state.enabled;
+   $('githubDiagnosticsToken').placeholder=state.hasToken?'Auf dem Pi gespeichert':'Token eingeben';
+   $('githubDiagnosticsSave').disabled=false;
+  }
+  showGithubDiagnostics(state);
+ }catch(e){$('githubDiagnosticsStatus').textContent=e.message;}
+}
+$('githubDiagnosticsPanel').ontoggle=()=>{
+ if($('githubDiagnosticsPanel').open)refreshGithubDiagnostics(true);
+};
+$('githubDiagnosticsForm').onsubmit=async e=>{
+ e.preventDefault();
+ const button=$('githubDiagnosticsSave'),secret=$('githubDiagnosticsToken');
+ button.disabled=true;
+ try{
+  const state=await api('/github-diagnostics','POST',{repo:$('githubDiagnosticsRepo').value.trim(),
+   token:secret.value.trim(),enabled:$('githubDiagnosticsEnabled').checked});
+  secret.value='';
+  secret.placeholder=state.hasToken?'Auf dem Pi gespeichert':'Token eingeben';
+  showGithubDiagnostics(state);
+ }catch(err){$('githubDiagnosticsStatus').textContent=err.message;}
+ finally{button.disabled=false;}
+};
+setInterval(()=>{
+ if(token&&currentTab==='system'&&$('githubDiagnosticsPanel').open)refreshGithubDiagnostics();
+},10000);
 function refreshSystem(){refreshUpdates();$('referenceCheck').click();refreshLogs();refreshNotify();refreshConnection();}
 
 // ----- Automatically refresh this already-open webpage after a successful Pi update -----

@@ -11,8 +11,9 @@ const crypto=require('node:crypto');
 const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
+const githubDiagnostics=require('./github-diagnostics');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.6'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.7'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -31,6 +32,7 @@ if(MGU&&(!/^http:\/\/(?:100\.\d{1,3}\.\d{1,3}\.\d{1,3}|[a-z0-9-]+)(?::\d{1,5})?$
 fs.mkdirSync(DATA,{recursive:true,mode:0o700});fs.chmodSync(DATA,0o700);
 const UPLOADS=path.join(DATA,'files');fs.mkdirSync(UPLOADS,{recursive:true,mode:0o700});
 const STATEFILE=path.join(DATA,'state.json');
+const diagnosticPublisher=githubDiagnostics.publisher(path.join(DATA,'github-diagnostics.json'));
 const UPDATE_ROOT=process.env.BMW_AI_UPDATE_ROOT||'/var/lib/bmw-ai/updater'; // Created by the root-owned install script.
 const UPDATE_INBOX=path.join(UPDATE_ROOT,'inbox');
 const UPDATE_QUEUE=path.join(UPDATE_ROOT,'queue');
@@ -859,7 +861,7 @@ function recordMguStatus(s){
 function recordMguFailure(e){
   const at=now();
   M.poll={...M.poll,at,ok:false,connection:e.connection||'invalid_response',measurementAfter:at,
-    error:String(e.message||e).slice(0,160)};
+    error:String(e.message||e).slice(0,160),httpStatus:e.status||null};
 }
 function requestMguStatus(){
   if(!pollRequest)pollRequest=probeMgu().finally(()=>{pollRequest=null;});
@@ -879,12 +881,17 @@ async function probeMgu(){
   }catch(e){pollFailures=Math.min(pollFailures+1,5);recordMguFailure(e);}
   try{checkServiceNotifications();}catch(e){}
   if(!M.poll.ok)save();
+  publishDiagnosticStatus();
   return mgu;
+}
+function publishDiagnosticStatus(){
+  diagnosticPublisher.tick(M.poll,diagnosticLog,SERVER_VERSION).catch(()=>{});
 }
 function schedulePoll(){
   clearTimeout(pollTimer);
   pollTimer=setTimeout(async()=>{
     if(st.mguConnection||(MGU&&DEVICE_TOKEN))await pollOnce();
+    else publishDiagnosticStatus();
     schedulePoll();
   },M.poll.ok?POLL_OK_MS:Math.min(15000*2**pollFailures,POLL_MAX_RETRY_MS));
   if(pollFailures)logTransport('/v1/status',null,'Wiederverbindung geplant (Versuch '+pollFailures+')');
@@ -1842,6 +1849,14 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     if(!fs.existsSync(UPDATE_ROOT))throw Error('Update-Dienst nicht installiert');
     const temp=UPDATE_PREFS+'.'+process.pid+'.tmp';fs.writeFileSync(temp,JSON.stringify({auto:d.enabled,updatedAt:now()}),{mode:0o600});fs.renameSync(temp,UPDATE_PREFS);
     audit('auto_update_setting',d.enabled?'eingeschaltet':'ausgeschaltet');return send(res,200,{auto:d.enabled,signedOnly:true});
+  }
+  if(p==='/api/v1/github-diagnostics'){
+    if(req.method==='GET')return send(res,200,diagnosticPublisher.view());
+    if(req.method==='POST'){
+      const prefs=diagnosticPublisher.configure(await body(req,4096));
+      setImmediate(publishDiagnosticStatus);
+      return send(res,200,prefs);
+    }
   }
   if(req.method==='GET'&&p==='/api/v1/logs')return send(res,200,{logs:st.logs.slice(0,200)});
   return fail(res,404,'Unknown API route');

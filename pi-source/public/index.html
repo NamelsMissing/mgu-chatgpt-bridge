@@ -505,6 +505,17 @@
       <pre id="connectionLog" class="terminal-output"></pre>
     </details>
   </div>
+  <details class="panel" id="githubDiagnosticsPanel">
+    <summary>Diagnoseberichte auf GitHub</summary>
+    <p class="hint">Überträgt Änderungen am technischen Diagnosezustand an ein privates Repository. Der Bericht enthält Status, Zeiten und Versionen.</p>
+    <form id="githubDiagnosticsForm" class="form-grid" autocomplete="off">
+      <label class="wide">Privates Repository <input id="githubDiagnosticsRepo" type="text" maxlength="140" placeholder="Konto/Repository" autocapitalize="none" spellcheck="false"></label>
+      <label class="wide">Fine-grained GitHub-Token <input id="githubDiagnosticsToken" type="password" maxlength="259" autocomplete="new-password" autocapitalize="none" spellcheck="false"></label>
+      <label class="check wide"><input type="checkbox" id="githubDiagnosticsEnabled"> Automatische Übertragung freigeben</label>
+      <button id="githubDiagnosticsSave" type="submit" disabled>Speichern</button>
+    </form>
+    <p class="hint" id="githubDiagnosticsStatus" role="status"></p>
+  </details>
   <h2>Raspberry-Pi-Updates</h2>
   <p class="hint">Nur ZIP-Pakete mit einer geprüften BMW-AI-Herausgebersignatur können installiert werden. Vorher wird ein Backup erstellt; bei fehlgeschlagenem Health-Test erfolgt ein Rollback. Die Anmeldedaten, Chats und Fahrzeugkopplung werden nicht ersetzt.</p>
   <div class="panel">
