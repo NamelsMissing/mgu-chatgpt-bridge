@@ -103,7 +103,9 @@ function decodeServiceHistory(r) {
             status: enumName(s && s.serviceStatus, HISTORY_STATUS),
             correction: s && s.correctionNumber,
             services: entries.slice(0, 30).map((e) => {
-                const sc = scopeOf(e && e.serviceText);
+                const raw=e && e.serviceText;
+                const numeric=typeof raw==='number'||typeof raw==='string'&&/^\d+$/.test(raw);
+                const sc=numeric?{name:String(raw),label:null}:scopeOf(raw);
                 return { code: e && e.serviceText, scope: sc.name, label: sc.label || ('Code ' + (e && e.serviceText)),
                     status: enumName(e && e.serviceStatusPos, HISTORY_STATUS), remainingKm: uint(e && e.remainingDistance, 0xFFFFFFF0),
                     remainingTime: e && e.remainingTime };

@@ -77,6 +77,7 @@ jobs:
           node pi-source/tests/test-claude-mcp.js
           node pi-source/tests/test-vehicle-files.js
           node pi-source/tests/test-monitor.js
+          node pi-source/tests/test-service-reference.js
           node pi-source/tests/test-maintenance-migration.js
           node tests/vehicle-pipeline.js
           node tests/vehicle-diagnostics-scheduling.js
@@ -92,10 +93,12 @@ jobs:
             paths=[entry['path'] for entry in json.loads(baseline.read('manifest.json'))['files']]
           contents={x:(root/x).read_bytes() for x in paths}
           server=contents['server.js'].decode()
-          for variable, module in [('ssh','mgu-ssh'),('dtcImport','dtc-import'),('githubDiagnostics','github-diagnostics')]:
+          for variable, module in [('ssh','mgu-ssh'),('dtcImport','dtc-import'),('githubDiagnostics','github-diagnostics'),('serviceReference','service-reference')]:
             source_import="const "+variable+"=require('./"+module+"');"
             assert server.count(source_import)==1, 'Could not locate module import: '+module
             local_source=(root/(module+'.js')).read_text()
+            if module == 'service-reference':
+              local_source=local_source.replace("require('./service-reference-seed.json')",(root/'service-reference-seed.json').read_text().strip(),1)
             bundled="const "+variable+"=(()=>{\nconst module={exports:{}};\n"+local_source+"\nreturn module.exports;\n})();"
             server=server.replace(source_import,bundled,1)
           program="const referenceProgram=()=>fs.readFileSync(path.join(__dirname,'dtc-reference.py'),'utf8');"

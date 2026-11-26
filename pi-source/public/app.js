@@ -1500,6 +1500,59 @@ $('githubDiagnosticsForm').onsubmit=async e=>{
 setInterval(()=>{
  if(token&&currentTab==='system'&&$('githubDiagnosticsPanel').open)refreshGithubDiagnostics();
 },10000);
+let serviceReferences=null;
+function showServiceReference(){
+ if(!serviceReferences)return;
+ const data=serviceReferences;
+ const status=$('serviceReferenceStatus');
+ status.textContent=[data.version?'Datenbank '+data.version:'Datenbank nicht geladen',
+  data.total+' Referenzeinträge',data.confirmed+' eindeutig',data.unknown+' unbekannt',data.ambiguous+' mehrdeutig',
+  data.updatedAt?'Aktualisiert '+stamp(data.updatedAt):null,data.error].filter(Boolean).join(' · ');
+ const query=$('serviceReferenceSearch').value.trim().toLowerCase(),filter=$('serviceReferenceFilter').value;
+ const hex=id=>'0x'+id.toString(16).toUpperCase().padStart(2,'0');
+ const rowGroup=row=>[row.namespace,row.code,row.vehicle||'',row.variant||''].join(':');
+ const ambiguous=new Set(data.ambiguousKeys||[]);
+ const refs=data.rows.map(row=>({...row,status:ambiguous.has(rowGroup(row))?'ambiguous':row.verification}));
+ const observed=data.observations.filter(row=>['unknown','ambiguous','reserved'].includes(row.status));
+ const rows=[...observed,...refs].filter(r=>(!filter||r.status===filter)&&
+  [r.namespace,r.code,hex(r.code),r.original,r.de,r.en,r.variant,r.source].some(value=>String(value??'').toLowerCase().includes(query)));
+ const labels={unknown:'Unbekannt',verified:'Bestätigt',reserved:'Reserviert',ambiguous:'Mehrdeutig',unverified:'Ungeprüft'};
+ const box=$('serviceReferenceRows');
+ box.replaceChildren(...rows.slice(0,80).map(r=>{
+  const node=txt('div','','service-entry');
+  node.append(txt('strong',r.code+' · '+hex(r.code)+' · '+(r.de||r.original||labels[r.status])),
+   txt('p',[r.namespace,r.variant,r.source,labels[r.status],r.count?r.count+' Abfragen':null].filter(Boolean).join(' · '),'hint'));
+  return node;
+ }));
+ if(!rows.length)box.append(txt('p','Keine passenden Einträge.','hint'));
+ if(rows.length>80)box.append(txt('p','80 von '+rows.length+' Treffern. Suche oder Filter eingrenzen.','hint'));
+}
+$('serviceReferencePanel').ontoggle=async()=>{
+ if(!$('serviceReferencePanel').open)return;
+ try{serviceReferences=await api('/service-reference');showServiceReference();}
+ catch(e){$('serviceReferenceStatus').textContent=e.message;}
+};
+$('serviceReferenceSearch').oninput=showServiceReference;
+$('serviceReferenceFilter').onchange=showServiceReference;
+$('serviceReferenceExport').onclick=async()=>{
+ try{
+  serviceReferences=await api('/service-reference');
+  const observations=serviceReferences.observations.filter(row=>row.status==='unknown'||row.status==='ambiguous');
+  triggerFileDownload(new Blob([JSON.stringify({schema:1,observations},null,2)],{type:'application/json'}),'bmw-servicecodes-unbekannt.json');
+  showServiceReference();
+ }catch(e){notice(e.message);}
+};
+$('serviceReferenceForm').onsubmit=async e=>{
+ e.preventDefault();
+ const file=$('serviceReferenceFile').files[0];
+ if(!file||file.size>2*1024*1024){notice('Bitte eine JSON-Datei bis 2 MiB auswählen.');return;}
+ try{
+  serviceReferences=await api('/service-reference','POST',JSON.parse(await file.text()));
+  $('serviceReferenceFile').value='';
+  showServiceReference();notice('Referenzdaten aktualisiert.');
+ }catch(err){notice(err.message);}
+};
+
 function refreshSystem(){refreshUpdates();$('referenceCheck').click();refreshLogs();refreshNotify();refreshConnection();}
 
 // ----- Automatically refresh this already-open webpage after a successful Pi update -----

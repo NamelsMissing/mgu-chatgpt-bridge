@@ -478,6 +478,23 @@
 
 <!-- ===== System ===== -->
 <section id="system" class="tab" hidden>
+  <details class="panel" id="serviceReferencePanel">
+    <summary>BMW-Servicecode-Referenz</summary>
+    <p id="serviceReferenceStatus" role="status"></p>
+    <div class="toolbar">
+      <input type="search" id="serviceReferenceSearch" placeholder="Code, Name oder Namensraum" aria-label="Servicecodes suchen">
+      <select id="serviceReferenceFilter" aria-label="Nach Referenzstatus filtern">
+        <option value="">Alle</option><option value="verified">Bestätigt</option><option value="unknown">Unbekannt</option>
+        <option value="ambiguous">Mehrdeutig</option><option value="reserved">Reserviert</option><option value="unverified">Ungeprüft</option>
+      </select>
+      <button type="button" id="serviceReferenceExport" class="secondary">Unbekannte Codes exportieren</button>
+    </div>
+    <form id="serviceReferenceForm" class="toolbar">
+      <label>Referenzdaten <input type="file" id="serviceReferenceFile" accept=".json,application/json" required></label>
+      <button type="submit">Referenz importieren</button>
+    </form>
+    <div id="serviceReferenceRows"></div>
+  </details>
   <div class="panel">
     <h3>Fehlertextdatenbank</h3>
     <p id="referenceStatus" role="status"></p>

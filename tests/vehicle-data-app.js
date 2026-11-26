@@ -86,14 +86,14 @@ const h = V.decodeServiceHistory({ numberOfDataSets: 2, statusOperation: 'E_OK',
 ] });
 assert.strictEqual(h.status, 'E_OK');
 assert.deepStrictEqual(h.sets.map((s) => s.date), ['2026-04-01', '2024-11-07'], 'newest first');
-assert.deepStrictEqual(h.sets[0].services.map((s) => s.label), ['Motoröl', 'Mikrofilter', 'Code 250']);
+assert.deepStrictEqual(h.sets[0].services.map((s) => s.label), ['Code 1', 'Code 4', 'Code 250']);
 assert.strictEqual(h.sets[0].status, 'SERVICE_CARRIED_OUT_LATE'); assert.strictEqual(h.sets[1].dealer, '12345');
 assert.strictEqual(V.decodeServiceHistory({ statusOperation: 2 }).status, 'E_FILE_IS_EMPTY');
 
 const serviceCodes=V.decodeServiceHistory({statusOperation:0,dataSets:[{serviceEntries:
     ['11','12','17',32].map(serviceText=>({serviceText}))}]});
 assert.deepStrictEqual(serviceCodes.sets[0].services.map(s=>[s.code,s.label]),[
-    ['11','Code 11'],['12','Code 12'],['17','Fahrzeug-Check'],[32,'Hauptuntersuchung']]);
+    ['11','Code 11'],['12','Code 12'],['17','Code 17'],[32,'Code 32']]);
 
 // Snapshot file: atomic, only on change, at most once per second, SecureMileage preferred.
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vd-'));

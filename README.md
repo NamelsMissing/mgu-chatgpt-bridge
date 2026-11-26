@@ -111,3 +111,5 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 **0.10.9:** Die Wartungsplanung wertet vorhandene BMW-Servicehistorie und lokale Wartungstexte beim Öffnen neu aus. Filtertermine aus dem BMW-Ölservicezyklus und Schätzungen ab Erstzulassung sind in den Details gekennzeichnet. [Prüfbericht](docs/PRUEFBERICHT-WARTUNG-0.10.9.md).
 
 **0.10.10:** Vehicle Data liest den Kilometerstand bei Bedarf über KOMBI oder BDC. **Vehicle Data 0.2.8**, **Companion Agent 0.2.12** und **Pi 0.10.10** ergänzen Quelle, Messzeit und Diagnose. [PRG-Befunde und Prüfbericht](docs/PRUEFBERICHT-KOMBI-KILOMETERSTAND-0.10.10.md).
+
+**0.10.11:** Die SQLite-Servicecode-Referenz trennt SOME/IP-, KOMBI-CBS- und ServiceHistory-Codes. Vehicle Data 0.2.9 überträgt ServiceHistory-Rohcodes zur lokalen Auflösung auf dem Pi. [Prüfbericht und Importformat](docs/PRUEFBERICHT-SERVICE-REFERENZ-0.10.11.md).

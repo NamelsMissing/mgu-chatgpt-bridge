@@ -12,8 +12,9 @@ const siwc=require('./siwc');
 const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
+const serviceReference=require('./service-reference');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.10'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.11'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -32,6 +33,7 @@ if(MGU&&(!/^http:\/\/(?:100\.\d{1,3}\.\d{1,3}\.\d{1,3}|[a-z0-9-]+)(?::\d{1,5})?$
 fs.mkdirSync(DATA,{recursive:true,mode:0o700});fs.chmodSync(DATA,0o700);
 const UPLOADS=path.join(DATA,'files');fs.mkdirSync(UPLOADS,{recursive:true,mode:0o700});
 const STATEFILE=path.join(DATA,'state.json');
+const serviceCatalog=serviceReference.catalog(path.join(DATA,'service-reference.sqlite'));
 const diagnosticPublisher=githubDiagnostics.publisher(path.join(DATA,'github-diagnostics.json'));
 const UPDATE_ROOT=process.env.BMW_AI_UPDATE_ROOT||'/var/lib/bmw-ai/updater'; // Created by the root-owned install script.
 const UPDATE_INBOX=path.join(UPDATE_ROOT,'inbox');
@@ -260,9 +262,6 @@ const serviceName=value=>String(value||'').toLowerCase().replace(/ä/g,'ae').rep
 const SERVICE_KEYS=new Map(Object.entries(G21_SERVICE_ITEMS).flatMap(([key,[name]])=>
   [name,key,...SERVICE_ALIASES[key]].map(alias=>[serviceName(alias),key])));
 const serviceKey=item=>item?.planKey||(Object.hasOwn(G21_SERVICE_ITEMS,item?.id)?item.id:SERVICE_KEYS.get(serviceName(item?.name)));
-// Numeric values documented in the IDScopeCBS catalog used by Vehicle Data.
-const VERIFIED_SCOPE_CODES={1:'OELSERVICE',3:'BREMSFLUESSIGKEIT',4:'MIKROFILTER',17:'SICHTPRUEFUNGEN',
-  18:'KUEHLFLUESSIGKEIT',32:'HU_HAUPTUNTERSUCHUNG',100:'SICHTPRUEFUNG_ADAPTIV'};
 const majorServiceNames=new Set(['Großer BMW-Service','Großer Service','Große Inspektion','BMW Hauptservice',
   'BMW Major Service'].map(serviceName));
 const incompleteWork=/\b(?:nicht|kein(?:e[rmns]?)?|geplant|offen|empfohlen|empfehlung|ausstehend|faellig|unvollstaendig|nachfuellen|nachgefuellt|fuellstand\w*|kontroll\w*|pruefen|geprueft|topped up|check only|recommended|planned)\b/;
@@ -278,10 +277,16 @@ function workKey(text,description=false){
   if(description&&!action.test(words))return null;
   return SERVICE_KEYS.get(name)||SERVICE_KEYS.get(serviceName(words.replace(action,'')))||null;
 }
+function historyMeaning(row){
+  const id=serviceReference.historyCode(row);
+  if(id===null)return null;
+  return serviceCatalog.resolve(serviceReference.HISTORY,id,maintenanceVehicleKey()||'');
+}
 function bmwWorkKey(row){
-  const scope=String(row.scope??'');
+  const meaning=historyMeaning(row);
+  if(meaning)return meaning.status==='verified'?meaning.row.work||null:null;
   if(incompleteWork.test(serviceWords(row.label)))return null;
-  return scopeToServiceKey.get(scope)||scopeToServiceKey.get(VERIFIED_SCOPE_CODES[row.code??scope])||workKey(row.label);
+  return scopeToServiceKey.get(String(row.scope??''))||workKey(row.label);
 }
 const workParts=text=>String(text||'').split(/[,;·\n]+/);
 function localWorkKeys(entry,items){
@@ -361,6 +366,7 @@ function migrateVehicleBook(){
     vehicle.maintenanceMigration=1;
     changed=true;
   }
+  observeServiceHistory(vehicle);
   if(linkLegacyHistoryEntries(vehicle)||changed)save();
 }
 function configureMaintenance(d){
@@ -422,7 +428,8 @@ function serviceDue(item,cur,rate,entries,history,major){
   const key=serviceKey(item)||item.id;
   const def=G21_SERVICE_ITEMS[key],t=today();
   const done=entries.filter(e=>e.date<=t&&e.workKeys.has(key)&&
-    !e.bmwOriginal?.services?.some(row=>bmwWorkKey(row)===key)&&
+    !e.bmwOriginal?.services?.some(row=>bmwWorkKey(row)===key||
+      (historyMeaning(row)&&(scopeToServiceKey.get(row.scope)===key||workKey(row.label)===key)))&&
     !(LEGACY_HISTORY_IMPORT.test(e.notes||'')&&!e.bmwRef))
     .map(e=>({...e,source:'own'}));
   for(const set of history.values()){
@@ -482,7 +489,7 @@ function maintenanceOverview(due,cbs,t,settings){
     const status=(days!==null&&days<=0)||(month&&month<t.slice(0,7))||(distanceKnown&&km<=0)?'overdue':
       (days!==null&&days<=(settings.warningDays??30))||month===t.slice(0,7)||(distanceKnown&&km<=(settings.warningKm??1000))?'soon':'ok';
     cbsStatuses[row.scope]=status;
-    cbsKeys[row.scope]=bmwWorkKey(row);
+    cbsKeys[row.scope]=scopeToServiceKey.get(row.scope)||workKey(row.label);
     add(cbsKeys[row.scope]||row.scope||row.label,status);
   }
   const statuses=[...groups.values()];
@@ -592,6 +599,7 @@ function noteVehicleLive(v){
   if(previous&&(!live.serviceHistory||previous.serviceHistory?.status==='E_OK'&&live.serviceHistory.status!=='E_OK'))live.serviceHistory=previous.serviceHistory||null;
   const before=JSON.stringify(Object.assign({},previous||{},{at:null}));
   st.vehicle.live=live;
+  observeServiceHistory(st.vehicle);
   if(linkLegacyHistoryEntries(st.vehicle)||JSON.stringify(Object.assign({},live,{at:null}))!==before)save();
   try{noteCheckControl(v.checkControl);noteTyres(v.tyres);noteDpf(v.dpf);noteFaultMemory(v.faultMemory);}catch(e){audit('monitor_error',String(e.message||e).slice(0,160));}
 }
@@ -599,7 +607,7 @@ const HISTORY_STATES={SERVICE_CARRIED_OUT_LATE:'verspätet durchgeführt',SERVIC
 const LEGACY_HISTORY_IMPORT=/^Aus der Servicehistorie des Fahrzeugs übernommen(?:[.\s(]|$)/i;
 const scopeToServiceKey=new Map(Object.entries(G21_SERVICE_ITEMS).flatMap(([key,def])=>def[3].map(scope=>[scope,key])));
 function historyReference(set){
-  const services=(set.services||[]).map(row=>[String(row.scope??row.code??serviceName(row.label)),row.status||null]);
+  const services=(set.services||[]).map(row=>[String(serviceReference.historyCode(row)??row.scope??row.code??serviceName(row.label)),row.status||null]);
   return hash(JSON.stringify([set.date,set.km,set.dealer||'',set.correction||0,services.map(row=>JSON.stringify(row)).sort()]));
 }
 function distinctHistory(sets){
@@ -613,6 +621,10 @@ function linkLegacyHistoryEntries(vehicle){
   const originals=distinctHistory(vehicle.live?.serviceHistory?.sets||[]);
   let changed=false;
   for(const entry of Object.values(vehicle.entries)){
+    if(entry.bmwRef&&entry.bmwOriginal){
+      const ref=historyReference(entry.bmwOriginal);
+      if(entry.bmwRef!==ref){entry.bmwRef=ref;changed=true;}
+    }
     if(entry.bmwRef||!LEGACY_HISTORY_IMPORT.test(entry.notes||''))continue;
     const localNames=localWorkKeys(entry,vehicle.items);
     for(const part of workParts(entry.title))localNames.add(serviceName(part));
@@ -645,10 +657,19 @@ function historyRecords(entries){
   }
   return originals;
 }
+function observeServiceHistory(vehicle){
+  const history=vehicle.live?.serviceHistory;
+  const sets=[...distinctHistory([...(history?.sets||[]),
+    ...Object.values(vehicle.entries).map(entry=>entry.bmwOriginal).filter(Boolean)]).values()];
+  serviceCatalog.observe({...history,sets},maintenanceVehicleKey()||'',historyReference);
+}
 function historyDisplay(set){
   return {...set,services:set.services.map(row=>{
-    const code=row.code??row.scope,key=scopeToServiceKey.get(VERIFIED_SCOPE_CODES[code]);
-    return key&&row.label==='Code '+code?{...row,label:G21_SERVICE_ITEMS[key][0]}:row;
+    const meaning=historyMeaning(row),id=serviceReference.historyCode(row);
+    if(!meaning)return row;
+    return {...row,code:row.code??id,label:meaning.status==='verified'?meaning.row.de||meaning.row.original:
+      'Code '+id+(meaning.status==='ambiguous'?' (mehrdeutig)':meaning.status==='reserved'?' (reserviert)':''),
+      referenceStatus:meaning.status};
   })};
 }
 function serviceHistoryView(originals,entries){
@@ -671,9 +692,10 @@ function importHistory(date,km,reference){
   if(historyEntryFor(set))throw Error('Schon im Serviceheft');
   const byName=Object.fromEntries(Object.values(st.vehicle.items).map(i=>[serviceName(i.name),i.id]));
   const items=[],rest=[];
-  for(const sv of set.services){
+  for(const sv of historyDisplay(set).services){
     const key=bmwWorkKey(sv);
-    const id=key&&Object.values(st.vehicle.items).find(item=>serviceKey(item)===key)?.id||byName[serviceName(sv.label)];
+    const id=key&&Object.values(st.vehicle.items).find(item=>serviceKey(item)===key)?.id||
+      (!historyMeaning(sv)?byName[serviceName(sv.label)]:null);
     if(id&&!items.includes(id))items.push(id);else if(!id)rest.push(sv.label);
   }
   return saveServiceEntry({date:set.date,km:set.km,items,title:rest.length?rest.join(', '):(items.length?'':'Service laut Fahrzeug'),
@@ -1796,6 +1818,14 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     const name=st.mcp.clients[dc[1]].name;revokeClient(dc[1]);audit('mcp_client_revoked',name);return send(res,200,diagView());
   }
   // ----- Fahrzeug und Service -----
+  if(p==='/api/v1/service-reference'){
+    if(req.method==='GET')return send(res,200,serviceCatalog.view());
+    if(req.method==='POST'){
+      const result=serviceCatalog.add(await body(req,2*1024*1024));
+      if(linkLegacyHistoryEntries(st.vehicle))save();
+      return send(res,200,result);
+    }
+  }
   if(req.method==='GET'&&p==='/api/v1/vehicle/diagnostics'){
     let capabilities=null;
     if(q.get('capabilities')==='1'){
@@ -2110,6 +2140,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
  }
  return fail(res,404,'Not found');
  })().catch(e=>{if(!res.headersSent)fail(res,e.status||400,e.message||'Internal error');else res.destroy();});}
+serviceCatalog.start();
 migrateVehicleBook();
 if(require.main===module){localFaultTexts();http.createServer(route).listen(PORT,HOST,()=>console.log('BMW AI Pi server: http://'+HOST+':'+PORT));setTimeout(scheduleLocalChatExport,6500);
  // Nach einem Neustart ist der Diagnosemodus aus: einen eventuell noch offenen Funnel schließen.

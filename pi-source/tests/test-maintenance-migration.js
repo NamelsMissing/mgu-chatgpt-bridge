@@ -172,6 +172,17 @@ async function start(){
  assert.equal(find('inspection').basis,'own');
  assert.equal(saved.bmwNextService.byDate.dueDate,day(250));
  assert.equal(find('oil').intervalKm,8000);
+ assert.equal(find('check').dueDate,null,'Code 17 from ServiceHistory is not CBS code 17');
+ assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===17&&work.label==='Code 17')));
+ const reference=await api('GET','/service-reference');
+ assert.ok(reference.data.observations.some(row=>row.code===11&&row.status==='unknown'));
+ const importedReference=await api('POST','/service-reference',{schema:1,rows:[{
+  namespace:'servicehistory.serviceText',code:'0x11',original:'TEST_CHECK',de:'Fahrzeug-Check',work:'check',
+  interface:'ServiceHistory.readServiceHistory',source:'Nur Testfixture',version:'1',verification:'verified',
+  description:'Synthetische Zuordnung für den Importtest, keine BMW-Referenz.'
+ }]});
+ assert.equal(importedReference.status,200);
+ saved=(await api('GET','/vehicle')).data;
  assert.equal(find('check').dueDate,plusMonths(day(-55),48));
  assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===17&&work.label==='Fahrzeug-Check')));
  assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.label==='Code 11')));
