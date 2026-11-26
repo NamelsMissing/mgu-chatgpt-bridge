@@ -31,7 +31,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
  fs.writeFileSync(path.join(temp,'state.json'),JSON.stringify({sessions:{[sha(session)]:{expires:iso(3600000)}},conversations:{},messages:{},jobs:{},reports:{},files:{},logs:[],
   mguConnection:{url:'http://127.0.0.1:'+mgu.address().port,token:'a'.repeat(64)},
   notify:{enabled:true,server:'http://127.0.0.1:'+ntfy.address().port,topic:'bmw-ai-testtopic123',categories:{cc:true,service:true,faults:true,tyres:true},sent:{},log:[]}}));
- const server=require('../server.js');
+ let server=require('../server.js');
  const rows=[{label:'Datum',dueMonth:'2027-05',remainingKm:null},{label:'Strecke',dueDate:'2028-01-01',remainingKm:500},
    {label:'Nicht verfügbar',dueDate:'2026-01-01',available:false,remainingKm:0}];
  assert.equal(server.nextBmwService(rows).byDate.label,'Datum');
@@ -39,7 +39,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
  fs.writeFileSync(path.join(temp,'dtc-texts.json'),JSON.stringify({schema:1,ecu:{18:{family:'FIXTURE',sgbd:'TEST_DDE',variant:'TEST'}},
   entries:[{address:18,family:'FIXTURE',sgbd:'TEST_DDE',variant:'TEST',code:'480A12',verified:true,title:'Testtitel',description:'Testbeschreibung',source:'Automatisierter Test'},
    {address:64,family:'FIXTURE',sgbd:'TEST_DDE',variant:'TEST',code:'801234',verified:true,title:'Falsches Steuergerät',source:'Automatisierter Test'}]}));
- const srv=http.createServer(server.route);await new Promise(r=>srv.listen(0,'127.0.0.1',r));
+ const srv=http.createServer((req,res)=>server.route(req,res));await new Promise(r=>srv.listen(0,'127.0.0.1',r));
  const base='http://127.0.0.1:'+srv.address().port,owner={authorization:'Bearer '+session,'content-type':'application/json'};
  const api=async(method,p,data)=>{const r=await fetch(base+'/api/v1'+p,{method,headers:owner,body:data?JSON.stringify(data):undefined});return {status:r.status,data:await r.json().catch(()=>null)};};
  const wait=ms=>new Promise(r=>setTimeout(r,ms));
@@ -98,7 +98,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   assert.equal((await api('GET','/vehicle')).data.live.serviceHistory.sets.length,3);
 
   // ----- Check-Control -----
-  vehicle.checkControl={active:[{id:220,text:'Kühlmittelstand zu niedrig',description:'Kühlmittel nachfüllen.',ecu:0x12,since:iso(-60000)}],
+  vehicle.checkControl={active:[{id:220,text:'Kühlmittelstand zu niedrig',color:'RED',description:'Kühlmittel nachfüllen.',ecu:0x12,since:iso(-60000)}],
    events:[{id:220,active:true,text:'Kühlmittelstand zu niedrig',ecu:0x12,at:iso(-60000)}]};
   await server.pollOnce();await server.pollOnce();
   let f=(await api('GET','/faults')).data;
@@ -106,21 +106,54 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   await wait(50);
   assert.equal(pushes.filter(p=>/Kühlmittel/.test(p.title)).length,1,'one notification, not one per poll');
   assert.equal(pushes[0].topic,'bmw-ai-testtopic123');
+  assert.equal(pushes.find(p=>/Kühlmittel/.test(p.title)).priority,5);
   vehicle.checkControl={active:[],events:[{id:220,active:true,ecu:0x12,at:iso(-60000)},{id:220,active:false,ecu:0x12,at:iso(-1000)}]};
   await server.pollOnce();
   f=(await api('GET','/faults')).data;
   assert.equal(f.checkControl.active.length,0);assert.deepEqual(f.checkControl.events.slice(0,2).map(e=>e.active),[false,true]);
 
-  vehicle.checkControl={listAt:iso(0),active:[{id:222,text:'BMW-Text A',ecu:0x12,lastSeen:iso(-1000)},{id:223,text:'BMW-Text B',ecu:0x40,lastSeen:iso(-1000)}]};
+  vehicle.checkControl={listAt:iso(0),active:[{id:222,text:'BMW-Text A',color:'YELLOW',ecu:0x12,lastSeen:iso(-1000)},{id:223,text:'BMW-Text B',color:'WHITE',ecu:0x40,lastSeen:iso(-1000)}]};
   await server.pollOnce();
   f=(await api('GET','/faults')).data;
   assert.equal(f.checkControl.status,'read');assert.equal(f.checkControl.active.length,2);
+  await wait(50);
+  assert.equal(pushes.find(p=>p.title==='BMW: BMW-Text A').priority,3);
+  assert.equal(pushes.find(p=>p.title==='BMW: BMW-Text B').priority,2);
+  // Reload the Pi server from its on-disk state while the vehicle is offline.
+  mguUp=false;
+  delete require.cache[require.resolve('../server.js')];
+  server=require('../server.js');
+  await server.pollOnce();
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.checkControl.status,'stale');
+  assert.equal(f.checkControl.active.length,2);
+  mguUp=true;
+  const countBeforeReplay=pushes.length;
+  await server.pollOnce();
+  await wait(50);
+  assert.equal(pushes.length,countBeforeReplay,'no duplicate push after reopening persisted state');
+  // First partial snapshot after an MGU restart: update only what it reported.
+  vehicle.checkControl={active:[],events:[],receipts:{'CheckControlMaster.basicList':{
+    at:iso(0),shape:'array',origin:'event',length:0,valid:0,rejected:0,complete:false}}};
+  await server.pollOnce();
+  assert.equal((await api('GET','/faults')).data.checkControl.active.length,2);
   vehicle.checkControl={active:[]};
   await server.pollOnce();
   assert.equal((await api('GET','/faults')).data.checkControl.active.length,2);
-  vehicle.checkControl={listAt:iso(0),active:[]};
+  await wait(10);
+  vehicle.checkControl={listAt:iso(0),source:'CheckControlMaster.basicList',active:[]};
   await server.pollOnce();
   assert.equal((await api('GET','/faults')).data.checkControl.active.length,0);
+  vehicle.checkControl={active:[],events:[{id:222,at:iso(-5000),active:true}],receipts:{
+    'CheckControlMaster.basicList:getter':{origin:'get',shape:'array',length:1,valid:0,rejected:1,
+      reasons:{invalid_id:1},messages:[{id:222,text:'FIN WBA12345678901234 Token=test-value'}]}
+  }};
+  await server.pollOnce();
+  assert.equal((await api('GET','/faults')).data.checkControl.status,'failed');
+  assert.equal((await api('GET','/faults')).data.checkControl.active.length,0,'older events cannot resurrect a cleared message');
+  const ccExport=(await api('GET','/vehicle/diagnostics')).data.checkControl;
+  assert.match(ccExport.receipts['CheckControlMaster.basicList:getter'].messages[0].text,/maskiert/);
+  assert.doesNotMatch(JSON.stringify(ccExport),/WBA12345678901234|test-value/);
 
   // ----- Fehlerspeicher: Lesen auf Knopfdruck, neue Codes melden -----
   faultReply={requestId:'r1',readAt:iso(0),error:null,ecus:[{ecu:0x12,ok:true,count:1},{ecu:0x40,ok:true,count:0}],dtcs:[{ecu:0x12,code:'480A12',status:9,label:'ACTIVE',active:true}]};

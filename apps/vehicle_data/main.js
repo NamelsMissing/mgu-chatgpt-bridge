@@ -86,14 +86,17 @@ mgu.run({
             const declared = (proxies[iface] || {}).attributes || {};
             const requested = opts && opts.readFields || [];
             const reads = requested.filter(field => /r/.test(declared[field] || ''));
-            const getterOnly = opts && opts.readOnlyFields || [];
+            const optional = opts && opts.optionalFields || [];
+            const getterOnly = (opts && opts.readOnlyFields || []).concat(optional.filter(field=>!/s/.test(declared[field]||'')));
             const enabledHandlers = {};
             Object.keys(handlers).forEach(field => {
                 const key=name+'.'+field;
-                snap.stage(key,'manifestRead',/r/.test(declared[field]||''));
-                snap.stage(key,'manifestSubscribe',/s/.test(declared[field]||''));
+                const canRead = /r/.test(declared[field]||'');
+                const canSubscribe = /s/.test(declared[field]||'');
+                snap.stage(key,'manifestRead',canRead);
+                snap.stage(key,'manifestSubscribe',canSubscribe);
                 if (getterOnly.indexOf(field)!==-1) snap.stage(key,'subscription','not_requested');
-                if (getterOnly.indexOf(field) === -1 || reads.indexOf(field) !== -1) {
+                if (optional.indexOf(field)!==-1 ? canRead || canSubscribe : getterOnly.indexOf(field)===-1 || canRead) {
                     enabledHandlers[field] = handlers[field];
                 } else {
                     snap.available(name+'.'+field,false,'Getter nicht für dieses Installationspaket freigegeben');
@@ -104,7 +107,7 @@ mgu.run({
                 flush();
                 return Promise.resolve(null);
             }
-            const configured = Object.assign({initialRead:true,strictGetters:true,maxGetterFailures:3},opts,{readFields:reads});
+            const configured = Object.assign({initialRead:true,strictGetters:true,maxGetterFailures:3},opts,{readFields:reads,readOnlyFields:getterOnly});
             return signals.watch(iface, '1', enabledHandlers, log, Object.assign(configured, {
                 onTrace: (field,stage,value) => { snap.stage(field==='*'?name:name+'.'+field,stage,value);flush(); },
                 onAvailability: (ok) => { snap.stage(name,'provider',ok);snap.available(name,ok);flush(); },
@@ -148,20 +151,23 @@ mgu.run({
 
         // The complete list defines presence. Legacy events still supply ECU attribution and transitions.
         const textAttempts = new Map(), textPending = new Set();
+        const requestKey = 'KombiInterface_2.requestCCMessage';
+        const ccMethods = (proxies[KOMBI] || {}).methods || [];
+        const canRequestCc = ccMethods.indexOf('requestCCMessage')!==-1;
+        snap.stage(requestKey,'manifestMethod',canRequestCc);
         async function ccText(id) {
-            if (!kombi || !faults.needsText(id) || textPending.size >= 4 || textPending.has(id)) return;
+            if (!canRequestCc || !kombi || !faults.needsText(id) || textPending.size >= 4 || textPending.has(id)) return;
             const prev = textAttempts.get(id);
             if (prev && Date.now()-prev < 60000) return;
             if (textAttempts.size >= 80) textAttempts.delete(textAttempts.keys().next().value);
             textAttempts.set(id,Date.now());
             textPending.add(id);
             try {
-                const key='KombiInterface_2.requestCCMessage';
-                snap.stage(key,'manifestMethod',true);
+                const key=requestKey;
                 snap.stage(key,'getter','pending');
                 const r = await signals.call(kombi, 'requestCCMessage', { id }, 5000);
                 snap.stage(key,'getter','ok');
-                const text = faults.ccText(r);
+                const text = faults.ccText(r,key,id);
                 if (text && text.id === id) snap.available('CheckControlText',true);
                 sample('KombiInterface_2.requestCCMessage',r,text && text.id === id ? 1 : null);
             } catch (e) {
@@ -170,23 +176,29 @@ mgu.run({
                 flush();
             } finally { textPending.delete(id); }
         }
-        watch(CHECK_CONTROL, { basicList: (v,method) => {
-            const e = method==='get'&&faults.ccListAt ? null : faults.ccEvent(v);
-            sample('CheckControlMaster.basicList',v,e ? 1 : null);
-            if (e && e.active) ccText(e.id);
-        } }, {readFields:['basicList'],pollMs:60000});
+        const ccRows = (source, v, origin) => {
+            const result = faults.ccBatch(v,source,origin);
+            sample(source,v,result.rejected ? null : result.valid);
+            const active = result.rows.filter(row=>row.active).sort((a,b)=>(textAttempts.get(a.id)||0)-(textAttempts.get(b.id)||0));
+            for (const row of active) ccText(row.id);
+        };
+        watch(CHECK_CONTROL, { basicList: (v,origin) => ccRows('CheckControlMaster.basicList',v,origin) },
+            {readFields:['basicList'],pollMs:60000,retryAfterMs:5*60000});
         watch(KOMBI, {
-            newCCMessage: (v) => sample('KombiInterface_2.newCCMessage',v,faults.ccText(v) ? 1 : null),
-            ccList: (v) => {
-                const ids=faults.ccList(v);
-                sample('KombiInterface_2.ccList',v,ids===null?null:ids.length);
-                if (ids) ids.forEach(ccText);
+            newCCMessage: (v) => {
+                const key = 'KombiInterface_2.newCCMessage';
+                const message = faults.ccText(v,key);
+                // A notifier supplies text immediately. Presence still comes from the list/event,
+                // since the new-message union does not contain an ActiveState.
+                sample(key,v,message ? 1 : null);
             },
+            ccList: (v,origin) => ccRows('KombiInterface_2.ccList',v,origin),
+            ccListRiskClass: (v,origin) => ccRows('KombiInterface_2.ccListRiskClass',v,origin),
             cbsDataServiceList: (v) => {
                 const rows=snap.cbsList(v);
                 sample('KombiInterface_2.cbsDataServiceList',v,rows===null?null:rows.length);
             },
-        }, {readFields:['ccList','cbsDataServiceList'],readOnlyFields:['ccList','cbsDataServiceList'],pollMs:60000});
+        }, {readFields:['ccList','ccListRiskClass','cbsDataServiceList'],readOnlyFields:['cbsDataServiceList'],optionalFields:['ccList','ccListRiskClass'],pollMs:60000});
 
         // ----- Service history (method on its own instance) -----
         let historyRetries=0;

@@ -14,7 +14,7 @@ const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const serviceReference=require('./service-reference');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.13'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.14'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -849,30 +849,124 @@ function saveNotify(d){
 }
 
 // ----- Check-Control-Meldungen -----
+const CC_SOURCES=new Set(['CheckControlMaster.basicList','KombiInterface_2.ccList','KombiInterface_2.ccListRiskClass',
+  'KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage']);
+const CC_COLORS=new Set(['DEFAULT','RED','YELLOW','GREEN','ORANGE','WHITE']);
+const maskCcText=value=>value.replace(/\b[A-HJ-NPR-Z0-9]{17}\b/gi,'[maskiert]')
+  .replace(/\b(?:bearer\s+|(?:token|password|passwort|secret|api[_ -]?key)\s*[:=]\s*)[^\s,;]+/gi,'[maskiert]');
+const ccTimestamp=value=>typeof value==='string'&&Number.isFinite(Date.parse(value))?new Date(value).toISOString():null;
+function checkControlStore(){
+  const key=faultVehicleKey();
+  if(M.cc.vehicleKey&&M.cc.vehicleKey!==key)M.cc={active:{},events:[],seen:[]};
+  M.cc.vehicleKey=key;
+  M.cc.known ||= {};
+  return M.cc;
+}
+function ccMetadata(entry){
+  const fields={};
+  for(const key of ['text','shortText','description','reason','type','riskClass','indentation']){
+    const value=str(entry[key],key==='description'?1500:key==='text'||key==='shortText'?300:60);
+    if(value)fields[key]=value;
+  }
+  for(const [key,max] of [['ecu',255],['symbolId',65535],['resourceId',0xFFFFFFFF],['carTime',0xFFFFFFFE],['carTimeMs',255]]){
+    const value=int(entry[key],max);if(value!==null)fields[key]=value;
+  }
+  for(const key of ['source','textSource','shortTextSource'])if(CC_SOURCES.has(entry[key]))fields[key]=entry[key];
+  if(CC_COLORS.has(entry.color))fields.color=entry.color;
+  return fields;
+}
+function ccPriority(color){
+  return color==='RED'?5:color==='YELLOW'||color==='ORANGE'?3:2;
+}
 function noteCheckControl(cc){
   if(!cc||typeof cc!=='object')return;
-  const seen=new Set(M.cc.seen);
-  const apply=(e,isEvent)=>{
-    const id=int(e&&e.id,0xFFFE);if(!id)return;
-    const text=str(e.text,300),description=str(e.description,1500)||'',ecu=int(e.ecu,255);
-    const cur=M.cc.active[id];
-    if(e.active===false){if(cur){delete M.cc.active[id];M.cc.events.push({id,active:false,text:text||cur.text,ecu,at:str(e.at,40)||now()});}return;}
-    if(!cur){
-      M.cc.active[id]={id,text,description,ecu,since:str(e.since||e.at,40)||now(),lastSeen:str(e.lastSeen||e.at||e.since,40)};
-      M.cc.events.push({id,active:true,text,ecu,at:str(e.since||e.at,40)||now()});
-      notify('cc','cc:'+id,'BMW: '+(text||'Check-Control-Meldung '+id),(description||'')+(ecu!==null?' ('+ecuName(ecu)+')':''),{priority:4,tags:['warning','car']});
-    }else{cur.lastSeen=str(e.lastSeen||e.at||e.since,40)||cur.lastSeen;if(text&&!cur.text)cur.text=text;if(description&&!cur.description)cur.description=description;}
-  };
-  for(const e of Array.isArray(cc.events)?cc.events.slice(-50):[]){const k=e&&e.id+'@'+e.at+'@'+e.active;if(!k||seen.has(k))continue;seen.add(k);M.cc.seen.push(k);apply(e,true);}
-  for(const a of Array.isArray(cc.active)?cc.active.slice(0,120):[])apply(Object.assign({},a,{active:true}),false);
-  if(Number.isFinite(Date.parse(cc.listAt))&&(!M.cc.listAt||Date.parse(cc.listAt)>Date.parse(M.cc.listAt))){
-    const ids=new Set((Array.isArray(cc.active)?cc.active:[]).filter(Boolean).map(e=>e.id));
-    for(const e of Object.values(M.cc.active)){
-      if(!ids.has(e.id))apply({...e,active:false,at:cc.listAt},true);
+  const store=checkControlStore();
+  const seen=new Set(store.seen);
+  const previousListAt=store.listAt;
+  const rows=(Array.isArray(cc.active)?cc.active.slice(0,120):[]).filter(e=>int(e?.id,0xFFFE));
+  const listAt=ccTimestamp(cc.listAt);
+  const newList=listAt&&Array.isArray(cc.active)&&(!previousListAt||listAt>previousListAt);
+  const activeIds=new Set(rows.map(row=>row.id));
+  const apply=(entry,active,at,transition)=>{
+    const id=int(entry?.id,0xFFFE);if(!id||!at)return;
+    const current=store.active[id],known=store.known[id];
+    if(known?.lastSeen&&at<known.lastSeen)return;
+    if(!transition&&known?.endedAt&&at<=known.endedAt)return;
+    const details=ccMetadata(entry);
+    if(current?.shortText&&!details.shortText&&details.text){
+      delete details.text;
+      delete details.textSource;
     }
-    M.cc.listAt=cc.listAt;
+    const merged={...known,...current,...details,id,lastSeen:at};
+    if(active){
+      if(!current){
+        merged.since=at;
+        merged.firstSeen=known?.firstSeen||at;
+        merged.occurrences=(known?.occurrences||0)+1;
+        delete merged.endedAt;
+        delete merged.notifiedAt;
+        store.events.push({...merged,active:true,at});
+      }
+      store.active[id]=merged;
+    }else{
+      if(current)store.events.push({...merged,active:false,at});
+      merged.endedAt=at;
+      delete store.active[id];
+    }
+    store.known[id]=merged;
+  };
+  const events=(Array.isArray(cc.events)?cc.events.slice(-50):[]).filter(e=>e&&typeof e.active==='boolean'&&ccTimestamp(e.at));
+  for(const e of events.sort((a,b)=>Date.parse(a.at)-Date.parse(b.at))){
+    const at=ccTimestamp(e.at),key=e.id+'@'+at+'@'+e.active;
+    if(seen.has(key)||previousListAt&&at<previousListAt)continue;
+    seen.add(key);
+    store.seen.push(key);
+    apply(e,e.active,at,true);
   }
-  trim(M.cc.seen,300);trim(M.cc.events,300);
+  for(const row of rows)apply(row,true,ccTimestamp(row.lastSeen||row.since)||listAt,false);
+  if(newList){
+    for(const row of Object.values(store.active)){
+      if(!activeIds.has(row.id))apply({id:row.id,source:cc.source},false,listAt,true);
+    }
+    store.listAt=listAt;
+    store.source=CC_SOURCES.has(cc.source)?cc.source:'KombiInterface_2.ccList';
+  }
+  if(cc.receipts&&typeof cc.receipts==='object'){
+    store.receipts=Object.fromEntries(Object.entries(cc.receipts).filter(([key,value])=>CC_SOURCES.has(key.replace(/:getter$/,''))&&value&&typeof value==='object')
+      .map(([key,value])=>[key,{at:ccTimestamp(value.at),origin:['get','event','method'].includes(value.origin)?value.origin:null,
+        shape:['array','object','null','undefined','number','string'].includes(value.shape)?value.shape:null,
+        length:int(value.length,65535),valid:int(value.valid,120),rejected:int(value.rejected,120),complete:value.complete===true,
+        authoritative:value.authoritative===true,messages:(Array.isArray(value.messages)?value.messages.slice(0,45):[])
+          .filter(row=>int(row?.id,0xFFFE)).map(row=>({id:row.id,active:typeof row.active==='boolean'?row.active:null,
+            text:maskCcText(str(row.text,300)||''),description:maskCcText(str(row.description,1500)||''),color:CC_COLORS.has(row.color)?row.color:null})),
+        reasons:Object.fromEntries(Object.entries(value.reasons||{})
+          .filter(([k,v])=>/^(invalid_struct|invalid_id|invalid_active_state|unsupported_union|conflicting_duplicate|array_too_long|expected_array_or_struct|unrecognized_text|mismatched_id)$/.test(k)&&int(v,120)!==null))}]));
+  }
+  for(const row of Object.values(store.active)){
+    const age=Date.now()-Date.parse(row.since);
+    if(row.notifiedAt||age<0||age>120000||(!row.color&&age<20000))continue;
+    if(!N.enabled||!N.categories.cc)continue;
+    const legacySent=ccTimestamp(N.sent['cc:'+row.id]);
+    if(legacySent&&legacySent>=row.since){row.notifiedAt=legacySent;continue;}
+    row.notifiedAt=now();
+    const priority=ccPriority(row.color);
+    notify('cc','cc:'+store.vehicleKey+':'+row.id+':'+row.since,'BMW: '+(row.text||'Check-Control-Meldung '+row.id),
+      row.description||'',{priority,tags:priority>=3?['warning','car']:['car']});
+  }
+  const inactive=Object.values(store.known).filter(row=>!store.active[row.id]).sort((a,b)=>b.lastSeen.localeCompare(a.lastSeen));
+  for(const row of inactive.slice(300))delete store.known[row.id];
+  trim(store.seen,300);trim(store.events,300);
+}
+function diagnosticCheckControl(){
+  // Only the authenticated private diagnostic export contains decoded BMW text.
+  const cc=checkControlStore();
+  const row=e=>{
+    const details=ccMetadata(e);
+    for(const field of ['text','shortText','description'])if(details[field])details[field]=maskCcText(details[field]);
+    return {...details,id:e.id,active:e.active,since:e.since,lastSeen:e.lastSeen,at:e.at};
+  };
+  return {listAt:cc.listAt||null,source:cc.source||null,status:checkControlState(),receipts:cc.receipts||{},
+    active:Object.values(cc.active).map(e=>row({...e,active:true})),events:cc.events.slice(-50).map(row)};
 }
 
 // The optional data file stays in private Pi storage. Match the configured vehicle's
@@ -1033,12 +1127,15 @@ function noteFaultMemory(fm){
   save();return read;
 }
 function checkControlState(){
-  const list='KombiInterface_2.ccList';
-  const observed=M.poll.received?.[list], signal=M.poll.signals?.KombiInterface_2;
-  if(!M.poll.ok||M.poll.appState==='stale')return M.cc.listAt?'stale':'unknown';
-  if(observed?.valid===false||(signal?.error==='get ccList'&&Date.parse(signal.errorAt)>(observed?.at?Date.parse(observed.at):-Infinity)))return 'failed';
-  if(vehicleReadingFresh(M.cc.listAt,3*60000))return 'read';
-  return signal?.available===false?'unavailable':M.cc.listAt?'stale':'unknown';
+  const cc=checkControlStore();
+  if(!M.poll.ok||M.poll.appState==='stale')return cc.listAt||Object.keys(cc.active).length?'stale':'unknown';
+  const basic='CheckControlMaster.basicList';
+  const source=cc.source||basic;
+  const latestGetter=cc.receipts?.[source+':getter']||cc.receipts?.[source], stage=M.poll.stages?.[source];
+  if(['failed','paused'].includes(stage?.getter)||latestGetter?.origin==='get'&&latestGetter.rejected)return 'failed';
+  if(vehicleReadingFresh(cc.listAt,3*60000))return 'read';
+  if(cc.listAt)return 'stale';
+  return M.poll.signals?.CheckControlMaster?.available===false?'unavailable':'unknown';
 }
 let lastTextResolution='';
 function faultsView(includeReference=true,archiveKey=null){
@@ -1064,8 +1161,11 @@ function faultsView(includeReference=true,archiveKey=null){
     return Object.assign(name(d),detail);
   };
   const texts={state:catalog.state,count:catalog.count,ecuCount:Object.keys(catalog.ecu).length,resolution,reference:{state:reference.state,meta:reference.meta}};
-  const result={texts,archiveKey,archives:Object.entries(M.faultArchives||{}).map(([key,value])=>({key,lastAt:value.reads.at(-1)?.readAt||null})),diagnosis:{running:faultReadBusy,poll:M.poll,lastSuccess:latest&&latest.readAt},checkControl:{listAt:M.cc.listAt||null,status:checkControlState(),
-      active:(archiveKey?[]:Object.values(M.cc.active)).map(name).sort((a,b)=>String(b.since).localeCompare(String(a.since))),events:(archiveKey?[]:[...M.cc.events]).reverse().slice(0,60).map(name)},
+  const result={texts,archiveKey,archives:Object.entries(M.faultArchives||{}).map(([key,value])=>({key,lastAt:value.reads.at(-1)?.readAt||null})),diagnosis:{running:faultReadBusy,poll:M.poll,lastSuccess:latest&&latest.readAt},checkControl:{listAt:M.cc.listAt||null,status:checkControlState(),source:checkControlStore().source||null,
+      active:(archiveKey?[]:Object.values(M.cc.active)).map(name).sort((a,b)=>String(b.since).localeCompare(String(a.since))),events:(archiveKey?[]:[...M.cc.events]).reverse().slice(0,60).map(e=>{
+        const fallback=M.cc.known?.[e.id];
+        return name({...e,text:e.text||fallback?.text,description:e.description||fallback?.description});
+      })},
     faultMemory:{lastAttempt:last?{readAt:last.readAt,error:last.error}:null,latest:latest?Object.assign({},latest,{ecus:latest.ecus.map(name),dtcs:latest.dtcs.map(d=>Object.assign(details(d),{lastSeen:latest.readAt,firstSeen:(history.known[d.ecu+':'+d.code]||{}).firstSeen,isNew:(history.known[d.ecu+':'+d.code]||{}).firstSeen===latest.readAt&&history.reads.filter(r=>!r.error).length>1}))}):null,
       earlier:earlierRows.map(details),
       reads:[...history.reads].reverse().slice(0,10).map(r=>({readAt:r.readAt,error:r.error,count:r.dtcs.length,ecus:r.ecus.length}))},
@@ -1894,7 +1994,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
       try{capabilities=await(await mguRequest('GET','/v1/vehicle/capabilities',null,18000)).json();}
       catch(e){capabilities={state:'unverified',httpStatus:e.status||null};}
     }
-    return send(res,200,{poll:M.poll,samples:vehicleRawSamples,mileageIngest:st.vehicle.live?.mileageIngestReason||null,dtcCatalog:faultsView(false).texts,dpfFieldTimes:dpfView()?.latest.fieldTimes||{},capabilities});
+    return send(res,200,{poll:M.poll,samples:vehicleRawSamples,mileageIngest:st.vehicle.live?.mileageIngestReason||null,dtcCatalog:faultsView(false).texts,checkControl:diagnosticCheckControl(),dpfFieldTimes:dpfView()?.latest.fieldTimes||{},capabilities});
   }
   if(req.method==='GET'&&p==='/api/v1/faults/ecu-worksheet'){
     const configured=localFaultTexts(),valid=[...M.faults.reads].reverse().find(x=>!x.error);

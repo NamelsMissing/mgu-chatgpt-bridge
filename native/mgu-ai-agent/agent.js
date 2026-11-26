@@ -10,7 +10,7 @@ var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.12';
+var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.13';
 function installedVehicleApps(){
  var result=[];
  try{fs.readdirSync(OAP_APPS).forEach(function(dir){
@@ -64,7 +64,7 @@ function vehicleData(best){
  var doc=best.doc;
  var array=function(v){return Array.isArray(v)?v:[];};
  var m=doc.mileage,km=m&&Number.isInteger(m.km)&&m.km>0&&m.km<2000000?m.km:null;
- return {status:km!==null||array(doc.cbs).length||doc.serviceHistory||doc.dpf||doc.tyres||doc.faultMemory||doc.checkControl&&doc.checkControl.listAt?'ok':'waiting',appState:best.state,appId:best.appId,heartbeatAt:doc.heartbeatAt||null,source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
+ return {status:km!==null||array(doc.cbs).length||doc.serviceHistory||doc.dpf||doc.tyres||doc.faultMemory||doc.checkControl&&(doc.checkControl.listAt||array(doc.checkControl.active).length)?'ok':'waiting',appState:best.state,appId:best.appId,heartbeatAt:doc.heartbeatAt||null,source:'Vehicle Data '+(doc.version||''),writtenAt:doc.writtenAt||null,
   mileageKm:km,mileageAvailable:m?m.valid!==false:false,mileageAt:m?m.at:null,mileageSource:m?m.source:null,
   mileageEcu:m&&Number.isInteger(m.ecu)?m.ecu:null,mileageDid:m&&Number.isInteger(m.did)?m.did:null,unverified:true,
   cbs:Array.isArray(doc.cbs)?doc.cbs.slice(0,50).filter(Boolean).map(function(c){var item={scope:c.scope,label:c.label,remainingKm:c.remainingKm,dueDate:c.dueDate,status:c.status,at:c.at};
@@ -72,7 +72,7 @@ function vehicleData(best){
     return item;}):[],
   serviceHistory:doc.serviceHistory?{status:doc.serviceHistory.status,readAt:doc.serviceHistory.readAt,sets:array(doc.serviceHistory.sets).slice(0,60)}:null,
   signals:doc.signals||{},telemetry:doc.telemetry?Object.assign({},doc.telemetry,{forwardedAt:new Date().toISOString(),snapshotAt:doc.writtenAt||null}):null,
-  checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{listAt:doc.checkControl.listAt||null,source:doc.checkControl.source||null,active:array(doc.checkControl.active).slice(0,120),events:array(doc.checkControl.events).slice(-50)}:null,
+  checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{listAt:doc.checkControl.listAt||null,source:doc.checkControl.source||null,receipts:doc.checkControl.receipts||null,active:array(doc.checkControl.active).slice(0,120),events:array(doc.checkControl.events).slice(-50)}:null,
   tyres:doc.tyres&&Array.isArray(doc.tyres.wheels)?{at:doc.tyres.at,source:doc.tyres.source,wheels:doc.tyres.wheels.slice(0,5).map(function(w){return {position:w.position,pressureBar:w.pressureBar,targetBar:w.targetBar,temperatureC:w.temperatureC,battery:w.battery};}),unverified:true}:null,
   faultMemory:doc.faultMemory&&typeof doc.faultMemory==='object'?{requestId:doc.faultMemory.requestId,readAt:doc.faultMemory.readAt,error:doc.faultMemory.error,ecus:array(doc.faultMemory.ecus).slice(0,120),dtcs:array(doc.faultMemory.dtcs).slice(0,600)}:null,
   dpf:doc.dpf&&typeof doc.dpf==='object'?doc.dpf:null};

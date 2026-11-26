@@ -69,7 +69,7 @@ async function stop(child){
    cBSServcieName:'Motoröl',yearCBSDisplay:2027,monthCBSDisplay:5}}}];
   snapshot.cbsList(cbs);
   snapshot.receivedValue('KombiInterface_2.cbsDataServiceList',cbs,1);
-  snapshot.extra=()=>({checkControl:{listAt:new Date().toISOString(),active:[{id:22,active:true,text:'Testmeldung',ecu:0x40}],events:[]}});
+  snapshot.extra=()=>({checkControl:{listAt:new Date().toISOString(),source:'CheckControlMaster.basicList',active:[{id:22,active:true,text:'Testmeldung',color:'YELLOW',ecu:0x40}],events:[],receipts:{'CheckControlMaster.basicList':{origin:'get',shape:'array',length:1,valid:1,rejected:0,complete:true,authoritative:true}}}});
   assert.ok(snapshot.flush(true));
   await api('/monitor/poll','POST');
   let v=(await api('/vehicle')).body.live;
@@ -84,7 +84,9 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
-  assert.equal(diag.poll.versions.agent,'0.2.12');
+  assert.equal(diag.poll.versions.agent,'0.2.13');
+  assert.equal(diag.checkControl.active[0].color,'YELLOW');
+  assert.equal(diag.checkControl.receipts['CheckControlMaster.basicList'].authoritative,true);
   assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');
   const checks=(await api('/vehicle/diagnostics?capabilities=1')).body.capabilities;
   assert.equal(checks.schema,1);

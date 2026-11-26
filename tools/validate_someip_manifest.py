@@ -18,7 +18,7 @@ LOCAL_CATALOG = ROOT / "reference" / "someip-interfaces.json"
 
 VEHICLE_GETTERS = {
     "de.bmw.infrastructure.VehicleInformation": ["Range"],
-    "de.bmw.infotainment.KombiInterface_2": ["ccList", "cbsDataServiceList"],
+    "de.bmw.infotainment.KombiInterface_2": ["ccList", "ccListRiskClass", "cbsDataServiceList"],
     "de.bmw.infotainment.vehicle.TPMS": ["statusTyrePressure", "statusTargetTyrePressure"],
 }
 

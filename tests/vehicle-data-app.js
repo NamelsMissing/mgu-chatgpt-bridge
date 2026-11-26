@@ -37,7 +37,7 @@ assert.deepStrictEqual(Object.keys(spec.signals['de.bmw.infotainment.ConditionBa
 
 for (const [iface, fields] of [
     ['de.bmw.infrastructure.VehicleInformation',['Range']],
-    ['de.bmw.infotainment.KombiInterface_2',['ccList','cbsDataServiceList']],
+    ['de.bmw.infotainment.KombiInterface_2',['ccList','ccListRiskClass','cbsDataServiceList']],
     ['de.bmw.infotainment.vehicle.TPMS',['statusTyrePressure','statusTargetTyrePressure']],
 ]) {
     for (const field of fields) assert.ok(!(field in (spec.signals[iface] || {})), iface+'.'+field+' is optional');
@@ -251,33 +251,46 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     assert.strictEqual(await d.send(0x12, 0x22, [0x44, 0xBE]), 'NO_ERROR');
     assert.deepStrictEqual(sent, [0x19, 0x22], 'nothing refused reached the transport');
 
-    // Check-control messages
+    // Check-Control fields and union shapes from the target catalog, using synthetic samples.
     let t = 1000;
     const f = new F.FaultState(() => t);
-    assert.strictEqual(f.ccEvent({ ccmId: 0, activeState: 'AKTIV' }), null);
-    f.ccEvent({ ccmId: 220, reason: 'CCM_REQUESTED_BY_ECU', requestorDiagAddr: 0x40, timeStamp_s: 5, activeState: 'AKTIV' });
-    t = 2000; f.ccEvent({ ccmId: 220, reason: 2, requestorDiagAddr: 0x40, activeState: 0 });
-    f.ccEvent({ ccmId: 39, reason: 0, requestorDiagAddr: 0x12, activeState: 'AKTIV' });
-    assert.ok(f.needsText(220));
-    assert.deepStrictEqual(f.ccText({ cCMessageWithSymbol: { cCMessage: { cCIdentifier: 220, cCName: 'Kühlmittelstand zu niedrig\u0000', additionalDescription: 'Kühlmittel nachfüllen.' } } }), { id: 220, text: 'Kühlmittelstand zu niedrig', description: 'Kühlmittel nachfüllen.' });
-    assert.ok(F.decodeCcText({ cCMessageStruct: { cCIdentifier: 39, cCName: 'Motorstörung' } }));
-    f.ccText({ requestedCCMessage: { cCMessageStruct: { cCIdentifier: 39, cCName: 'Motorstörung' } } });
-    let doc = f.document();
-    assert.deepStrictEqual(doc.checkControl.active.map((c) => [c.id, c.text, c.ecu]), [[220, 'Kühlmittelstand zu niedrig', 0x40], [39, 'Motorstörung', 0x12]]);
-    assert.strictEqual(doc.checkControl.active[0].since, new Date(1000).toISOString(), 'repeated AKTIV keeps the first time');
-    t = 3000; f.ccEvent({ ccmId: 220, activeState: 'INAKTIV' });
-    doc = f.document();
-    assert.deepStrictEqual(doc.checkControl.active.map((c) => c.id), [39]);
-    assert.deepStrictEqual(doc.checkControl.events.map((e) => [e.id, e.active]), [[220, true], [39, true], [220, false]]);
-
-    assert.deepStrictEqual(f.ccList([{cCListElement:{cCIdentifer:12}},{cCListElement:{cCIdentifer:39}}]),[12,39]);
-    assert.strictEqual(f.ccList([{invalid:true}]),null);
-    assert.deepStrictEqual(f.document().checkControl.active.map(c=>c.id),[39,12]);
-    t=4000;f.ccList([]);
+    const basic='CheckControlMaster.basicList', list='KombiInterface_2.ccList', risk=list+'RiskClass';
+    const request='KombiInterface_2.requestCCMessage', notifier='KombiInterface_2.newCCMessage';
+    const first={ccmId:220,activeState:'AKTIV',requestorDiagAddr:0x40};
+    const second={ccmId:39,activeState:0,requestorDiagAddr:0x12};
+    assert.strictEqual(F.decodeCcEvent({ccmId:0,activeState:0}),null);
+    assert.strictEqual(f.ccBatch(first,basic,'event').complete,false);
+    t=1500;
+    assert.strictEqual(f.ccBatch([first,second],basic,'get').complete,true);
+    assert.strictEqual(f.ccBatch([],basic,'event').complete,false);
+    const broken=f.ccBatch([first,{ccmId:301,activeState:7}],basic,'get');
+    assert.strictEqual(broken.valid,1);
+    assert.deepStrictEqual(broken.reasons,{invalid_active_state:1});
+    assert.strictEqual(broken.complete,false);
+    assert.strictEqual(f.document().checkControl.active.length,2);
+    assert.strictEqual(F.decodeCcBatch([first,{ccmId:220,activeState:1}],basic,'get').rows.length,0);
+    assert.strictEqual(F.decodeCcBatch(Array(46).fill(first),basic,'get').complete,false);
+    const message={cCMessageWithSymbol:{cCMessage:{cCIdentifier:220,cCName:'Kühlmittelstand niedrig\u0000',additionalDescription:'Kühlmittel nachfüllen.',cCType:1}}};
+    assert.strictEqual(f.ccText(message,request,39),null,'a mismatched method response cannot attach to another ID');
+    assert.strictEqual(f.ccText({requestedCCMessage:message},request,220).description,'Kühlmittel nachfüllen.');
+    f.ccText({cCMessageStruct:{cCIdentifier:220,cCName:'Neues Ereignis'}},notifier);
+    assert.strictEqual(f.document().checkControl.active[0].text,'Kühlmittelstand niedrig');
+    assert.strictEqual(f.document().checkControl.active[0].since,new Date(1000).toISOString());
+    t=2000;
+    f.ccBatch([{ccmId:39,activeState:'INAKTIV'}],basic,'event');
+    f.ccBatch([{cCListElement:{cCIdentifer:220,cCShortName:'BMW-Kurztext',cCColor:2,cCListSymbolID:123,ricResourceID:42}}],list,'get');
+    f.ccBatch([{cCListRiskClassElement:{cCIdentifer:220,cCShortName:'BMW-Kurztext',cCColor:'ORANGE',cCRiskClass:19}}],risk,'get');
+    const row=f.document().checkControl.active[0];
+    assert.deepStrictEqual([row.id,row.text,row.color,row.riskClass,row.symbolId,row.ecu,row.type,row.resourceId],
+        [220,'BMW-Kurztext','ORANGE','RK800',123,0x40,'TYP_B',42]);
+    assert.strictEqual(f.document().checkControl.events.find(e=>e.id===39&&!e.active).ecu,0x12);
+    assert.strictEqual(f.ccBatch([],risk,'event').complete,false);
+    t=3000;
+    assert.strictEqual(f.ccBatch([],risk,'get').complete,true);
     assert.strictEqual(f.document().checkControl.active.length,0);
-    assert.strictEqual(f.document().checkControl.listAt,new Date(4000).toISOString());
-    assert.ok(f.document().checkControl.events.some(e=>e.id===12&&e.active===false));
-    assert.strictEqual(F.decodeCcText({cCMessageStruct:{cCIdentifier:12}}),null);
+    assert.strictEqual(f.document().checkControl.listAt,new Date(3000).toISOString());
+    assert.strictEqual(f.document().checkControl.receipts[risk+':getter'].authoritative,true);
+    assert.strictEqual(F.decodeCcText({cCMessageStruct:{cCIdentifier:0}}),null);
     assert.strictEqual(F.decodeTyres({tpmsInternalLastPositionId1:0,tpmsInternalLastTemperatureDegCId1:-3})[0].temperatureC,-3);
 
     // Tyres (mbar and degC as the catalog's field names say)

@@ -252,3 +252,11 @@ details[open]>.maintenance-row strong::before{content:'▾ '}
   .maintenance-row>.hint{grid-column:1;grid-row:2}
   .maintenance-row>.pill{grid-column:2;grid-row:1 / span 2}
 }
+
+
+.cc-message {border-inline-start: 4px solid #8291a4;}
+.cc-message.cc-critical {border-inline-start-color: #ef626a;}
+.cc-message.cc-warning {border-inline-start-color: #efae52;}
+.cc-message.cc-ok {border-inline-start-color: #57bd87;}
+.cc-message details {margin-top: .45rem; overflow-wrap: anywhere;}
+.cc-message summary {cursor: pointer;}

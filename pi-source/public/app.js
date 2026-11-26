@@ -169,16 +169,26 @@ function renderFaults(f){
  $('faultConnection').textContent=[poll.ok?'MGU erreichbar':'MGU-Status: '+(poll.error||'unbekannt'),vehicleState(poll),ecu?(ecu.available?'Diagnosedienst erreichbar':ecu.error||'Diagnosedienst nicht verfügbar'):'Keine Rückmeldung vom Diagnosedienst',diagnosis.running?'Abfrage läuft':''].filter(Boolean).join(' · ');
  const act=$('ccActive');act.replaceChildren();
  const ccReasons={failed:'Letzte Abfrage der vollständigen Meldungsliste fehlgeschlagen.',unavailable:'Schnittstelle für die vollständige Meldungsliste nicht verfügbar.',
-  stale:'Letzter vollständiger Stand ist veraltet.',unknown:'Aktive Meldungen noch nicht vollständig gelesen. Einzelereignisse können bereits vorliegen.'};
+  stale:'Zuletzt bekannte Meldungen. Der Fahrzeugstand ist veraltet.',unknown:'Aktive Meldungen noch nicht vollständig gelesen. Einzelereignisse können bereits vorliegen.'};
  if(f.checkControl.status!=='read')act.appendChild(txt('p',
-  [ccReasons[f.checkControl.status]||ccReasons.unknown,missingSignal(poll,['KombiInterface_2.ccList','CheckControlMaster.basicList'])]
+  [ccReasons[f.checkControl.status]||ccReasons.unknown,missingSignal(poll,['CheckControlMaster.basicList','KombiInterface_2.ccList','KombiInterface_2.ccListRiskClass'])]
    .filter(Boolean).join(' · '),'hint'));
  else act.appendChild(txt('p',f.checkControl.active.length?'Vollständige Liste empfangen · '+stamp(f.checkControl.listAt):'Erfolgreich gelesen · keine aktiven Meldungen','hint'));
+ const ccStyle={RED:['critical','⚠','Kritisch'],YELLOW:['warning','⚠','Warnung'],ORANGE:['warning','⚠','Warnung'],
+  GREEN:['ok','ⓘ','Information'],WHITE:['neutral','ⓘ','Information'],DEFAULT:['neutral','ⓘ',null]};
  for(const c of f.checkControl.active){
-  const card=txt('div','','due due-overdue');
-  card.appendChild(txt('strong',c.text||'Meldung '+c.id));
-  if(c.description)card.appendChild(txt('p',c.description,'notes'));
-  card.appendChild(txt('p','Aktiv seit '+stamp(c.since)+' · zuletzt erfasst '+stamp(c.lastSeen)+' · '+c.ecuName+' · ID '+c.id,'hint'));
+  const [style,icon,severity]=ccStyle[c.color]||ccStyle.DEFAULT;
+  const card=txt('div','','service-entry cc-message cc-'+style);
+  const heading=txt('strong',icon+' '+(c.text||'Meldung '+c.id));
+  card.appendChild(heading);
+  card.appendChild(txt('p',[severity,'Seit '+stamp(c.since),'zuletzt '+stamp(c.lastSeen)].filter(Boolean).join(' · '),'hint'));
+  const details=document.createElement('details');
+  details.appendChild(txt('summary',c.description?'Beschreibung und technische Details':'Technische Details'));
+  if(c.description)details.appendChild(txt('p',c.description,'notes'));
+  details.appendChild(txt('p',['ID '+c.id,c.ecu!=null?c.ecuName+' (0x'+c.ecu.toString(16).toUpperCase().padStart(2,'0')+')':null,
+   c.color,c.symbolId!=null?'Symbol '+c.symbolId:null,c.riskClass,c.type,c.source,c.textSource,c.occurrences?
+   c.occurrences+'× erfasst seit '+stamp(c.firstSeen):null].filter(Boolean).join(' · '),'hint'));
+  card.appendChild(details);
   act.appendChild(card);
  }
  const ev=$('ccEvents');ev.replaceChildren();
@@ -872,7 +882,7 @@ $('maintenanceSettings').onsubmit=async e=>{
 };
 const telemetryGroups={
  'Kilometerstand':['VehicleInformation','SecureMileage','MileageSupreme','UDS.D122','UDS.D10D','UDS.1700','UDS.558E','UDS.40A3','UDS.4824'],
- 'Check-Control':['CheckControlMaster','KombiInterface_2.ccList','KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage','CheckControlText'],
+ 'Check-Control':['CheckControlMaster','KombiInterface_2.ccListRiskClass','KombiInterface_2.ccList','KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage','CheckControlText'],
  'BMW-Servicebedarf':['KombiInterface_2.cbsDataServiceList','ConditionBasedServicesLegacy'],
  'Servicehistorie':['ServiceHistory'],
  'Reifen':['TPMSInternalData','TPMS','UDS.DC98','UDS.DC99','UDS.DC9A','UDS.DC9B'],
@@ -927,6 +937,16 @@ async function renderTelemetry(){
   for(const [label,sources] of Object.entries(telemetryGroups)){
    const section=txt('div','','service-entry');
    section.appendChild(txt('strong',label));
+   if(label==='Check-Control'&&data.checkControl){
+    const cc=data.checkControl;
+    if(cc.listAt)section.appendChild(txt('p','Letzte vollständige Liste '+stamp(cc.listAt)+' · '+cc.source,'hint'));
+    for(const [source,row] of Object.entries(cc.receipts||{})){
+     const reasons=Object.entries(row.reasons||{}).map(([reason,count])=>reason+' '+count).join(', ');
+     section.appendChild(txt('p',[source,row.origin,row.shape,row.length==null?null:row.length+' Elemente',
+      row.valid+' gültig',row.rejected+' verworfen',reasons,row.authoritative?'vollständig übernommen':'kein vollständiger Abgleich',stamp(row.at)]
+      .filter(Boolean).join(' · '),'hint'));
+    }
+   }
    if(label==='Kilometerstand'&&data.mileageIngest)section.appendChild(txt('p','Pi · '+data.mileageIngest,'hint'));
    const keys=[...Object.keys(p.received||{}),...Object.keys(p.stages||{})].filter(k=>sources.some(src=>k===src||k.startsWith(src+'.')));
    for(const key of [...new Set([...sources,...keys])]){

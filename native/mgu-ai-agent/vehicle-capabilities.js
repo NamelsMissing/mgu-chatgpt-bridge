@@ -11,6 +11,7 @@ var SOURCES=[
  ['Kilometerstand','de.bmw.infrastructure.VehicleInformation','Range'],
  ['Check-Control','de.bmw.infotainment.checkcontrol.CheckControlMaster','basicList'],
  ['Check-Control','de.bmw.infotainment.KombiInterface_2','ccList'],
+ ['Check-Control','de.bmw.infotainment.KombiInterface_2','ccListRiskClass'],
  ['Check-Control','de.bmw.infotainment.KombiInterface_2','newCCMessage'],
  ['CBS','de.bmw.infotainment.KombiInterface_2','cbsDataServiceList'],
  ['Reifen','de.bmw.infotainment.vehicle.TPMSInternalData','tpmsInternalLastValues'],
