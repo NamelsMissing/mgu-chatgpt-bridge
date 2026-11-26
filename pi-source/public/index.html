@@ -158,7 +158,7 @@
     <details id="itemBox">
       <summary>Wartungsplan bearbeiten</summary>
       <form id="maintenanceSettings" class="form-grid">
-        <label>Wartungsprofil <select id="maintenanceProfile"><option value="custom">Individuell</option><option value="g21-diesel">BMW G21 Diesel · Standardwerte ergänzen</option></select></label>
+        <label>Wartungsprofil <select id="maintenanceProfile"><option value="custom">Individuell</option><option value="legacy-plan" hidden>Übernommener Wartungsplan</option><option value="g21-diesel">BMW G21 Diesel · Standardwerte ergänzen</option></select></label>
         <label>Erstzulassung <input type="date" id="maintenanceRegistration"></label>
         <label>Warnschwelle Tage <input type="number" id="maintenanceDays" min="0" max="365" value="30" required></label>
         <label>Warnschwelle km <input type="number" id="maintenanceKm" min="0" max="300000" value="1000" required></label>

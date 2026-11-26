@@ -685,7 +685,7 @@ let vehicleData=null;
 const kmText=n=>n===null||n===undefined?'–':Number(n).toLocaleString('de-DE')+' km';
 const dateText=d=>d?new Date(d+'T12:00:00').toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}):'–';
 const MILEAGE_SOURCES={manual:'eigene Angabe',vehicle:'vom Fahrzeug',service:'aus Serviceeintrag'};
-const DUE_STATES={overdue:'Überfällig',soon:'Bald fällig',ok:'In Ordnung',unknown:'Noch kein Eintrag'};
+const DUE_STATES={overdue:'Überfällig',soon:'Bald fällig',ok:'In Ordnung',unknown:'Unbekannt'};
 function parseKm(v){const s=String(v||'').replace(/[.\s]/g,'').replace(/km$/i,'');return s===''?null:Number(s);}
 function plural(n,one,many){return n+' '+(Math.abs(n)===1?one:many);}
 function dueLine(d){
@@ -731,6 +731,7 @@ function renderMaintenance(v){
  select.replaceChildren(new Option('Neue Wartungsart',''),...v.items.map(item=>new Option(item.name,item.id)));
  select.value=selected;
  if(!$('itemBox').open){
+  $('maintenanceProfile').querySelector('[value=legacy-plan]').hidden=settings.profile!=='legacy-plan';
   $('maintenanceProfile').value=settings.profile||'custom';
   $('maintenanceRegistration').value=settings.registration||'';
   $('maintenanceDays').value=settings.warningDays??30;
@@ -744,32 +745,37 @@ function renderMaintenance(v){
  const cbsLine=c=>[Number.isInteger(c.remainingKm)?'Noch '+kmText(c.remainingKm):'',c.dueDate?dateText(c.dueDate):c.dueMonth?.split('-').reverse().join('/')].filter(Boolean).join(' · ');
  const planLine=d=>[Number.isInteger(d.kmLeft)?(d.kmLeft<0?kmText(-d.kmLeft)+' überfällig':'Noch '+kmText(d.kmLeft)):d.dueKm!==null?'Bei '+kmText(d.dueKm):'',
   d.dueDate?dateText(d.dueDate):''].filter(Boolean).join(' · ');
- const cbsStatus=c=>{
-  const days=c.dueDate?Math.round((Date.parse(c.dueDate)-Date.parse(v.today))/86400000):null;
-  if(days!==null&&days<=0||c.dueMonth&&c.dueMonth<v.today.slice(0,7)||c.remainingKm===0)return 'overdue';
-  if(days!==null&&days<=(settings.warningDays??30)||c.dueMonth===v.today.slice(0,7)||Number.isInteger(c.remainingKm)&&c.remainingKm<=(settings.warningKm??1000))return 'soon';
-  return 'ok';
- };
+ const overview=v.maintenanceOverview;
  const rows=v.due.map(d=>({d,c:cbs.find(c=>(scopeByKey[d.key]||[]).includes(c.scope))}));
  for(const c of cbs)if(!rows.some(row=>row.c===c))rows.push({c});
  const rank={overdue:0,soon:1,ok:2,unknown:3};
- const statusOf=({c,d})=>c?cbsStatus(c):d.status;
+ const statusOf=({c,d})=>[d?.status,c?overview.cbsStatuses[c.scope]:null].filter(Boolean)
+  .sort((a,b)=>rank[a]-rank[b])[0]||'unknown';
  rows.sort((a,b)=>rank[statusOf(a)]-rank[statusOf(b)]);
- const count=rows.filter(row=>statusOf(row)==='overdue').length;
  next.appendChild(txt('strong','Nächster fälliger Service'));
- const bmw=v.bmwNextService||{},fallback=v.due.find(d=>d.status!=='unknown');
- const candidates=[...new Set([bmw.byDate,bmw.byDistance].filter(Boolean).map(c=>c.label+' · '+cbsLine(c)))];
- next.appendChild(txt('p',candidates.length?candidates.join(' / ')+' · BMW CBS'+(v.live?.cbsStale?' · veraltet':''):
-  fallback?fallback.name+' · '+planLine(fallback):'Unbekannt','hint'));
- next.appendChild(txt('span',count+' fällige Wartungen','hint'));
+ const bmw=v.bmwNextService||{},plan=overview.next;
+ const cbsCandidates=[...new Set([bmw.byDate,bmw.byDistance].filter(Boolean).map(c=>c.label+' · '+cbsLine(c)))];
+ const dateCandidate=plan.byDate?plan.byDate.name+' · '+dateText(plan.byDate.dueDate):null;
+ const distanceCandidate=plan.byDistance?plan.byDistance.name+' · '+(plan.byDistance.kmLeft<0?
+  kmText(-plan.byDistance.kmLeft)+' überfällig':'Noch '+kmText(plan.byDistance.kmLeft)):null;
+ const planCandidates=plan.byDate&&plan.byDistance&&plan.byDate.id===plan.byDistance.id?
+  [plan.byDate.name+' · '+planLine(plan.byDate)]:[dateCandidate,distanceCandidate].filter(Boolean);
+ if(cbsCandidates.length)next.appendChild(txt('p',cbsCandidates.join(' / ')+' · BMW CBS'+(v.live?.cbsStale?' · veraltet':''),'hint'));
+ if(planCandidates.length)next.appendChild(txt('p',planCandidates.join(' / ')+' · Wartungsplan','hint'));
+ if(!cbsCandidates.length&&!planCandidates.length)next.appendChild(txt('p','Unbekannt','hint'));
+ const counts=[overview.dueCount+' fällig',overview.unknownCount+' mit unbekannter Fälligkeit'];
+ next.appendChild(txt('span',counts.join(' · '),'hint'));
  if(!rows.length)box.appendChild(txt('p','Wartungsprofil auswählen, um Standardintervalle anzulegen.','hint'));
  for(const {c,d} of rows){
-  const status=c?cbsStatus(c):d.status;
+  const status=statusOf({c,d});
   const card=txt('details','','due due-'+status);
   card.dataset.key=d?.id||c.scope;
   card.open=open.has(card.dataset.key);
   const head=txt('summary','','maintenance-row');
-  head.append(txt('strong',d?.name||c.label),txt('span',c?cbsLine(c):planLine(d)||(d.key==='coolant'?'Letzter Wechsel unbekannt':'Fälligkeit unbekannt'),'hint'),
+  const interval=d?[d.intervalKm?kmText(d.intervalKm):'',d.intervalMonths?d.intervalMonths+' Monate':''].filter(Boolean).join(' oder '):'';
+  const schedule=c?cbsLine(c):planLine(d)||[interval?'Alle '+interval:null,
+   d.key==='coolant'&&!d.lastDone?'Letzter Wechsel unbekannt':'Fälligkeit unbekannt'].filter(Boolean).join(' · ');
+  head.append(txt('strong',d?.name||c.label),txt('span',schedule,'hint'),
    txt('span',status==='overdue'?'Fällig':DUE_STATES[status],'pill due-pill-'+status));
   card.append(head);
   if(c)card.append(txt('p','BMW CBS'+(v.live?.cbsStale?' · veraltet':'')+(c.at?' · '+stamp(c.at):'')+(c.status!=null?' · Status '+c.status:''),'hint'));
@@ -777,7 +783,6 @@ function renderMaintenance(v){
    const source=d.source==='individual'?'Individuell festgelegt':'Automatisch berechnet';
    card.append(txt('p',[source,dueLine(d)].filter(Boolean).join(' · '),'hint'));
    if(d.lastDone)card.append(txt('p','Zuletzt '+dateText(d.lastDone.date)+(d.lastDone.km!==null?' · '+kmText(d.lastDone.km):'')+' · '+(d.lastDone.source==='BMW'?'BMW':'Eigene Wartung'),'hint'));
-   const interval=[d.intervalKm?kmText(d.intervalKm):'',d.intervalMonths?d.intervalMonths+' Monate':''].filter(Boolean).join(' oder ');
    if(interval)card.append(txt('p','Intervall '+interval,'hint'));
    if(d.estimatedKmDate&&d.kmLeft>0)card.append(txt('p','Geschätzte km-Grenze '+dateText(d.estimatedKmDate),'hint'));
   }
@@ -787,38 +792,31 @@ function renderMaintenance(v){
 let fullServiceHistory=false;
 function renderServiceHistory(v){
  const list=$('serviceEntries'),names=Object.fromEntries(v.items.map(i=>[i.id,i.name]));
- const original=v.live?.serviceHistory?.sets||[],seen=new Set(),rows=[];
- for(const x of original){
-  const signature=JSON.stringify([x.date,x.km,x.dealer,x.status,x.correction,x.services.map(s=>[s.code,s.scope,s.label,s.status]).sort()]);
-  if(seen.has(signature))continue;
-  seen.add(signature);
-  rows.push({...x,bmw:true,work:x.services.map(s=>s.label).join(' · ')});
- }
- for(const e of v.entries){
-  const duplicate=e.notes?.startsWith('Aus der Servicehistorie des Fahrzeugs übernommen')&&
-   e.createdAt===e.updatedAt&&rows.some(x=>x.bmw&&x.date===e.date&&x.km===e.km&&
-    e.workshop===(x.dealer?'Händler '+x.dealer:'')&&e.cost===null&&
-    e.items.every(id=>x.services.some(s=>s.label===names[id]||id==='oil'&&s.scope==='OELSERVICE'))&&
-    (!e.title||e.title==='Service laut Fahrzeug'||e.title.split(', ').every(label=>x.services.some(s=>s.label===label)))&&
-    x.services.every(s=>e.items.some(id=>s.label===names[id]||id==='oil'&&s.scope==='OELSERVICE')||e.title.split(', ').includes(s.label)));
-  if(!duplicate)rows.push({...e,work:[...e.items.map(i=>names[i]||'Gelöschte Wartungsart'),e.title].filter(Boolean).join(' · ')});
- }
- rows.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||(b.km??-1)-(a.km??-1));
+ const rows=v.history;
  list.replaceChildren();
  if(!rows.length)list.append(txt('p','Keine Serviceeinträge vorhanden.','hint'));
- for(const e of fullServiceHistory?rows:rows.slice(0,5)){
-  const card=txt('details','','service-entry'),head=txt('summary','','maintenance-row');
-  head.append(txt('strong',dateText(e.date)+(e.km!==null?' · '+kmText(e.km):'')),txt('span',e.work||'Service','hint'),
-   txt('span',e.bmw?'BMW':'Eigene Wartung','pill pill-off'));
+ const localWork=e=>[...e.items.map(id=>names[id]||'Gelöschte Wartungsart'),e.title].filter(Boolean).join(' · ');
+ for(const row of fullServiceHistory?rows:rows.slice(0,5)){
+  const bmw=row.bmw,card=txt('details','','service-entry'),head=txt('summary','','maintenance-row');
+  const work=bmw?bmw.services.map(s=>s.label).join(' · '):localWork(row.localEntries[0]);
+  const source=bmw?(row.localEntries.length?'BMW + lokal':'BMW'):'Eigene Wartung';
+  head.append(txt('strong',dateText(row.date)+(row.km!=null?' · '+kmText(row.km):'')),
+   txt('span',work||'Service','hint'),txt('span',source,'pill pill-off'));
   card.append(head);
-  if(e.bmw){
-   if(e.dealer)card.append(txt('p','Händler '+e.dealer,'hint'));
-   const codes=e.services.map(s=>s.code??s.scope).filter(s=>s!==null&&s!==undefined);
+  if(bmw){
+   if(bmw.dealer)card.append(txt('p','Händler '+bmw.dealer,'hint'));
+   const codes=bmw.services.map(s=>s.code??s.scope).filter(s=>s!==null&&s!==undefined);
    if(codes.length)card.append(txt('p',codes.join(' · '),'hint'));
-  }else{
-   for(const detail of [e.workshop,e.cost!==null?e.cost.toLocaleString('de-DE',{style:'currency',currency:'EUR'}):'',e.notes])
+  }
+  for(const entry of row.localEntries){
+   if(bmw){
+    const local=[localWork(entry)||'Service',entry.date!==row.date?dateText(entry.date):null,
+     entry.km!=null&&entry.km!==row.km?kmText(entry.km):null];
+    card.append(txt('p','Lokale Ergänzung · '+local.filter(Boolean).join(' · '),'hint'));
+   }
+   for(const detail of [entry.workshop,entry.cost!=null?entry.cost.toLocaleString('de-DE',{style:'currency',currency:'EUR'}):'',entry.notes])
     if(detail)card.append(txt('p',detail,'hint'));
-   const edit=txt('button','Bearbeiten','textbutton');edit.onclick=()=>editEntry(e.id);card.append(edit);
+   const edit=txt('button','Bearbeiten','textbutton');edit.onclick=()=>editEntry(entry.id);card.append(edit);
   }
   list.append(card);
  }

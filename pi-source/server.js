@@ -13,7 +13,7 @@ const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.7'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.8'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -151,7 +151,7 @@ async function runJob(j){if(j.status!=='pending')throw Error('Job already review
      })),referenceNotice:'Titel sind lokale Referenzdaten; Zuordnungsqualität beachten. Eigene Einschätzungen separat kennzeichnen.'};
    }
  }
- else if(j.type==='status'){result=await(await mguRequest('GET','/v1/status')).json();noteVehicleMileage(result);}
+ else if(j.type==='status'){const key=maintenanceVehicleKey();result=await(await mguRequest('GET','/v1/status')).json();if(key===maintenanceVehicleKey())noteVehicleMileage(result);}
  else if(j.type==='diagnostic')result=await(await mguRequest('POST','/v1/diagnostics',{preset:j.payload.preset})).json();
  else if(j.type==='console')result=await(await mguRequest('POST','/v1/console',{command:j.payload.command})).json();
 	 else if(j.type==='list')result=await(await mguRequest('POST','/v1/files/list',{path:j.payload.path})).json();
@@ -245,25 +245,90 @@ const G21_SERVICE_ITEMS={
   coolant:['Kühlflüssigkeit',36,0,['KUEHLFLUESSIGKEIT']],
   inspection:['HU/AU',24,0,['HU_HAUPTUNTERSUCHUNG'],36]
 };
-if(!st.vehicle||typeof st.vehicle!=='object')st.vehicle={};
-if(!Array.isArray(st.vehicle.mileage))st.vehicle.mileage=[];
-if(!st.vehicle.entries||typeof st.vehicle.entries!=='object')st.vehicle.entries={};
-if(!st.vehicle.items||typeof st.vehicle.items!=='object')st.vehicle.items={oil:{id:'oil',name:'Motoröl und Ölfilter',intervalMonths:12,intervalKm:8000,initialDefault:true}};
+const SERVICE_ALIASES={
+  oil:['Motoröl','Ölwechsel','Öl und Ölfilter','Ölservice','Engine oil','Oil change'],
+  microfilter:['Innenraumfilter','Mikrofilter','Pollenfilter','Kabinenfilter','Cabin filter'],
+  check:['Fahrzeugcheck','Vehicle check'],
+  airFilter:['Luftfilter','Luftfilter Motor','Motor-Luftfilter','Engine air filter'],
+  fuelFilter:['Kraftstofffilter','Dieselfilter','Diesel-Kraftstofffilter','Fuel filter diesel'],
+  brakeFluid:['Bremsflüssigkeitswechsel','Bremsflüssigkeit wechseln','Brake fluid'],
+  coolant:['Kühlmittel','Kühlmittelwechsel','Kühlflüssigkeitswechsel','Kühlwasser','Coolant'],
+  inspection:['HU','Hauptuntersuchung','Haupt- und Abgasuntersuchung','TÜV','TÜV HU/AU']
+};
+const serviceName=value=>String(value||'').toLowerCase().replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue')
+  .replace(/ß/g,'ss').replace(/[^a-z0-9]/g,'');
+const SERVICE_KEYS=new Map(Object.entries(G21_SERVICE_ITEMS).flatMap(([key,[name]])=>
+  [name,key,...SERVICE_ALIASES[key]].map(alias=>[serviceName(alias),key])));
+const serviceKey=item=>item?.planKey||(Object.hasOwn(G21_SERVICE_ITEMS,item?.id)?item.id:SERVICE_KEYS.get(serviceName(item?.name)));
+const usesG21Plan=profile=>profile==='g21-diesel'||profile==='legacy-plan';
+
+function newVehicleBook(){
+  return {maintenanceMigration:1,mileage:[],entries:{},items:{oil:{id:'oil',name:'Motoröl und Ölfilter',intervalMonths:12,intervalKm:8000,initialDefault:true}}};
+}
+function maintenanceVehicleKey(){
+  const target=st.mguConnection?.url||MGU;
+  return target?hash(target):null;
+}
+function bindVehicleBook(){
+  const key=maintenanceVehicleKey();
+  if(!key||st.maintenanceVehicle===key)return false;
+  if(st.maintenanceVehicle){
+    st.maintenanceArchives||={};
+    st.maintenanceArchives[st.maintenanceVehicle]=st.vehicle;
+    st.vehicle=st.maintenanceArchives[key]||newVehicleBook();
+    delete st.maintenanceArchives[key];
+  }
+  st.maintenanceVehicle=key;
+  return true;
+}
+function addG21ServiceItems(vehicle){
+  for(const [id,[name,intervalMonths,intervalKm]] of Object.entries(G21_SERVICE_ITEMS)){
+    const existing=Object.values(vehicle.items).find(item=>serviceKey(item)===id);
+    if(existing){
+      if(existing.id!==id)existing.planKey=id;
+      continue;
+    }
+    vehicle.items[id]={id,name,intervalMonths,intervalKm,standard:true};
+  }
+}
+function migrateVehicleBook(){
+  const legacyItems=st.vehicle?.items;
+  const isLegacyBook=legacyItems&&typeof legacyItems==='object'&&
+    Object.values(legacyItems).some(item=>serviceKey(item)==='oil');
+  if(!st.vehicle||typeof st.vehicle!=='object'||Array.isArray(st.vehicle))st.vehicle=newVehicleBook();
+  if(!Array.isArray(st.vehicle.mileage))st.vehicle.mileage=[];
+  if(!st.vehicle.entries||typeof st.vehicle.entries!=='object')st.vehicle.entries={};
+  if(!st.vehicle.items||typeof st.vehicle.items!=='object')st.vehicle.items=newVehicleBook().items;
+  let changed=bindVehicleBook();
+  const vehicle=st.vehicle;
+  if(!(vehicle.maintenanceMigration>=1)){
+    // Older Pi versions did not store a model identity. Keep the carried-over
+    // plan separate from an explicitly selected BMW G21 profile.
+    if(isLegacyBook&&!vehicle.maintenance?.profile&&!vehicle.maintenanceMigration){
+      vehicle.maintenance={...vehicle.maintenance,profile:'legacy-plan'};
+    }
+    if(isLegacyBook)for(const item of Object.values(vehicle.items))delete item.initialDefault;
+    if(usesG21Plan(vehicle.maintenance?.profile))addG21ServiceItems(vehicle);
+    vehicle.maintenanceMigration=1;
+    changed=true;
+  }
+  if(linkLegacyHistoryEntries(vehicle)||changed)save();
+}
 function configureMaintenance(d){
-  if(!['g21-diesel','custom'].includes(d.profile))throw Error('Unbekanntes Wartungsprofil');
+  if(!['g21-diesel','custom'].includes(d.profile)&&
+    !(d.profile==='legacy-plan'&&st.vehicle.maintenance?.profile==='legacy-plan'))throw Error('Unbekanntes Wartungsprofil');
   const registration=d.registration?checkDate(d.registration,'Erstzulassung'):null;
   const warningDays=checkInt(d.warningDays??30,'Warnschwelle Tage',365);
   const warningKm=checkInt(d.warningKm??1000,'Warnschwelle km',300000);
+  const previous=st.vehicle.maintenance?.profile;
   st.vehicle.maintenance={profile:d.profile,registration,warningDays,warningKm};
-  if(d.profile==='g21-diesel'){
-    for(const [id,[name,intervalMonths,intervalKm]] of Object.entries(G21_SERVICE_ITEMS)){
-      if(st.vehicle.items[id]?.initialDefault)st.vehicle.items[id]={id,name,intervalMonths,intervalKm,standard:true};
-      else if(!st.vehicle.items[id]){
-        const existing=Object.values(st.vehicle.items).find(i=>i.name.toLowerCase()===name.toLowerCase());
-        if(existing)existing.planKey=id;
-        else st.vehicle.items[id]={id,name,intervalMonths,intervalKm,standard:true};
-      }
+  if(usesG21Plan(d.profile)&&!usesG21Plan(previous)){
+    const oil=st.vehicle.items.oil;
+    if(oil?.initialDefault&&oil.intervalKm===8000&&oil.intervalMonths===12&&
+      !Object.values(st.vehicle.entries).some(entry=>entry.items.includes('oil'))){
+      st.vehicle.items.oil={id:'oil',name:G21_SERVICE_ITEMS.oil[0],intervalMonths:24,intervalKm:30000,standard:true};
     }
+    addG21ServiceItems(st.vehicle);
   }
   save();
 }
@@ -304,21 +369,21 @@ function kmPerDay(){
   const days=dayNumber(last.date)-dayNumber(first.date),km=last.km-first.km;
   return days>=14&&km>0?km/days:null;
 }
-function serviceDue(item,cur,rate){
-  const key=item.planKey||item.id;
+function serviceDue(item,cur,rate,entries,history){
+  const key=serviceKey(item)||item.id;
   const def=G21_SERVICE_ITEMS[key];
   const scopes=def?.[3]||[];
-  const done=Object.values(st.vehicle.entries).filter(e=>e.items.includes(item.id))
-    .map(e=>({...e,source:'own'}));
-  for(const set of st.vehicle.live?.serviceHistory?.sets||[]){
+  const done=entries.filter(e=>e.items.includes(item.id)&&
+    !e.bmwOriginal?.services?.some(row=>scopes.includes(row.scope))).map(e=>({...e,source:'own'}));
+  for(const set of history.values()){
     if(set.date&&set.date<=today()&&set.services.some(row=>scopes.includes(row.scope)&&
-      ['SERVICE_PERFORMED','SERVICE_CARRIED_OUT_LATE'].includes(row.status))){
+      ['SERVICE_PERFORMED','SERVICE_CARRIED_OUT_LATE'].includes(row.status||set.status))){
       done.push({date:set.date,km:set.km,source:'BMW'});
     }
   }
   done.sort((a,b)=>b.date.localeCompare(a.date)||(b.km??-1)-(a.km??-1)||Number(b.source==='BMW')-Number(a.source==='BMW'));
   const last=done[0]||null,settings=st.vehicle.maintenance||{};
-  const firstDate=!last&&settings.profile==='g21-diesel'&&settings.registration&&def?.[4]?
+  const firstDate=!last&&usesG21Plan(settings.profile)&&settings.registration&&def?.[4]?
     addMonths(settings.registration,def[4]):null;
   // Eine von Hand gesetzte Fälligkeit gilt, bis danach ein passender Serviceeintrag folgt.
   const o=item.override,override=o&&(!last||last.date<o.setOn||(last.date===o.setOn&&String(last.createdAt||'')<String(o.setAt||'')))?o:null;
@@ -327,7 +392,7 @@ function serviceDue(item,cur,rate){
   const t=today(),daysLeft=dueDate?dayNumber(dueDate)-dayNumber(t):null,kmLeft=dueKm!==null&&cur?dueKm-cur.km:null;
   const kmDate=kmLeft!==null&&rate?addDays(t,Math.max(0,Math.round(kmLeft/rate))):null;
   let status='ok';
-  if(dueDate===null&&dueKm===null)status='unknown';
+  if(daysLeft===null&&kmLeft===null)status='unknown';
   else if((daysLeft!==null&&daysLeft<=0)||(kmLeft!==null&&kmLeft<=0))status='overdue';
   else if((daysLeft!==null&&daysLeft<=(settings.warningDays??30))||(kmLeft!==null&&kmLeft<=(settings.warningKm??1000))||(kmDate&&dayNumber(kmDate)-dayNumber(t)<=(settings.warningDays??30)))status='soon';
   const firstBy=dueDate&&kmDate?(kmDate<dueDate?'km':'date'):dueDate?'date':dueKm!==null?'km':null;
@@ -350,22 +415,50 @@ function nextBmwService(rows){
   const km=eligible.filter(c=>Number.isInteger(c.remainingKm)).sort((a,b)=>a.remainingKm-b.remainingKm);
   return {byDate:ordered[0]||null,byDistance:km[0]||null};
 }
+function maintenanceOverview(due,cbs,t,settings){
+  const rank={overdue:0,soon:1,ok:2,unknown:3};
+  const groups=new Map();
+  const add=(key,status)=>{if(!groups.has(key)||rank[status]<rank[groups.get(key)])groups.set(key,status);};
+  const cbsStatuses=Object.create(null);
+  for(const item of due)add(item.key,item.status);
+  for(const row of cbs){
+    if(row.available===false)continue;
+    const days=row.dueDate?dayNumber(row.dueDate)-dayNumber(t):null, month=row.dueMonth||null;
+    const km=row.remainingKm, distanceKnown=Number.isInteger(km);
+    if(days===null&&!month&&!distanceKnown)continue;
+    const status=(days!==null&&days<=0)||(month&&month<t.slice(0,7))||(distanceKnown&&km<=0)?'overdue':
+      (days!==null&&days<=(settings.warningDays??30))||month===t.slice(0,7)||(distanceKnown&&km<=(settings.warningKm??1000))?'soon':'ok';
+    cbsStatuses[row.scope]=status;
+    add(scopeToServiceKey.get(row.scope)||row.scope||row.label,status);
+  }
+  const statuses=[...groups.values()];
+  const next={
+    byDate:due.filter(row=>row.dueDate).sort((a,b)=>a.dueDate.localeCompare(b.dueDate))[0]||null,
+    byDistance:due.filter(row=>row.kmLeft!==null).sort((a,b)=>a.kmLeft-b.kmLeft)[0]||null,
+  };
+  return {dueCount:statuses.filter(status=>status==='overdue').length,
+    unknownCount:statuses.filter(status=>status==='unknown').length,next,cbsStatuses};
+}
 function vehicleView(){
   const manual=currentMileage(),live=st.vehicle.live;
   const cur=Number.isInteger(live?.mileageKm)?{km:live.mileageKm,date:live.mileageAt?.slice(0,10),source:'vehicle'}:manual;
   const rate=kmPerDay(),order={overdue:0,soon:1,ok:2,unknown:3};
-  return {today:today(),maintenance:st.vehicle.maintenance||{},mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
-    bmwNextService:nextBmwService(st.vehicle.live?.cbs||[]),
+  const date=today(),maintenance=st.vehicle.maintenance||{};
+  const entries=Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0));
+  const originals=historyRecords(entries);
+  const due=Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate,entries,originals)).sort((a,b)=>
+    order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9')));
+  const cbs=live?.cbs||[];
+  return {today:date,maintenance,mileage:cur,kmPerDay:rate?Math.round(rate*10)/10:null,
+    bmwNextService:nextBmwService(cbs),maintenanceOverview:maintenanceOverview(due,cbs,date,maintenance),
     mileageHistory:mileagePoints().slice(-40).reverse(),
     ownMileage:[...st.vehicle.mileage].sort((a,b)=>b.date.localeCompare(a.date)||b.km-a.km).slice(0,40),
-    due:Object.values(st.vehicle.items).map(i=>serviceDue(i,cur,rate)).sort((a,b)=>order[a.status]-order[b.status]||String(a.dueDate||'9').localeCompare(String(b.dueDate||'9'))),
-    items:Object.values(st.vehicle.items),
-    entries:Object.values(st.vehicle.entries).sort((a,b)=>b.date.localeCompare(a.date)||(b.km||0)-(a.km||0)),
+    due,items:Object.values(st.vehicle.items),entries,history:serviceHistoryView(originals,entries),
     tyres:tyresView(),dpf:dpfView(),poll:M.poll,
-    live:st.vehicle.live?Object.assign({},st.vehicle.live,{
-      stale:st.vehicle.live.mileageAvailable!==true||!vehicleReadingFresh(st.vehicle.live.mileageAt,7*60000),
-      cbsStale:!vehicleReadingFresh(st.vehicle.live.cbsAt||st.vehicle.live.cbsListAt,15*60000),serviceHistory:st.vehicle.live.serviceHistory?Object.assign({},st.vehicle.live.serviceHistory,
-      {sets:st.vehicle.live.serviceHistory.sets.map(x=>Object.assign({},x,{imported:!!(x.date&&historyEntryFor(x))}))}):null}):null};
+    live:live?Object.assign({},live,{
+      stale:live.mileageAvailable!==true||!vehicleReadingFresh(live.mileageAt,7*60000),
+      cbsStale:!vehicleReadingFresh(live.cbsAt||live.cbsListAt,15*60000),serviceHistory:live.serviceHistory?Object.assign({},live.serviceHistory,
+      {sets:live.serviceHistory.sets.map(x=>Object.assign({},x,{reference:historyReference(x),imported:!!historyEntryFor(x,entries)}))}):null}):null};
 }
 function addMileage(km,date,source,measuredAt,mileageSource){
   const d=checkDate(date||today(),'Datum'),k=checkInt(km,'Kilometerstand',2000000);
@@ -427,24 +520,93 @@ function noteVehicleLive(v){
   if(previous&&(!live.serviceHistory||previous.serviceHistory?.status==='E_OK'&&live.serviceHistory.status!=='E_OK'))live.serviceHistory=previous.serviceHistory||null;
   const before=JSON.stringify(Object.assign({},previous||{},{at:null}));
   st.vehicle.live=live;
-  if(JSON.stringify(Object.assign({},live,{at:null}))!==before)save();
+  if(linkLegacyHistoryEntries(st.vehicle)||JSON.stringify(Object.assign({},live,{at:null}))!==before)save();
   try{noteCheckControl(v.checkControl);noteTyres(v.tyres);noteDpf(v.dpf);noteFaultMemory(v.faultMemory);}catch(e){audit('monitor_error',String(e.message||e).slice(0,160));}
 }
 const HISTORY_STATES={SERVICE_CARRIED_OUT_LATE:'verspätet durchgeführt',SERVICE_INCOMPLETE:'unvollständig'};
-function historyEntryFor(set){return Object.values(st.vehicle.entries).find(e=>e.date===set.date&&(e.km===null||set.km===null||e.km===set.km))||null;}
-function importHistory(date,km){
-  const live=st.vehicle.live,sets=live&&live.serviceHistory?live.serviceHistory.sets:[];
-  const set=sets.find(x=>x.date===date&&(km===undefined||km===null||x.km===km));
-  if(!set||!set.date)throw Error('Diesen Eintrag meldet das Fahrzeug nicht (mehr)');
+const LEGACY_HISTORY_IMPORT=/^Aus der Servicehistorie des Fahrzeugs übernommen(?:[.\s(]|$)/i;
+const scopeToServiceKey=new Map(Object.entries(G21_SERVICE_ITEMS).flatMap(([key,def])=>def[3].map(scope=>[scope,key])));
+function historyReference(set){
+  const services=(set.services||[]).map(row=>[String(row.scope??row.code??serviceName(row.label)),row.status||null]);
+  return hash(JSON.stringify([set.date,set.km,set.dealer||'',set.correction||0,services.map(row=>JSON.stringify(row)).sort()]));
+}
+function distinctHistory(sets){
+  return new Map(sets.map(set=>[historyReference(set),set]));
+}
+function historyEntryFor(set,entries=Object.values(st.vehicle.entries)){
+  const ref=historyReference(set);
+  return entries.find(entry=>entry.bmwRef===ref)||null;
+}
+function linkLegacyHistoryEntries(vehicle){
+  const originals=distinctHistory(vehicle.live?.serviceHistory?.sets||[]);
+  let changed=false;
+  for(const entry of Object.values(vehicle.entries)){
+    if(entry.bmwRef||!LEGACY_HISTORY_IMPORT.test(entry.notes||''))continue;
+    const localNames=new Set();
+    for(const id of entry.items||[]){
+      const item=vehicle.items[id];
+      if(item)localNames.add(serviceKey(item)||serviceName(item.name));
+    }
+    for(const part of String(entry.title||'').split(/[,;·]/)){
+      const name=serviceName(part);
+      if(name)localNames.add(SERVICE_KEYS.get(name)||name);
+    }
+    const candidates=[...originals].filter(([,set])=>set.date===entry.date&&
+      (entry.km==null||set.km==null||entry.km===set.km));
+    const matches=candidates.map(([ref,set])=>{
+      const count=(set.services||[]).filter(row=>
+        localNames.has(scopeToServiceKey.get(row.scope)||serviceName(row.label))).length;
+      return {ref,set,count};
+    });
+    const complete=matches.filter(({set,count})=>count>0&&count===set.services.length);
+    let match=complete.length===1?complete[0]:null;
+    if(!match&&matches.length===1){
+      const candidate=matches[0];
+      if(candidate.count>0&&entry.km!=null&&entry.km===candidate.set.km&&candidate.set.dealer&&
+        serviceName(entry.workshop)===serviceName('Händler '+candidate.set.dealer))match=candidate;
+    }
+    if(match){
+      entry.bmwRef=match.ref;
+      entry.bmwOriginal=match.set;
+      changed=true;
+    }
+  }
+  return changed;
+}
+function historyRecords(entries){
+  const originals=distinctHistory(st.vehicle.live?.serviceHistory?.sets||[]);
+  for(const entry of entries){
+    if(entry.bmwRef&&entry.bmwOriginal&&!originals.has(entry.bmwRef))originals.set(entry.bmwRef,entry.bmwOriginal);
+  }
+  return originals;
+}
+function serviceHistoryView(originals,entries){
+  const grouped=new Map(),rows=[];
+  for(const entry of entries){
+    if(entry.bmwRef&&originals.has(entry.bmwRef)){
+      if(!grouped.has(entry.bmwRef))grouped.set(entry.bmwRef,[]);
+      grouped.get(entry.bmwRef).push(entry);
+    }else rows.push({date:entry.date,km:entry.km,localEntries:[entry]});
+  }
+  for(const [ref,bmw] of originals)rows.push({date:bmw.date,km:bmw.km,bmw,reference:ref,localEntries:grouped.get(ref)||[]});
+  return rows.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||''))||(b.km??-1)-(a.km??-1));
+}
+function importHistory(date,km,reference){
+  const candidates=[...distinctHistory(st.vehicle.live?.serviceHistory?.sets||[])]
+    .filter(([ref,set])=>(!reference||ref===reference)&&set.date===date&&(km===undefined||set.km===km));
+  if(!candidates.length)throw Error('Diesen Eintrag meldet das Fahrzeug nicht (mehr)');
+  if(candidates.length!==1)throw Error('Mehrere BMW-Einträge passen. Bitte die BMW-Referenz angeben.');
+  const [ref,set]=candidates[0];
   if(historyEntryFor(set))throw Error('Schon im Serviceheft');
-  const byName=Object.fromEntries(Object.values(st.vehicle.items).map(i=>[i.name.toLowerCase(),i.id]));
+  const byName=Object.fromEntries(Object.values(st.vehicle.items).map(i=>[serviceName(i.name),i.id]));
   const items=[],rest=[];
   for(const sv of set.services){
-    const id=sv.scope==='OELSERVICE'&&st.vehicle.items.oil?'oil':byName[sv.label.toLowerCase()];
+    const id=sv.scope==='OELSERVICE'&&st.vehicle.items.oil?'oil':byName[serviceName(sv.label)];
     if(id&&!items.includes(id))items.push(id);else if(!id)rest.push(sv.label);
   }
   return saveServiceEntry({date:set.date,km:set.km,items,title:rest.length?rest.join(', '):(items.length?'':'Service laut Fahrzeug'),
-    workshop:set.dealer?'Händler '+set.dealer:'',notes:'Aus der Servicehistorie des Fahrzeugs übernommen'+(HISTORY_STATES[set.status]?' ('+HISTORY_STATES[set.status]+')':'')+'.'});
+    workshop:set.dealer?'Händler '+set.dealer:'',notes:'Aus der Servicehistorie des Fahrzeugs übernommen'+(HISTORY_STATES[set.status]?' ('+HISTORY_STATES[set.status]+')':'')+'.'},
+    {bmwRef:ref,bmwOriginal:set});
 }
 function saveServiceItem(d){
   const id=d.id&&st.vehicle.items[d.id]?d.id:null;
@@ -460,7 +622,7 @@ function saveServiceItem(d){
   Object.assign(item,{name,intervalMonths,intervalKm,override,standard:false});
   st.vehicle.items[item.id]=item;save();return item;
 }
-function saveServiceEntry(d){
+function saveServiceEntry(d,origin){
   const id=d.id&&st.vehicle.entries[d.id]?d.id:null;
   if(!id&&Object.keys(st.vehicle.entries).length>=500)throw Error('Höchstens 500 Serviceeinträge');
   const items=Array.isArray(d.items)?[...new Set(d.items.map(String))]:[];
@@ -472,6 +634,7 @@ function saveServiceEntry(d){
   const entry=id?st.vehicle.entries[id]:{id:uid(),createdAt:now()};
   Object.assign(entry,{date:checkDate(d.date,'Datum'),km:checkInt(d.km,'Kilometerstand',2000000,true),items,title,
     workshop:cleanText(d.workshop,80),notes:cleanText(d.notes,2000),cost,updatedAt:now()});
+  if(origin)Object.assign(entry,origin);
   st.vehicle.entries[entry.id]=entry;save();return entry;
 }
 
@@ -873,12 +1036,14 @@ async function pollOnce(){
 }
 async function probeMgu(){
   let mgu=null;
+  const key=maintenanceVehicleKey();
   try{
     const s=await(await mguRequest('GET','/v1/status')).json();
+    if(key!==maintenanceVehicleKey())return null;
     recordMguStatus(s);
     mgu=s;
     pollFailures=0;
-  }catch(e){pollFailures=Math.min(pollFailures+1,5);recordMguFailure(e);}
+  }catch(e){if(key!==maintenanceVehicleKey())return null;pollFailures=Math.min(pollFailures+1,5);recordMguFailure(e);}
   try{checkServiceNotifications();}catch(e){}
   if(!M.poll.ok)save();
   publishDiagnosticStatus();
@@ -1445,7 +1610,9 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
    const device=await response.json();
    if(device.online!==true)throw Error('MGU not online');
    vehicleFaults();scopedFaultCatalog();
-   st.mguConnection={url:origin,token:pair.token,pairedAt:now()};save();audit('mgu_paired',ip);
+   st.mguConnection={url:origin,token:pair.token,pairedAt:now()};
+   if(bindVehicleBook())M.poll={ok:false,appState:'unknown',connection:'unchecked'};
+   save();audit('mgu_paired',ip);
    return send(res,200,{ok:true,host:device.host||ip,pairedAt:st.mguConnection.pairedAt});
   }
   if(req.method==='POST'&&p==='/api/v1/logout'){const key=hash(token(req));delete st.sessions[key];expertSessions.delete(key);expertCommands.get(key)?.abort();save();
@@ -1623,7 +1790,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
   if(req.method==='POST'&&p==='/api/v1/vehicle/items'){const d=await body(req,4096);const item=saveServiceItem(d);audit('service_item',item.name);return send(res,200,vehicleView());}
   const vi=/^\/api\/v1\/vehicle\/items\/([A-Za-z0-9-]{2,36})$/.exec(p);
   if(req.method==='DELETE'&&vi){if(!st.vehicle.items[vi[1]])return fail(res,404,'Unbekannte Wartungsart');if(Object.values(st.vehicle.entries).some(e=>e.items.includes(vi[1])))return fail(res,400,'Wird in Serviceeinträgen verwendet');delete st.vehicle.items[vi[1]];save();return send(res,200,vehicleView());}
-  if(req.method==='POST'&&p==='/api/v1/vehicle/import-history'){const d=await body(req,1024);const e=importHistory(checkDate(d.date,'Datum'),d.km===undefined?undefined:checkInt(d.km,'km',2000000,true));audit('service_history_import',e.date);return send(res,200,vehicleView());}
+  if(req.method==='POST'&&p==='/api/v1/vehicle/import-history'){const d=await body(req,1024);const e=importHistory(checkDate(d.date,'Datum'),d.km===undefined?undefined:checkInt(d.km,'km',2000000,true),d.reference);audit('service_history_import',e.date);return send(res,200,vehicleView());}
   if(req.method==='POST'&&p==='/api/v1/vehicle/entries'){const d=await body(req,16384);const e=saveServiceEntry(d);audit('service_entry',e.date+' '+(e.title||e.items.join(',')));return send(res,200,vehicleView());}
   const ve=/^\/api\/v1\/vehicle\/entries\/([0-9a-f-]{36})$/.exec(p);
   if(req.method==='DELETE'&&ve){if(!st.vehicle.entries[ve[1]])return fail(res,404,'Unbekannter Eintrag');delete st.vehicle.entries[ve[1]];save();audit('service_entry_deleted',ve[1]);return send(res,200,vehicleView());}
@@ -1871,6 +2038,7 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
  }
  return fail(res,404,'Not found');
  })().catch(e=>{if(!res.headersSent)fail(res,e.status||400,e.message||'Internal error');else res.destroy();});}
+migrateVehicleBook();
 if(require.main===module){localFaultTexts();http.createServer(route).listen(PORT,HOST,()=>console.log('BMW AI Pi server: http://'+HOST+':'+PORT));setTimeout(scheduleLocalChatExport,6500);
  // Nach einem Neustart ist der Diagnosemodus aus: einen eventuell noch offenen Funnel schließen.
  if(st.mcp.autoFunnel===true)syncFunnel();

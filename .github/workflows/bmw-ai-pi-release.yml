@@ -77,6 +77,7 @@ jobs:
           node pi-source/tests/test-claude-mcp.js
           node pi-source/tests/test-vehicle-files.js
           node pi-source/tests/test-monitor.js
+          node pi-source/tests/test-maintenance-migration.js
           node tests/vehicle-pipeline.js
           node tests/vehicle-diagnostics-scheduling.js
           python3 - <<'PY'
