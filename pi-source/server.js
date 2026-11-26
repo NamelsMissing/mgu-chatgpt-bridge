@@ -14,7 +14,7 @@ const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const serviceReference=require('./service-reference');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.12'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.13'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -295,7 +295,7 @@ function historyMeaning(row){
 }
 function bmwWorkKey(row){
   const meaning=historyMeaning(row);
-  if(meaning)return meaning.status==='verified'?meaning.row.work||null:null;
+  if(meaning)return serviceReference.isResolved(meaning.status)?meaning.row.work||null:null;
   if(incompleteWork.test(serviceWords(row.label)))return null;
   return scopeToServiceKey.get(String(row.scope??''))||workKey(row.label);
 }
@@ -690,7 +690,8 @@ function linkLegacyHistoryEntries(vehicle){
       (entry.km==null||set.km==null||entry.km===set.km));
     const matches=candidates.map(([ref,set])=>{
       const count=(set.services||[]).filter(row=>
-        localNames.has(bmwWorkKey(row)||serviceName(row.label))).length;
+        (localNames.has(bmwWorkKey(row))||localNames.has(serviceName(row.label))||
+          (serviceReference.historyCode(row)!==null&&localNames.has('code'+serviceReference.historyCode(row))))).length;
       return {ref,set,count};
     });
     const complete=matches.filter(({set,count})=>count>0&&count===set.services.length);
@@ -725,9 +726,9 @@ function historyDisplay(set){
   return {...set,services:set.services.map(row=>{
     const meaning=historyMeaning(row),id=serviceReference.historyCode(row);
     if(!meaning)return row;
-    return {...row,code:row.code??id,label:meaning.status==='verified'?meaning.row.de||meaning.row.original:
+    return {...row,code:row.code??id,label:serviceReference.isResolved(meaning.status)?meaning.row.de||meaning.row.original:
       'Code '+id+(meaning.status==='ambiguous'?' (mehrdeutig)':meaning.status==='reserved'?' (reserviert)':''),
-      referenceStatus:meaning.status};
+      referenceStatus:meaning.status,referenceSource:meaning.row?.source||null};
   })};
 }
 function serviceHistoryView(originals,entries){

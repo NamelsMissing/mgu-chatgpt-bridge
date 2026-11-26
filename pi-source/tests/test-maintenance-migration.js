@@ -38,12 +38,12 @@ async function stop(){
  pi.kill();
  await once(pi,'exit');
 }
-async function start(){
+async function start(serverFile=path.join(__dirname,'../server.js')){
  const socket=net.createServer();await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve));
  const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));
  base='http://127.0.0.1:'+port;
  let output='';
- pi=spawn(process.execPath,[path.join(__dirname,'../server.js')],{env:{...process.env,PORT:String(port),HOST:'127.0.0.1',
+ pi=spawn(process.execPath,[serverFile],{env:{...process.env,PORT:String(port),HOST:'127.0.0.1',
   DATA_DIR:data,LOGIN_PASSWORD:password,TAILSCALE_BIN:path.join(data,'no-tailscale')},stdio:['ignore','pipe','pipe']});
  pi.stdout.on('data',chunk=>output+=chunk);
  pi.stderr.on('data',chunk=>output+=chunk);
@@ -76,13 +76,13 @@ async function start(){
  });
  const item=key=>v.due.find(row=>row.key===key);
  assert.equal(item('microfilter').status,'unknown');
- assert.equal(item('airFilter').lastDone,null);
+ assert.equal(item('airFilter').lastDone.date,date);
  assert.equal(item('brakeFluid').dueDate,plusMonths(date,24));
  assert.equal(item('coolant').dueDate,plusMonths(coolant.date,36));
  assert.equal(item('oil').lastDone.date,date);
  assert.equal(v.bmwNextService.byDistance.remainingKm,4000);
  assert.equal(v.maintenanceOverview.next.byDate.id,'oil');
- assert.equal(v.maintenanceOverview.unknownCount,7);
+ assert.equal(v.maintenanceOverview.unknownCount,5);
  assert.equal(v.history.length,4,'duplicate BMW records and old import collapse, distinct work remains');
  const merged=v.history.find(row=>row.bmw?.services.length===3);
  assert.equal(merged.localEntries[0].id,localId);
@@ -147,10 +147,10 @@ async function start(){
  const local=(id,on,title,notes='')=>({id,date:on,km:null,items:[],title,notes});
  const records=[
   initialOil,secondOil,secondOil,
-  performed(day(-100),92500,service('11','Code 11'),service('12','Code 12')),
+  performed(day(-100),92500,service('201','Code 201'),service('202','Code 202')),
   performed(day(-70),94000,service('KUEHLFLUESSIGKEIT','Kühlmittel nachgefüllt')),
   performed(day(-60),95000,{scope:'FREITEXT',label:'Motorluftfilter',status:'SERVICE_INCOMPLETE'}),
-  performed(day(-55),95400,{...service('17','Code 17'),code:17}),
+  performed(day(-55),95400,{...service('203','Code 203'),code:203}),
  ];
  const savedBook={items:{oil},entries:{
   ownOil:local('ownOil',day(-15),'Ölwechsel'),
@@ -173,20 +173,20 @@ async function start(){
  assert.equal(find('inspection').basis,'own');
  assert.equal(saved.bmwNextService.byDate.dueDate,day(250));
  assert.equal(find('oil').intervalKm,8000);
- assert.equal(find('check').dueDate,null,'Code 17 from ServiceHistory is not CBS code 17');
- assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===17&&work.label==='Code 17')));
+ assert.equal(find('check').dueDate,null,'unknown ServiceHistory codes cannot confirm a service');
+ assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===203&&work.label==='Code 203')));
  const reference=await api('GET','/service-reference');
- assert.ok(reference.data.observations.some(row=>row.code===11&&row.status==='unknown'));
+ assert.ok(reference.data.observations.some(row=>row.code===201&&row.status==='unknown'));
  const importedReference=await api('POST','/service-reference',{schema:1,rows:[{
-  namespace:'servicehistory.serviceText',code:'0x11',original:'TEST_CHECK',de:'Fahrzeug-Check',work:'check',
+  namespace:'servicehistory.serviceText',code:'0xCB',original:'TEST_CHECK',de:'Fahrzeug-Check',work:'check',
   interface:'ServiceHistory.readServiceHistory',source:'Nur Testfixture',version:'1',verification:'verified',
   description:'Synthetische Zuordnung für den Importtest, keine BMW-Referenz.'
  }]});
  assert.equal(importedReference.status,200);
  saved=(await api('GET','/vehicle')).data;
  assert.equal(find('check').dueDate,plusMonths(day(-55),48));
- assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===17&&work.label==='Fahrzeug-Check')));
- assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.label==='Code 11')));
+ assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===203&&work.label==='Fahrzeug-Check')));
+ assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.label==='Code 201')));
  await stop();
 
  const documented=read();
@@ -236,7 +236,7 @@ async function start(){
  assert.ok(deactivate.data.items.some(item=>item.name===oilTask.name));
  assert.ok(!deactivate.data.due.some(item=>item.key==='transferCaseOil'||item.key==='rearDifferentialOil'));
  const sameState=await api('GET','/service-reference');
- for(const code of [9,18,35])assert.ok(sameState.data.observations.some(row=>row.code===code&&row.status==='unknown'));
+ for(const code of [9,18,35])assert.ok(sameState.data.observations.some(row=>row.code===code&&row.status==='external'));
  await stop();
 
  // Restores the existing rear axle row on reactivation, without duplication.
@@ -250,6 +250,67 @@ async function start(){
  saved=(await api('GET','/vehicle')).data;
  assert.equal(saved.items.length,1);
  assert.equal(saved.maintenance.profile,'custom');
+ await stop();
+
+ // 0.10.10 on-disk shape: numeric original codes with the former Vehicle Data scope/label.
+ // The supplied anonymised history is treated as completed here solely for this fixture.
+ const historicScopes={1:'OELSERVICE',3:'BREMSFLUESSIGKEIT',4:'MIKROFILTER',21:'EINFAHRKONTROLLE',100:'SICHTPRUEFUNG_ADAPTIV'};
+ const exampleHistory=[
+  ['2026-10-31',95747,[1,11,21]],['2026-07-31',87921,[1,11,3,4,100]],
+  ['2026-04-12',79780,[1,4,11,12,100]],['2025-11-29',69512,[1,11,4,100]],
+  ['2024-07-11',49324,[1,3,4,12]],
+ ].map(([date,km,codes])=>performed(date,km,...codes.map(code=>({
+  ...service(historicScopes[code]||String(code),'Code '+code),code
+ }))));
+ exampleHistory.push(performed('2026-11-01',96000,
+  {code:3,scope:'3',label:'Code 3',status:'SERVICE_INCOMPLETE'},service('254','Code 254'),service('5','Code 5')));
+ const savedV01010={vehicle:{maintenanceMigration:1,maintenance:{profile:'g21-diesel'},
+  items:{oil:{...oil},brakeFluid:{id:'brakeFluid',name:'Bremsflüssigkeit',intervalMonths:24},
+   microfilter:{id:'microfilter',name:'Mikrofilter',intervalMonths:24,intervalKm:30000},
+   check:{id:'check',name:'Fahrzeug-Check',intervalMonths:48,intervalKm:60000},
+   airFilter:{id:'airFilter',name:'Motorluftfilter',intervalMonths:48,intervalKm:60000},
+   fuelFilter:{id:'fuelFilter',name:'Kraftstofffilter Diesel',intervalMonths:48,intervalKm:60000}},
+  mileage:[],entries:{},live:{cbs:[],serviceHistory:{status:'E_OK',sets:exampleHistory}}},
+  mguConnection:{url:'http://127.0.0.1:1',token:'c'.repeat(64)}};
+ // 0.10.10 used the legacy numeric map for these four known works.
+ const priorDue={oil:['2027-10-31',103747],brakeFluid:['2028-07-31',null],
+   microfilter:['2028-07-31',117921],check:['2030-07-31',147921]};
+ const legacyServer=process.env.BMW_AI_LEGACY_TEST_SERVER;
+ if(legacyServer){
+  write(savedV01010);
+  await start(legacyServer);
+  saved=(await api('GET','/vehicle')).data;
+  for(const [key,[date,km]] of Object.entries(priorDue)){
+   assert.equal(find(key).dueDate,date,'0.10.10 '+key);
+   assert.equal(find(key).dueKm,km,'0.10.10 '+key);
+  }
+  await stop();
+ }
+ const expected={...priorDue,airFilter:['2030-10-31',155747],fuelFilter:['2030-04-12',139780]};
+ const referenceFile=path.join(data,'service-reference.sqlite');
+ for(const dbState of ['missing','empty','unreadable']){
+  fs.rmSync(referenceFile,{force:true});
+  if(dbState==='empty')fs.writeFileSync(referenceFile,'');
+  if(dbState==='unreadable')fs.writeFileSync(referenceFile,'unknown data, preserved');
+  write(savedV01010);
+  await start();
+  await api('POST','/monitor/poll');
+  saved=(await api('GET','/vehicle')).data;
+  for(const [key,[date,km]] of Object.entries(expected)){
+   assert.equal(find(key).dueDate,date,dbState+' '+key);
+   assert.equal(find(key).dueKm,km,dbState+' '+key);
+  }
+  assert.equal(saved.poll.connection,'unreachable');
+  assert.equal(find('oil').intervalKm,8000);
+  assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===254&&work.referenceStatus==='unknown')));
+  assert.ok(saved.history.some(row=>row.bmw?.services.some(work=>work.code===5&&work.referenceStatus==='ambiguous')));
+  assert.equal(read().vehicle.live.serviceHistory.sets.length,exampleHistory.length);
+  if(dbState==='unreadable'){
+   assert.equal(fs.readFileSync(referenceFile,'utf8'),'unknown data, preserved');
+   assert.ok((await api('GET','/service-reference')).data.error);
+  }
+  await stop();
+ }
  console.log('Pi maintenance migration: legacy plan, alias, offline restart, pairing isolation, service references and due counts passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(async()=>{
  await stop();

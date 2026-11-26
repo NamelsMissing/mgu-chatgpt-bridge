@@ -77,7 +77,7 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   const row=(scope,label,status='SERVICE_PERFORMED')=>({scope,label,status});
   vehicle.serviceHistory={status:'E_OK',readAt:iso(0),sets:[
     {date:'2025-01-01',km:110000,services:[row('OELSERVICE','Motoröl'),row('BREMSFLUESSIGKEIT','Bremsflüssigkeit')]},
-    {date:'2025-01-02',km:110000,services:[row('11','Code 11'),row('MIKROFILTER','Mikrofilter','SERVICE_INCOMPLETE')]},
+    {date:'2025-01-02',km:110000,services:[row('253','Code 253'),row('MIKROFILTER','Mikrofilter','SERVICE_INCOMPLETE')]},
     {date:'2025-01-03',km:110000,services:[row('KUEHLFLUESSIGKEIT','Kühlflüssigkeit')]}
   ]};
   vehicle.cbs=[{scope:'BREMSFLUESSIGKEIT',label:'Bremsflüssigkeit',dueDate:'2028-01-01',at:iso(0)}];

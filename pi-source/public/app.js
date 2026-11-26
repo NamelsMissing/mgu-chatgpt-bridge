@@ -826,6 +826,9 @@ function renderServiceHistory(v){
    if(bmw.dealer)card.append(txt('p','Händler '+bmw.dealer,'hint'));
    const codes=bmw.services.map(s=>s.code??s.scope).filter(s=>s!==null&&s!==undefined);
    if(codes.length)card.append(txt('p',codes.join(' · '),'hint'));
+   if(bmw.services.some(service=>service.referenceStatus==='external')){
+    card.append(txt('p','Enthält extern dokumentierte ServiceHistory-Zuordnungen','hint'));
+   }
   }
   for(const entry of row.localEntries){
    if(bmw){
@@ -1533,7 +1536,8 @@ function showServiceReference(){
  const data=serviceReferences;
  const status=$('serviceReferenceStatus');
  status.textContent=[data.version?'Datenbank '+data.version:'Datenbank nicht geladen',
-  data.total+' Referenzeinträge',data.confirmed+' eindeutig',data.unknown+' unbekannt',data.ambiguous+' mehrdeutig',
+  data.fallbackActive?'Mitgelieferte ServiceHistory-Referenz aktiv':null,
+  data.total+' Referenzeinträge',data.confirmed+' bestätigt',data.external+' extern dokumentiert',data.unknown+' unbekannt',data.ambiguous+' mehrdeutig',
   data.updatedAt?'Aktualisiert '+stamp(data.updatedAt):null,data.error].filter(Boolean).join(' · ');
  const query=$('serviceReferenceSearch').value.trim().toLowerCase(),filter=$('serviceReferenceFilter').value;
  const hex=id=>'0x'+id.toString(16).toUpperCase().padStart(2,'0');
@@ -1543,7 +1547,7 @@ function showServiceReference(){
  const observed=data.observations.filter(row=>['unknown','ambiguous','reserved'].includes(row.status));
  const rows=[...observed,...refs].filter(r=>(!filter||r.status===filter)&&
   [r.namespace,r.code,hex(r.code),r.original,r.de,r.en,r.variant,r.source].some(value=>String(value??'').toLowerCase().includes(query)));
- const labels={unknown:'Unbekannt',verified:'Bestätigt',reserved:'Reserviert',ambiguous:'Mehrdeutig',unverified:'Ungeprüft'};
+ const labels={unknown:'Unbekannt',verified:'Bestätigt',external:'Extern dokumentiert',reserved:'Reserviert',ambiguous:'Mehrdeutig',unverified:'Ungeprüft'};
  const box=$('serviceReferenceRows');
  box.replaceChildren(...rows.slice(0,80).map(r=>{
   const node=txt('div','','service-entry');

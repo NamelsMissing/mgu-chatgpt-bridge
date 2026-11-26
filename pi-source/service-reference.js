@@ -68,13 +68,24 @@ function rowDefinition(row,imported){
  }
  if(out.code===null||!(/^[A-Za-z0-9_.-]{2,180}$/.test(out.namespace))||
   !out.original||!out.interface||!out.source||!out.version||
-  !['verified','reserved','unverified'].includes(out.verification)||
+  !['verified','external','reserved','unverified'].includes(out.verification)||
   (out.work&&!WORK.has(out.work))||(out.vehicle&&!/^[a-f0-9]{64}$/.test(out.vehicle))||
   (out.namespace===HISTORY&&out.code>255)||
-  (imported&&out.verification==='verified'&&(!out.de||!out.description)))throw Error('Referenz benötigt Code, Herkunft, Version und einen gültigen Nachweisstatus.');
+  (imported&&['verified','external'].includes(out.verification)&&(!out.de||!out.description)))throw Error('Referenz benötigt Code, Herkunft, Version und einen gültigen Nachweisstatus.');
  out.hex='0x'+out.code.toString(16).toUpperCase().padStart(2,'0');
  return out;
 }
+function referenceIndex(rows){
+ const index=new Map();
+ for(const row of rows){
+  const key=row.namespace+':'+row.code;
+  if(!index.has(key))index.set(key,[]);
+  index.get(key).push(row);
+ }
+ return index;
+}
+const historyFallback=referenceIndex(seed.rows.filter(row=>row.namespace===HISTORY).map(row=>rowDefinition(row,false)));
+const isResolved=status=>status==='verified'||status==='external';
 function catalog(file){
  let data={rows:[],observations:[],meta:{}},index=new Map(),error=null,previousRead='';
  function command(op,input){
@@ -82,12 +93,7 @@ function catalog(file){
    const next=JSON.parse(execFileSync('python3',['-I','-c',python,file,op],{
     input:JSON.stringify(input),encoding:'utf8',timeout:5000,maxBuffer:8*1024*1024,stdio:['pipe','pipe','pipe']
    }));
-   data=next;index=new Map();
-   for(const row of data.rows){
-    const key=row.namespace+':'+row.code;
-    if(!index.has(key))index.set(key,[]);
-    index.get(key).push(row);
-   }
+   data=next;index=referenceIndex(data.rows);
    error=null;
   }catch(e){error='Referenzdatenbank oder Referenzkonflikt';throw Error(error);}
  }
@@ -95,13 +101,14 @@ function catalog(file){
   try{command('seed',{...seed,rows:seed.rows.map(row=>rowDefinition(row,false))});}catch(e){}
  }
  function resolve(namespace,id,vehicle='',variant=''){
-  const candidates=(index.get(namespace+':'+id)||[]).filter(row=>
+  const key=namespace+':'+id;
+  const candidates=[...(index.get(key)||[]),...(historyFallback.get(key)||[])].filter(row=>
    row.verification!=='unverified'&&(!row.vehicle||row.vehicle===vehicle)&&(!row.variant||row.variant===variant));
   const score=row=>Number(Boolean(row.vehicle))*2+Number(Boolean(row.variant));
   const best=candidates.filter(row=>score(row)===Math.max(...candidates.map(score)));
-  const meanings=new Set(best.map(r=>JSON.stringify([r.de||r.original,r.work,r.verification])));
+  const meanings=new Set(best.map(r=>JSON.stringify([r.de||r.original,r.work,r.verification==='reserved'])));
   if(meanings.size>1)return {status:'ambiguous'};
-  const row=best[0];
+  const row=best.find(row=>row.verification==='verified')||best[0];
   return row?{status:row.verification,row}:{status:'unknown'};
  }
  function observations(){
@@ -119,7 +126,9 @@ function catalog(file){
   const verified=new Set(data.rows.filter(r=>r.verification==='verified'&&
    resolve(r.namespace,r.code,r.vehicle,r.variant).status==='verified')
    .map(r=>[r.namespace,r.code,r.vehicle,r.variant].join(':')));
-  return {version:data.meta.seed||null,updatedAt:data.meta.updatedAt||null,error,total:data.rows.length,
+  const external=new Set(data.rows.filter(r=>r.verification==='external'&&
+   resolve(r.namespace,r.code,r.vehicle,r.variant).status==='external').map(r=>r.namespace+':'+r.code));
+  return {version:data.meta.seed||null,external:external.size,fallbackActive:!data.meta.seed,updatedAt:data.meta.updatedAt||null,error,total:data.rows.length,
    confirmed:verified.size,unknown:observed.filter(r=>r.status==='unknown').length,
    ambiguous:ambiguous.size,ambiguousKeys:[...ambiguous],rows:data.rows,observations:observed};
  }
@@ -149,4 +158,4 @@ function catalog(file){
  }
  return {start,resolve,view,observe,add};
 }
-module.exports={catalog,code,historyCode,HISTORY};
+module.exports={catalog,code,historyCode,HISTORY,isResolved};

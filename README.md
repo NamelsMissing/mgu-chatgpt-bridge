@@ -115,3 +115,5 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 **0.10.11:** Die SQLite-Servicecode-Referenz trennt SOME/IP-, KOMBI-CBS- und ServiceHistory-Codes. Vehicle Data 0.2.9 überträgt ServiceHistory-Rohcodes zur lokalen Auflösung auf dem Pi. [Prüfbericht und Importformat](docs/PRUEFBERICHT-SERVICE-REFERENZ-0.10.11.md).
 
 **0.10.12:** Der Pi-Wartungsplan ergänzt individuell änderbare Vorsorgeintervalle für Automatik- und Hinterachsgetriebeöl. Die Fahrzeugausstattung lässt sich im Wartungsplan hinterlegen. [Referenzprüfung und Wartungsregeln](docs/PRUEFBERICHT-GETRIEBEOEL-0.10.12.md).
+
+**0.10.13:** Der Pi wertet numerische ServiceHistory-Einträge mit dokumentierten Klartexten aus. Die mitgelieferte Referenz bleibt auch ohne SQLite-Import nutzbar. [Quellen und Regressionstests](docs/PRUEFBERICHT-SERVICEHISTORY-0.10.13.md).
