@@ -69,3 +69,31 @@ python3 tools/build_store_app.py vehicle_data \
 ```
 
 `VEHICLE_DATA_UID` ist die numerische OAP-ID der Zielinstallation. Das lokale Paket erhält den Dateisuffix `-ccList`. Bei einer Generator-Ablehnung oder fehlenden Firmware-Datei bricht der Bau vor dem Verpacken der zielgebundenen Variante ab. Die Tests prüfen mit einem Generator-Testdoppel, dass eine Freigabe nur den gewählten Getter ergänzt und eine Ablehnung kein geändertes Manifest erzeugt. Um die tatsächliche Freigabe zu prüfen, genügt zunächst der private Diagnoseexport bei erreichbarer Ziel-MGU. Relevant sind `capabilities.rows` für `ccList` und `ccListRiskClass` sowie die Check-Control-Empfangsbelege.
+
+## Vertiefte Quellenprüfung nach Vehicle Data 0.2.11
+
+Geprüfter Quellstand ist `000e98b`. Als Fahrzeugbeobachtung liegt der Abgleich der Bildschirmfotos vor. Im iDrive ist „AdBlue Reserve“ sichtbar. Der BMW AI Assistant meldet einen fehlgeschlagenen `basicList`-Getter und fehlende Manifestfreigaben für die KOMBI-Getter. Der öffentliche Quellstand und das private Diagnose-Repository enthielten keinen auswertbaren Vehicle-Data-0.2.11-Export. Aus der Bildschirmmeldung allein bleibt die Unterscheidung zwischen Timeout, Provider-, Berechtigungs- und Proxy-Fehler offen, ebenso der Zustand der Subscription.
+
+### Vergleich mit BMW x_call
+
+- Das Manifest von `x_call@4.25.3` fordert `KombiInterface_2.ccList` lesend auf Instanz `1` an. Der Aufrufpfad `reloadCheckControlMessages` verwendet den Getter über den typisierten Proxy. Die SDK-Schicht liest die generierte Interface-JSON, initialisiert den nativen Proxy und wartet auf den Provider. Der Getter delegiert an das native `getValue`. Die App liest die ID aus `cCListElement.cCIdentifer` und übernimmt `cCColor`.
+- Die App-Bibliothek bietet einen separaten Subscription-Pfad. Das archivierte Manifest fordert für `ccList` ausschließlich `r` an und belegt damit keine freigegebene Subscription. Der bereitgestellte SOME/IP-Katalog führt den Notifier zwar auf, die generierte Konfiguration und die AppManagement-Freigaben der Ziel-MGU lagen hier jedoch nicht vor. Die Berechtigung der BMW-App belegt keine Berechtigung für Vehicle Data.
+- Vehicle Data 0.2.11 kann denselben Getter bereits verarbeiten, wenn der BMW-Generator ihn für das Paket freigibt und erzeugt. Der bestehende lokale Bau mit `--check-control-getter ccList` bleibt der Weg für das zielgebundene Paket. `ccListRiskClass` ist im Katalog definiert, kommt im Check-Control-Lesepfad von `x_call` aber nicht vor.
+- `newCCMessage` liefert eine Nachricht ohne einen vollständigen Aktivstatus. `requestCCMessage` benötigt eine bekannte Meldungs-ID und dient der Textanreicherung. Im Fehlerfall von `basicList` lässt sich die aktive Menge aus diesen beiden Quellen allein nicht ableiten.
+
+### BMW-PRGs und lokale Textreferenzen
+
+| Referenz | Statischer Befund | Eignung für den Live-Status |
+| --- | --- | --- |
+| `KOMBSP18.prg`, `KOMBSP21.prg`, `KOMB_G11.prg` | `SG_FUNKTIONEN` führt `BMW_CC_DATENSAETZE` unter Dienst `22`, DID `0xD12D`. `RES_0xD12D_D` beschreibt 25 Datensätze mit ID, Kilometerstand bei Speicherung, Relativzeit und Häufigkeit. `KOMBSP18` hat zusätzlich den Job `STATUS_CHECK_CONTROL_HISTORY`. | Historische Datensätze ohne belegtes Aktiv-/Inaktiv-Feld. |
+| `KOMBSP21.prg` | `SG_FUNKTIONEN` nennt `READ_DISPLAYED_CC` unter Dienst `22`, DID `0x400F`. `RES_0x400F_D` beschreibt Layoutversion `0x02`, 66 Byte `CCM_HmiData`, ein Sprachbyte und einen Reservebereich. | Kandidat für das gerade dargestellte Element am KOMBI. Die genaue Struktur von `CCM_HmiData`, Zuordnung von Meldungs-ID, Status und Warnfarbe sowie die Unterstützung am Ziel-KOMBI sind offen. Der Job belegt keine Liste aller aktuell aktiven Meldungen. |
+| `BDC_G05.prg` | `LWR_MODUS` (`0xD57E`) beinhaltet einzelne Lichtstatus-Bits. `RSRS_WARNING_STATUS` (`0xCFFD`) betrifft RSRS-spezifische Warnbedingungen. | Keine allgemeine Check-Control-Liste. |
+| `HU_MGU.prg` | Datei in den verfügbaren Archiven nicht enthalten. `hu_mgu.plist` aus den vorhandenen Fehlertext-Referenzen enthält UDS-DTC-Texte. | Für die Prüfung wäre die zur Zielsoftware passende `HU_MGU.prg` nötig. |
+
+Die lokalen PRGs, das verfügbare `x_call`-Paket und der SOME/IP-Signalkatalog belegen keine eindeutige lokale Zuordnung für „AdBlue Reserve“. Für den UDS-Kandidaten fehlt die BMW-HMI-Schnittstellendefinition `CCM_HmiData` für Layout `0x02`. Für eine Textdatenbank fehlen die zu CC-IDs gehörigen Original-HMI-Texte oder Fahrzeugantworten mit ID und Originaltext. DTC- und Servicecode-Referenzen bleiben getrennt.
+
+### Automatisierte Prüfung und Fahrzeugabnahme
+
+`npm test`, `npm run test:pi`, `python3 tests/test-someip-manifest.py` und der lokale Store-Bau für Vehicle Data 0.2.11 waren erfolgreich. Die Generator-Tests prüfen mit einem Testdoppel, dass der Paketbau bei einer abgelehnten Freigabe abbricht. Der reale BMW-Generator der Ziel-MGU fehlte für diese Prüfung.
+
+Es wurde kein weiterer Getter in das Standardmanifest aufgenommen und kein UDS-Fallback aktiviert. Damit bleiben Vehicle Data 0.2.11, Companion Agent 0.2.13 und Pi 0.10.14 die Paketstände. Relevant für den nächsten Vergleich sind im privaten JSON-Export `poll.versions`, `poll.stages`, `checkControl.receipts` und `capabilities.rows` für die Check-Control-Quellen. Der Export liefert den Getter-Fehler und, falls der BMW-Generator zugänglich ist, die zielbezogene Getter-Prüfung. Eine positive Generator-Prüfung muss durch eine echte `ccList`-Antwort mit ID und Text bei sichtbarer iDrive-Meldung ergänzt werden. Anschließend ist der Übergang zu „erloschen“ im normalen Fahrzeugbetrieb zu prüfen.
