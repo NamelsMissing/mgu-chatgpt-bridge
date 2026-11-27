@@ -26,7 +26,7 @@
       "id": "vehicle_data",
       "kind": "app",
       "title": "Vehicle Data",
-      "version": "0.2.11",
+      "version": "0.2.12",
       "path": "apps/vehicle_data",
       "mguHmi": [
         "ID7"

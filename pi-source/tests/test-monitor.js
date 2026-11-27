@@ -155,6 +155,71 @@ const iso=ms=>new Date(Date.now()+ms).toISOString();
   assert.match(ccExport.receipts['CheckControlMaster.basicList:getter'].messages[0].text,/maskiert/);
   assert.doesNotMatch(JSON.stringify(ccExport),/WBA12345678901234|test-value/);
 
+  // Anonymized legacy 0.2.11 receipt. It must appear without becoming active or making the list complete.
+  const notifier='KombiInterface_2.newCCMessage';
+  const observedAt=iso(0);
+  const observation={id:646,text:'AdBlue Reserve.',color:'WHITE',active:null};
+  vehicle.telemetry={stages:{'CheckControlMaster.basicList':{getter:'waiting_provider',manifestRead:true},
+    'KombiInterface_2.ccList':{manifestRead:false,manifestSubscribe:false}}};
+  vehicle.checkControl={active:[],events:[],receipts:{[notifier]:{at:observedAt,origin:'event',shape:'object',
+    length:null,valid:1,rejected:0,complete:false,authoritative:false,messages:[observation]}}};
+  const previousPushes=pushes.filter(p=>/AdBlue/.test(p.title)).length;
+  // Start from the on-disk shape of Pi 0.10.14, without an MGU response.
+  const stateFile=path.join(temp,'state.json'),legacyState=JSON.parse(fs.readFileSync(stateFile,'utf8'));
+  legacyState.monitor.cc.receipts=vehicle.checkControl.receipts;
+  delete legacyState.monitor.cc.observed;
+  delete legacyState.monitor.cc.observedEvents;
+  fs.writeFileSync(stateFile,JSON.stringify(legacyState));
+  delete require.cache[require.resolve('../server.js')];
+  server=require('../server.js');
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.checkControl.received[0].text,'AdBlue Reserve.');
+  assert.equal(f.checkControl.received[0].stale,true);
+
+  await server.pollOnce();
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.checkControl.active.length,0);
+  assert.deepEqual(f.checkControl.received.map(e=>[e.id,e.text,e.active,e.color]),[[646,'AdBlue Reserve.',null,'WHITE']]);
+  assert.equal((await api('GET','/vehicle')).data.checkControl.received[0].id,646);
+  assert.equal(f.checkControl.events.filter(e=>e.id===646).length,1);
+  const incoming={...observation,source:notifier,textSource:notifier,at:observedAt,description:'Fixture method details',
+    descriptionSource:'KombiInterface_2.requestCCMessage'};
+  vehicle.checkControl={...vehicle.checkControl,events:[incoming]};
+  await server.pollOnce();await server.pollOnce();
+  let cc=(await api('GET','/vehicle/diagnostics')).data.checkControl;
+  assert.equal(cc.received[0].description,'Fixture method details');
+  assert.equal(cc.referenceCount>=1,true);
+  assert.equal(cc.events.filter(e=>e.id===646).length,1);
+  assert.equal(pushes.filter(p=>/AdBlue/.test(p.title)).length,previousPushes);
+  // Power cycle the MGU and reopen the Pi from disk. No new notification is produced.
+  mguUp=false;
+  delete require.cache[require.resolve('../server.js')];
+  server=require('../server.js');
+  await server.pollOnce();
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.checkControl.received[0].stale,true);
+  vehicle.telemetry=null;
+  vehicle.checkControl={active:[],events:[]};
+  mguUp=true;
+  await server.pollOnce();
+  assert.equal((await api('GET','/faults')).data.checkControl.received.length,1);
+  await wait(5);
+  vehicle.checkControl={listAt:iso(0),source:'KombiInterface_2.ccList',active:[{id:646}],events:[]};
+  await server.pollOnce();
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.checkControl.status,'read');
+  assert.equal(f.checkControl.received.length,0);
+  assert.equal(f.checkControl.active[0].text,'AdBlue Reserve.');
+  await wait(50);
+  assert.equal(pushes.filter(p=>/AdBlue/.test(p.title)).length,previousPushes+1);
+  await wait(5);
+  vehicle.checkControl={listAt:iso(0),source:'KombiInterface_2.ccList',active:[],events:[]};
+  await server.pollOnce();
+  f=(await api('GET','/faults')).data;
+  assert.equal(f.checkControl.active.length,0);
+  assert.deepEqual(f.checkControl.events.filter(e=>e.id===646).map(e=>e.active),[false,true,null]);
+  assert.equal(pushes.filter(p=>/AdBlue/.test(p.title)).length,previousPushes+1);
+
   // ----- Fehlerspeicher: Lesen auf Knopfdruck, neue Codes melden -----
   faultReply={requestId:'r1',readAt:iso(0),error:null,ecus:[{ecu:0x12,ok:true,count:1},{ecu:0x40,ok:true,count:0}],dtcs:[{ecu:0x12,code:'480A12',status:9,label:'ACTIVE',active:true}]};
   f=(await api('POST','/faults/read')).data;
@@ -252,6 +317,9 @@ with zipfile.ZipFile(sys.argv[1],'w') as z:
   assert.equal((await upload(Buffer.from('corrupt'))).status,400);
   const refs=(await api('GET','/faults')).data;
   assert.equal(refs.texts.reference.state,'ready');
+  const exportedDtc=(await api('GET','/vehicle/diagnostics')).data.dtcCatalog;
+  assert.equal(exportedDtc.reference.state,'ready');
+  assert.ok(exportedDtc.reference.meta.counts.codes>0);
   const code=refs.faultMemory.earlier.find(d=>d.code==='801234');
   assert.equal(code.title,'Fiktiver SQLite-Titel');
   assert.equal(code.referenceQuality,'address_consensus');
@@ -272,6 +340,8 @@ with zipfile.ZipFile(sys.argv[1],'w') as z:
   const html=fs.readFileSync(path.join(__dirname,'../public/index.html'),'utf8'),js=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
   for(const id of ['faults','ccActive','ccEvents','faultRead','faultList','faultEarlier','tyreList','dpfPanel','dpfRegens','notifyEnabled','notifyServer','notifyTopic','notifyTest','notifyLog','pollInfo','faultBadge'])
    assert.match(html,new RegExp('id="'+id+'"'),'Missing UI element: '+id);
+  assert.match(js,/Aktivstatus nicht bestätigt/);
+  assert.match(js,/Technischer Abfragestatus/);
   assert.match(js,/\/faults\/read/);assert.match(js,/\/notify\/test/);
   console.log('BMW AI monitor tests passed: background poll, check-control, fault memory, tyres, DPF regenerations, service reminders, ntfy settings.');
  }finally{

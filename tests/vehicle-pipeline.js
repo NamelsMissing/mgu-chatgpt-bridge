@@ -94,6 +94,14 @@ async function stop(child){
   assert.ok(checks.rows.every(row=>!row.catalogGetter.supported),'local fixture does not verify BMW capabilities');
   assert.equal(diag.poll.received['VehicleInformation.Range'].count,1);
   assert.match(JSON.stringify(diag.samples),/123456/);
+  const receiptAt=new Date(Date.now()+2).toISOString();
+  snapshot.extra=()=>({checkControl:{active:[],events:[{id:646,text:'AdBlue Reserve.',color:'WHITE',
+    active:null,at:receiptAt,source:'KombiInterface_2.newCCMessage'}]}});
+  snapshot.flush(true);
+  await api('/monitor/poll','POST');
+  const cc=(await api('/faults')).body.checkControl;
+  assert.equal(cc.received[0].id,646,'Agent forwards a notifier with active=null');
+  assert.equal(cc.received[0].active,null);
   assert.doesNotMatch(JSON.stringify(diag.samples),/sensitive-example|not exported|vin/i);
 
   await stop(agent);

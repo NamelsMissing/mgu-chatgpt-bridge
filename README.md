@@ -122,3 +122,5 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 
 
 **Vehicle Data 0.2.11:** Ein leeres oder unbrauchbares Check-Control-Event verwirft keine parallel eingehende Getter-Antwort mehr. Der private Fahrzeugdiagnoseexport enthält jetzt unter `poll.stages` den klassifizierten Getter-Fehler. [Zielgerätbezogene Prüfung für `ccList`](docs/PRUEFBERICHT-CHECK-CONTROL-0.10.14.md#fahrzeugnachtest-vom-27112026).
+
+**Pi 0.10.15 und Vehicle Data 0.2.12:** Empfangene Check-Control-Meldungen erscheinen mit Originaltext und Zeit im Verlauf, auch wenn der Aktivstatus noch offen ist. [Fahrzeugbefund und Prüfbericht](docs/PRUEFBERICHT-CHECK-CONTROL-0.10.15.md).

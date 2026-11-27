@@ -263,6 +263,23 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     assert.deepStrictEqual(received,['event','get','event'],'a real update still supersedes an in-flight getter');
     await ccWatch.shutdown();
 
+    let providerReads=0,providerEvents=0,providerState;
+    proxy.getValue=async()=>{providerReads++;return [];};
+    const providerWatch=await mod.exports.watch('de.bmw.infotainment.checkcontrol.CheckControlMaster','1',
+      {basicList:(value,origin)=>{if(origin==='event')providerEvents++;}},null,
+      {initialRead:true,requireProvider:true,strictGetters:true,pollMs:5,maxGetterFailures:3,
+       onTrace:(field,stage,value)=>{if(stage==='getter')providerState=value;}});
+    await new Promise(resolve=>setTimeout(resolve,25));
+    emit([{ccmId:646,activeState:0}]);
+    assert.strictEqual(providerState,'waiting_provider');
+    assert.strictEqual(providerReads,0);
+    assert.strictEqual(providerEvents,1);
+    available(true);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.ok(providerReads>=1);
+    await providerWatch.shutdown();
+
+
 
     const sent = [];
     const d = new ReadOnlyDiag({ call: async (p, m, args) => { sent.push(args.serviceID); return 'NO_ERROR'; } }, { info() {}, warn() {} });
@@ -273,6 +290,27 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     assert.strictEqual(await d.send(0xDF, 0x19, [0x02, 0x0C]), 'NO_ERROR');
     assert.strictEqual(await d.send(0x12, 0x22, [0x44, 0xBE]), 'NO_ERROR');
     assert.deepStrictEqual(sent, [0x19, 0x22], 'nothing refused reached the transport');
+
+    // Anonymized projection of the 27 November receipt reported by the owner.
+    const observedTime=Date.parse('2026-11-27T06:17:06.332Z');
+    const observed=new F.FaultState(()=>observedTime);
+    const source='KombiInterface_2.newCCMessage',method='KombiInterface_2.requestCCMessage';
+    const receipt=observed.ccText({cCMessageStruct:{cCIdentifier:646,cCName:'AdBlue Reserve.',cCColor:5}},source);
+    assert.strictEqual(receipt.color,'WHITE');
+    assert.deepStrictEqual(observed.document().checkControl.active,[]);
+    assert.strictEqual(observed.document().checkControl.listAt,null);
+    assert.deepStrictEqual(observed.document().checkControl.events.map(e=>[e.id,e.text,e.active,e.at]),
+        [[646,'AdBlue Reserve.',null,'2026-11-27T06:17:06.332Z']]);
+    assert.strictEqual(observed.ccText({requestedCCMessage:{cCMessageStruct:{cCIdentifier:646,additionalDescription:'Fixture'}}},method,647),null);
+    observed.ccText({requestedCCMessage:{cCMessageStruct:{cCIdentifier:646,additionalDescription:'Fixture'}}},method,646);
+    assert.strictEqual(observed.document().checkControl.events[0].description,'Fixture');
+    assert.strictEqual(observed.document().checkControl.events[0].active,null);
+    const rebooted = new F.FaultState(()=>observedTime+60000);
+    rebooted.restoreCcObservations(observed.document().checkControl);
+    assert.deepStrictEqual(rebooted.document().checkControl.events,observed.document().checkControl.events);
+    assert.deepStrictEqual(rebooted.document().checkControl.active,[]);
+    assert.strictEqual(rebooted.document().checkControl.listAt,null);
+    assert.strictEqual(F.decodeCcText({cCMessageWithSymbol:{cCMessage:{cCIdentifier:646},cCSymbol:{symbolID:321}}}).symbolId,321);
 
     // Check-Control fields and union shapes from the target catalog, using synthetic samples.
     let t = 1000;

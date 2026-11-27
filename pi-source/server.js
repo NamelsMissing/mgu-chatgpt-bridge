@@ -14,7 +14,7 @@ const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const serviceReference=require('./service-reference');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.14'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.10.15'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -581,7 +581,7 @@ function vehicleView(){
     mileageHistory:mileagePoints().slice(-40).reverse(),
     ownMileage:[...st.vehicle.mileage].sort((a,b)=>b.date.localeCompare(a.date)||b.km-a.km).slice(0,40),
     due,items,activeItems,entries,history:serviceHistoryView(originals,entries),
-    tyres:tyresView(),dpf:dpfView(),poll:M.poll,
+    tyres:tyresView(),dpf:dpfView(),poll:M.poll,checkControl:checkControlView(3),
     live:live?Object.assign({},live,{
       stale,
       cbsStale:!vehicleReadingFresh(live.cbsAt||live.cbsListAt,15*60000),serviceHistory:live.serviceHistory?Object.assign({},live.serviceHistory,
@@ -849,6 +849,9 @@ function saveNotify(d){
 }
 
 // ----- Check-Control-Meldungen -----
+const CC_NEW_MESSAGE='KombiInterface_2.newCCMessage';
+const CC_REQUEST='KombiInterface_2.requestCCMessage';
+const ccObservationIndexes=new WeakMap();
 const CC_SOURCES=new Set(['CheckControlMaster.basicList','KombiInterface_2.ccList','KombiInterface_2.ccListRiskClass',
   'KombiInterface_2.requestCCMessage','KombiInterface_2.newCCMessage']);
 const CC_COLORS=new Set(['DEFAULT','RED','YELLOW','GREEN','ORANGE','WHITE']);
@@ -860,6 +863,12 @@ function checkControlStore(){
   if(M.cc.vehicleKey&&M.cc.vehicleKey!==key)M.cc={active:{},events:[],seen:[]};
   M.cc.vehicleKey=key;
   M.cc.known ||= {};
+  if(!M.cc.observedEvents){
+    M.cc.observedEvents=[];
+    M.cc.observed={};
+    // Recover the last genuine notifier receipt recorded by Pi 0.10.14.
+    if(recoverCcReceipt(M.cc,M.cc.receipts?.[CC_NEW_MESSAGE]))save();
+  }
   return M.cc;
 }
 function ccMetadata(entry){
@@ -871,9 +880,67 @@ function ccMetadata(entry){
   for(const [key,max] of [['ecu',255],['symbolId',65535],['resourceId',0xFFFFFFFF],['carTime',0xFFFFFFFE],['carTimeMs',255]]){
     const value=int(entry[key],max);if(value!==null)fields[key]=value;
   }
-  for(const key of ['source','textSource','shortTextSource'])if(CC_SOURCES.has(entry[key]))fields[key]=entry[key];
+  for(const key of ['source','textSource','shortTextSource','descriptionSource'])if(CC_SOURCES.has(entry[key]))fields[key]=entry[key];
   if(CC_COLORS.has(entry.color))fields.color=entry.color;
   return fields;
+}
+function saveCcReference(entry,at){
+  const fields=ccMetadata(entry);
+  if(!entry.id||!fields.source||!(fields.text||fields.shortText||fields.description))return;
+  st.checkControlReferences ||= {};
+  const key=hash(JSON.stringify([entry.id,fields.source,fields.text||fields.shortText||null,fields.color||null]));
+  const prev=st.checkControlReferences[key];
+  st.checkControlReferences[key]={...prev,...fields,id:entry.id,firstSeen:prev?.firstSeen&&prev.firstSeen<at?prev.firstSeen:at,
+    lastSeen:prev?.lastSeen&&prev.lastSeen>at?prev.lastSeen:at};
+}
+function noteCcObservation(store,entry){
+  const id=int(entry?.id,0xFFFE),at=ccTimestamp(entry?.at);
+  if(!id||!at||entry.source!==CC_NEW_MESSAGE||entry.active!==null)return false;
+  let index=ccObservationIndexes.get(store);
+  if(!index){
+    index=new Map(store.observedEvents.map(e=>[e.id+'@'+e.at,e]));
+    ccObservationIndexes.set(store,index);
+  }
+  const key=id+'@'+at,known=index.get(key);
+  const details=ccMetadata(entry);
+  if(known){
+    if(details.description&&(!known.description||details.descriptionSource===CC_REQUEST)){
+      known.description=details.description;
+      if(details.descriptionSource)known.descriptionSource=details.descriptionSource;
+    }else if(known.description&&!details.description){
+      details.description=known.description;
+      if(known.descriptionSource)details.descriptionSource=known.descriptionSource;
+    }
+    for(const field of ['symbolId','ecu','resourceId','type','riskClass','indentation']){
+      if(known[field]==null&&details[field]!=null)known[field]=details[field];
+    }
+  }else{
+    const event={...details,id,at,active:null};
+    if(store.observedEvents.at(-1)?.at>at){
+      const position=store.observedEvents.findIndex(row=>row.at>at);
+      store.observedEvents.splice(position,0,event);
+    }else store.observedEvents.push(event);
+    index.set(key,event);
+  }
+  if(!store.observed[id]||store.observed[id].at<=at)store.observed[id]=index.get(key);
+  saveCcReference({...details,id},at);
+  return !known;
+}
+function recoverCcReceipt(store,receipt){
+  if(receipt?.origin!=='event'||receipt.valid!==1||receipt.rejected!==0||!Array.isArray(receipt.messages))return false;
+  const [message]=receipt.messages;
+  if(!message||message.active!=null)return false;
+  return noteCcObservation(store,{...message,source:CC_NEW_MESSAGE,textSource:CC_NEW_MESSAGE,active:null,at:receipt.at});
+}
+function ccObservations(store){
+  return Object.values(store.observed).filter(row=>{
+    // A later explicit state or complete list resolves the current card. Keep the original event in history.
+    return (!store.listAt||row.at>store.listAt)&&(!store.known[row.id]?.lastSeen||row.at>store.known[row.id].lastSeen);
+  }).sort((a,b)=>b.at.localeCompare(a.at));
+}
+function ccHistory(store,limit){
+  return [...store.events.slice(-limit),...store.observedEvents.slice(-limit)]
+    .sort((a,b)=>b.at.localeCompare(a.at)).slice(0,limit);
 }
 function ccPriority(color){
   return color==='RED'?5:color==='YELLOW'||color==='ORANGE'?3:2;
@@ -892,12 +959,16 @@ function noteCheckControl(cc){
     const current=store.active[id],known=store.known[id];
     if(known?.lastSeen&&at<known.lastSeen)return;
     if(!transition&&known?.endedAt&&at<=known.endedAt)return;
+    const observed=store.observed[id];
     const details=ccMetadata(entry);
+    if(entry.textSource&&details.text)saveCcReference({...details,id,source:entry.textSource},at);
     if(current?.shortText&&!details.shortText&&details.text){
       delete details.text;
       delete details.textSource;
     }
-    const merged={...known,...current,...details,id,lastSeen:at};
+    const fallback=observed&&observed.at<=at?ccMetadata(observed):{};
+    delete fallback.source;
+    const merged={...fallback,...known,...current,...details,id,lastSeen:at};
     if(active){
       if(!current){
         merged.since=at;
@@ -915,7 +986,10 @@ function noteCheckControl(cc){
     }
     store.known[id]=merged;
   };
-  const events=(Array.isArray(cc.events)?cc.events.slice(-50):[]).filter(e=>e&&typeof e.active==='boolean'&&ccTimestamp(e.at));
+  const incoming=Array.isArray(cc.events)?cc.events.slice(-50):[];
+  for(const entry of incoming)noteCcObservation(store,entry);
+  recoverCcReceipt(store,cc.receipts?.[CC_NEW_MESSAGE]);
+  const events=incoming.filter(e=>e&&typeof e.active==='boolean'&&ccTimestamp(e.at));
   for(const e of events.sort((a,b)=>Date.parse(a.at)-Date.parse(b.at))){
     const at=ccTimestamp(e.at),key=e.id+'@'+at+'@'+e.active;
     if(seen.has(key)||previousListAt&&at<previousListAt)continue;
@@ -938,7 +1012,8 @@ function noteCheckControl(cc){
         length:int(value.length,65535),valid:int(value.valid,120),rejected:int(value.rejected,120),complete:value.complete===true,
         authoritative:value.authoritative===true,messages:(Array.isArray(value.messages)?value.messages.slice(0,45):[])
           .filter(row=>int(row?.id,0xFFFE)).map(row=>({id:row.id,active:typeof row.active==='boolean'?row.active:null,
-            text:maskCcText(str(row.text,300)||''),description:maskCcText(str(row.description,1500)||''),color:CC_COLORS.has(row.color)?row.color:null})),
+            text:maskCcText(str(row.text,300)||''),description:maskCcText(str(row.description,1500)||''),color:CC_COLORS.has(row.color)?row.color:null,
+            symbolId:int(row.symbolId,65535),type:str(row.type,60)})),
         reasons:Object.fromEntries(Object.entries(value.reasons||{})
           .filter(([k,v])=>/^(invalid_struct|invalid_id|invalid_active_state|unsupported_union|conflicting_duplicate|array_too_long|expected_array_or_struct|unrecognized_text|mismatched_id)$/.test(k)&&int(v,120)!==null))}]));
   }
@@ -966,7 +1041,8 @@ function diagnosticCheckControl(){
     return {...details,id:e.id,active:e.active,since:e.since,lastSeen:e.lastSeen,at:e.at};
   };
   return {listAt:cc.listAt||null,source:cc.source||null,status:checkControlState(),receipts:cc.receipts||{},
-    active:Object.values(cc.active).map(e=>row({...e,active:true})),events:cc.events.slice(-50).map(row)};
+    active:Object.values(cc.active).map(e=>row({...e,active:true})),received:ccObservations(cc).slice(0,50).map(row),
+    events:ccHistory(cc,50).map(row),referenceCount:Object.keys(st.checkControlReferences||{}).length};
 }
 
 // The optional data file stays in private Pi storage. Match the configured vehicle's
@@ -1128,14 +1204,28 @@ function noteFaultMemory(fm){
 }
 function checkControlState(){
   const cc=checkControlStore();
-  if(!M.poll.ok||M.poll.appState==='stale')return cc.listAt||Object.keys(cc.active).length?'stale':'unknown';
+  if(!M.poll.ok||M.poll.appState==='stale')return cc.listAt||Object.keys(cc.active).length||Object.keys(cc.observed).length?'stale':'unknown';
   const basic='CheckControlMaster.basicList';
   const source=cc.source||basic;
   const latestGetter=cc.receipts?.[source+':getter']||cc.receipts?.[source], stage=M.poll.stages?.[source];
   if(['failed','paused'].includes(stage?.getter)||latestGetter?.origin==='get'&&latestGetter.rejected)return 'failed';
+  if(stage?.getter==='waiting_provider')return cc.listAt?'stale':'unavailable';
   if(vehicleReadingFresh(cc.listAt,3*60000))return 'read';
   if(cc.listAt)return 'stale';
   return M.poll.signals?.CheckControlMaster?.available===false?'unavailable':'unknown';
+}
+function checkControlView(limit,includeHistory=false,includeMessages=true){
+  const cc=checkControlStore();
+  const name=e=>({...e,ecuName:ecuName(e.ecu)});
+  const result={listAt:cc.listAt||null,status:checkControlState(),source:cc.source||null,
+    active:(includeMessages?Object.values(cc.active):[]).map(e=>name({...e,stale:!vehicleReadingFresh(e.lastSeen,3*60000)}))
+      .sort((a,b)=>String(b.since).localeCompare(String(a.since))).slice(0,limit),
+    received:(includeMessages?ccObservations(cc).slice(0,limit):[]).map(e=>name({...e,stale:!vehicleReadingFresh(e.at,3*60000)}))};
+  result.events=includeHistory?ccHistory(cc,60).map(e=>{
+    const fallback=cc.known[e.id];
+    return name({...e,text:e.text||fallback?.text,description:e.description||fallback?.description});
+  }):[];
+  return result;
 }
 let lastTextResolution='';
 function faultsView(includeReference=true,archiveKey=null){
@@ -1147,7 +1237,7 @@ function faultsView(includeReference=true,archiveKey=null){
   const name=x=>Object.assign({},x,{ecuName:ecuName(x.ecu)});
   const earlierRows=Object.values(history.known).filter(k=>!inLatest.has(k.ecu+':'+k.code)).sort((a,b)=>String(b.lastSeen).localeCompare(String(a.lastSeen))).slice(0,100);
   const rows=[...(latest?.dtcs||[]),...earlierRows];
-  const reference=includeReference?referenceLookup(rows):{results:[]};
+  const reference=referenceLookup(includeReference?rows:[]);
   const byRow=new Map(rows.map((row,i)=>[row,reference.results[i]]));
   const catalog=archiveKey?{state:'missing',values:new Map(),ecu:{},count:0}:scopedFaultCatalog();
   const resolution={};
@@ -1161,11 +1251,8 @@ function faultsView(includeReference=true,archiveKey=null){
     return Object.assign(name(d),detail);
   };
   const texts={state:catalog.state,count:catalog.count,ecuCount:Object.keys(catalog.ecu).length,resolution,reference:{state:reference.state,meta:reference.meta}};
-  const result={texts,archiveKey,archives:Object.entries(M.faultArchives||{}).map(([key,value])=>({key,lastAt:value.reads.at(-1)?.readAt||null})),diagnosis:{running:faultReadBusy,poll:M.poll,lastSuccess:latest&&latest.readAt},checkControl:{listAt:M.cc.listAt||null,status:checkControlState(),source:checkControlStore().source||null,
-      active:(archiveKey?[]:Object.values(M.cc.active)).map(name).sort((a,b)=>String(b.since).localeCompare(String(a.since))),events:(archiveKey?[]:[...M.cc.events]).reverse().slice(0,60).map(e=>{
-        const fallback=M.cc.known?.[e.id];
-        return name({...e,text:e.text||fallback?.text,description:e.description||fallback?.description});
-      })},
+  const result={texts,archiveKey,archives:Object.entries(M.faultArchives||{}).map(([key,value])=>({key,lastAt:value.reads.at(-1)?.readAt||null})),diagnosis:{running:faultReadBusy,poll:M.poll,lastSuccess:latest&&latest.readAt},
+    checkControl:checkControlView(120,!archiveKey,!archiveKey),
     faultMemory:{lastAttempt:last?{readAt:last.readAt,error:last.error}:null,latest:latest?Object.assign({},latest,{ecus:latest.ecus.map(name),dtcs:latest.dtcs.map(d=>Object.assign(details(d),{lastSeen:latest.readAt,firstSeen:(history.known[d.ecu+':'+d.code]||{}).firstSeen,isNew:(history.known[d.ecu+':'+d.code]||{}).firstSeen===latest.readAt&&history.reads.filter(r=>!r.error).length>1}))}):null,
       earlier:earlierRows.map(details),
       reads:[...history.reads].reverse().slice(0,10).map(r=>({readAt:r.readAt,error:r.error,count:r.dtcs.length,ecus:r.ecus.length}))},

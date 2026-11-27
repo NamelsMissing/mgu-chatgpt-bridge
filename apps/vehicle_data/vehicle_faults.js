@@ -106,7 +106,10 @@ function decodeCcText(u) {
     const id = m && uint(m.cCIdentifier, 0xFFFE);
     if (!id) return null;
     const name = text(m.cCName, 300), description = text(m.additionalDescription,1500);
-    return { id, text:name, description, color:enumValue(m.cCColor,COLORS), symbolId:uint(m.cCSymbolID,0xFFFF),
+    const symbolId = uint(m.cCSymbolID,0xFFFF);
+    const embeddedSymbol = withSymbol && withSymbol.cCSymbol && uint(withSymbol.cCSymbol.symbolID,0xFFFF);
+    return { id, text:name, description, color:enumValue(m.cCColor,COLORS),
+        symbolId:embeddedSymbol || symbolId,
         type:enumValue(m.cCType,['TYP_A','TYP_B','TYP_C','TYP_D','TYP_E']) };
 }
 
@@ -214,11 +217,16 @@ class FaultState {
     ccText(u, source, expected) {
         const m = decodeCcText(u);
         const reason = !m ? 'unrecognized_text' : expected != null && m.id !== expected ? 'mismatched_id' : null;
-        this.ccReceipts[source] = { at:new Date(this.now()).toISOString(), origin:expected==null?'event':'method',
+        const at = this.now();
+        this.ccReceipts[source] = { at:new Date(at).toISOString(), origin:expected==null?'event':'method',
             shape:u===null?'null':Array.isArray(u)?'array':typeof u, length:null, valid:reason?0:1, rejected:reason?1:0,
             reasons:reason?{[reason]:1}:{}, complete:false, authoritative:false,messages:reason?[]:[m] };
         if (reason) return null;
         this.rememberCcText(m,source);
+        if (source === NEW_MESSAGE) {
+            this.ccEvents.push(Object.assign({},m,{ active:null, source, textSource:source, at }));
+            if (this.ccEvents.length > 100) this.ccEvents.shift();
+        }
         return m;
     }
     needsText(id) { const entries = this.ccTexts.get(id); return !entries || !(entries[REQUEST] && entries[REQUEST].description); }
@@ -239,6 +247,27 @@ class FaultState {
             row.textSource = row.shortTextSource;
         }
         return row;
+    }
+    restoreCcObservations(snapshot) {
+        const events = snapshot && Array.isArray(snapshot.events) ? snapshot.events.slice(-50) : [];
+        const receipt = snapshot && snapshot.receipts && snapshot.receipts[NEW_MESSAGE];
+        if (receipt && receipt.valid === 1 && receipt.rejected === 0 && receipt.origin === 'event' && Array.isArray(receipt.messages)) {
+            const message = receipt.messages[0];
+            if (message && message.active == null && !events.some(e=>e && e.id===message.id && e.at===receipt.at)) {
+                events.push(Object.assign({},message,{active:null,source:NEW_MESSAGE,textSource:NEW_MESSAGE,at:receipt.at}));
+            }
+        }
+        for (const event of events) {
+            if (!event || event.source!==NEW_MESSAGE || event.active!==null || !uint(event.id,0xFFFE)) continue;
+            const at = Date.parse(event.at);
+            if (Number.isFinite(at)) this.ccEvents.push(Object.assign({},event,{at}));
+        }
+    }
+    ccEventDocument(entry) {
+        if (entry.active !== null) return this.ccWithText(entry);
+        const details = this.ccTexts.get(entry.id);
+        const description = details && details[REQUEST] && details[REQUEST].description;
+        return description ? Object.assign({},entry,{description,descriptionSource:REQUEST}) : entry;
     }
     setTyres(v) {
         const wheels = decodeTyres(v);
@@ -271,7 +300,7 @@ class FaultState {
             checkControl: {
                 listAt:iso(this.ccListAt), source:this.ccListSource || BASIC, receipts:this.ccReceipts,
                 active: Array.from(this.cc.values()).filter((c) => c.active).map((c) => Object.assign(withText(c), { since: iso(c.since), lastSeen: iso(c.lastSeen) })),
-                events: this.ccEvents.slice(-50).map((e) => Object.assign(withText(e), { at: iso(e.at) })),
+                events: this.ccEvents.slice(-50).map(e => Object.assign({},this.ccEventDocument(e),{ at:iso(e.at) })),
             },
             tyres: tyreReading ? Object.assign({},tyreReading,{at:iso(tyreReading.at),unverified:true}) : null,
             faultMemory: this.dtc ? Object.assign({}, this.dtc, { readAt: iso(this.dtc.readAt) }) : null,

@@ -64,6 +64,14 @@ mgu.run({
         const dataDir = path.resolve(__dirname, '..', '..', 'data');
         const snap = new VehicleSnapshot({ dir: dataDir, onError: (e) => log.warn('Vehicle Data IPC: ' + e), version: (ctx.spec && ctx.spec.version) || '' });
         const faults = new FaultState();
+        try {
+            if (fs.statSync(snap.file).size < 1024*1024) {
+                const previous = JSON.parse(fs.readFileSync(snap.file,'utf8'));
+                if (previous.schema===1 && previous.app==='vehicle_data') faults.restoreCcObservations(previous.checkControl);
+            }
+        } catch (e) {
+            if (e.code!=='ENOENT') log.warn('Previous Check-Control snapshot unavailable');
+        }
         snap.extra = () => faults.document();
         const flush = (force) => { try { snap.flush(force); } catch (e) { log.warn('vehicle snapshot: ' + e); } };
         flush(true);
@@ -86,8 +94,9 @@ mgu.run({
             if (/getter deadline exceeded/i.test(detail)) return 'local_watchdog';
             if (/time.?out|timed out/i.test(detail)) return 'proxy_timeout';
             if (/has no getter/i.test(detail)) return 'no_generated_getter';
-            if (/not available|unavailable/i.test(detail)) return 'provider_unavailable';
             if (/access.denied|permission|not authorized/i.test(detail)) return 'access_denied';
+            if (/(?:provider|service)(?: is)? (?:not available|unavailable)|E_SOMEIP_SERVICE_NOT_AVAILABLE/i.test(detail)) return 'provider_unavailable';
+            if (/not available|unavailable/i.test(detail)) return 'native_unavailable_response';
             return 'proxy_rejected';
         };
         // Reads are restricted to fields already declared with r in the manifest.
@@ -128,12 +137,20 @@ mgu.run({
                 onAvailability: (ok) => { snap.stage(name,'provider',ok);snap.available(name,ok);flush(); },
                 onError: (field, stage, error) => {
                     const key = name+'.'+field;
-                    if (stage==='get' && ccGetters.includes(key)) snap.stage(key,'getterFailure',ccTransportFailure(error));
+                    if (stage==='get' && ccGetters.includes(key)) {
+                        snap.stage(key,'getterFailure',ccTransportFailure(error));
+                        snap.stage(key,'providerAtFailure',snap.stages[name] && snap.stages[name].provider);
+                    }
                     snap.available(name, snap.state.signals[name] && snap.state.signals[name].available, stage+' '+field);
                     flush();
                 },
             })).then(async (sub) => {
-                if (iface===KOMBI && !sub.error) kombi=sub.proxy;
+                if (iface===KOMBI && !sub.error) {
+                    kombi=sub.proxy;
+                    // A notifier may arrive before watch() finishes installing its subscriptions.
+                    const buffered=faults.ccReceipts['KombiInterface_2.newCCMessage'];
+                    if (buffered && buffered.valid) ccText(buffered.messages[0].id);
+                }
                 snap.stage(name,'proxy',sub.error?'failed':'ready');
                 snap.available(name, sub.available, sub.error ? 'Proxy-Initialisierung fehlgeschlagen' : null);
                 flush();
@@ -204,14 +221,13 @@ mgu.run({
             return result.rows.length > 0;
         };
         watch(CHECK_CONTROL, { basicList: (v,origin) => ccRows('CheckControlMaster.basicList',v,origin) },
-            {readFields:['basicList'],pollMs:60000,retryAfterMs:5*60000});
+            {readFields:['basicList'],requireProvider:true,pollMs:60000,retryAfterMs:15*60000});
         watch(KOMBI, {
             newCCMessage: (v) => {
                 const key = 'KombiInterface_2.newCCMessage';
                 const message = faults.ccText(v,key);
-                // A notifier supplies text immediately. Presence still comes from the list/event,
-                // since the new-message union does not contain an ActiveState.
                 sample(key,v,message ? 1 : null);
+                if (message) ccText(message.id);
             },
             ccList: (v,origin) => ccRows('KombiInterface_2.ccList',v,origin),
             ccListRiskClass: (v,origin) => ccRows('KombiInterface_2.ccListRiskClass',v,origin),

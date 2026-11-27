@@ -80,6 +80,7 @@ async function watch(iface, instance, handlers, log, opts) {
         });
         const fetchAll = () => reads.forEach((f) => {
             if (stopped || !ready || pending.has(f)) return;
+            if (opts && opts.requireProvider && !res.available) return;
             if (opts && opts.maxGetterFailures && failures[f]>=opts.maxGetterFailures) {
                 if (!retryAt[f] || Date.now()<retryAt[f]) return;
                 failures[f]=0;
@@ -119,6 +120,7 @@ async function watch(iface, instance, handlers, log, opts) {
             }
             res.available = !!a;
             if (opts && opts.onAvailability) opts.onAvailability(res.available);
+            if (opts && opts.requireProvider && !a) reads.forEach(f=>trace(f,'getter','waiting_provider'));
             if (a && ready) setImmediate(fetchAll);
         };
         const shutdown = res.shutdown;
@@ -141,6 +143,7 @@ async function watch(iface, instance, handlers, log, opts) {
         }
         ready = true;
         if (p.isAvailable && p.isAvailable()) availability(true);
+        else if (opts && opts.requireProvider) availability(res.available);
         else if (opts && opts.initialRead) setImmediate(fetchAll);
         if (opts && opts.pollMs) poll = setInterval(() => {
             if (res.available || opts.initialRead) setImmediate(fetchAll);

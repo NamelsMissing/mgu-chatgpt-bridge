@@ -132,8 +132,11 @@ const DTC_LABELS={ACTIVE:'aktuell vorhanden','WARNING LAMP':'Warnanzeige angefor
 let displayedFaults=null;
 for(const id of ['faultEcu','faultState','faultQuery'])$(id).oninput=()=>{if(displayedFaults)renderFaults(displayedFaults);};
 function setFaultBadge(f){
- const n=f.checkControl.active.length+(f.faultMemory.latest?f.faultMemory.latest.dtcs.filter(d=>d.active).length:0);
- $('faultBadge').title='Aktuell gemeldete Check-Control-Einträge plus aktuell vorhandene DTCs im letzten Scan';
+ const active=f.checkControl.active.filter(row=>!row.stale).length;
+ const received=(f.checkControl.received||[]).length;
+ const dtcs=f.faultMemory.latest?f.faultMemory.latest.dtcs.filter(d=>d.active).length:0;
+ const n=active+dtcs;
+ $('faultBadge').title=active+' bestätigte aktuelle Check-Control-Meldungen · '+received+' Meldungen mit unbekanntem Aktivstatus · '+dtcs+' aktive DTCs im letzten Scan';
  $('faultBadge').textContent=String(n);$('faultBadge').hidden=!n;
 }
 function dtcRow(d,extra){
@@ -162,40 +165,52 @@ function dtcRow(d,extra){
  detail.append(txt('summary','Technische Details'),txt('p',[d.statusHex,(d.bits||[]).join(', '),d.sgbd,d.textSource].filter(Boolean).join(' · ')||'Keine Zusatzdaten','hint'));
  info.appendChild(detail);row.appendChild(info);return row;
 }
+function renderCheckControl(act,cc,poll){
+ act.replaceChildren();
+ const received=cc.received||[];
+ if(cc.status!=='read')act.appendChild(txt('p',cc.status==='stale'?
+  'Zuletzt bekannter Fahrzeugstand.':'Eine vollständige aktuelle Meldungsliste liegt noch nicht vor.','hint'));
+ else act.appendChild(txt('p',cc.active.length?'Vollständige Liste empfangen · '+stamp(cc.listAt):'Beim Listenabruf '+stamp(cc.listAt)+' waren keine Meldungen aktiv.','hint'));
+ const ccStyle={RED:['critical','⚠','Kritisch'],YELLOW:['warning','⚠','Warnung'],ORANGE:['warning','⚠','Warnung'],
+  GREEN:['ok','ⓘ',null],WHITE:['neutral','ⓘ',null],DEFAULT:['neutral','ⓘ',null]};
+ for(const c of [...cc.active,...received]){
+  const [style,icon,severity]=ccStyle[c.color]||ccStyle.DEFAULT;
+  const card=txt('div','','service-entry cc-message cc-'+style);
+  card.appendChild(txt('strong',icon+' '+(c.text||'Meldung '+c.id)));
+  const status=c.active===null?'Aktivstatus nicht bestätigt':c.stale?'Zuletzt als aktiv bestätigt':'Bestätigt aktiv';
+  const time=c.active===null?'Empfangen '+stamp(c.at):'Seit '+stamp(c.since)+' · zuletzt '+stamp(c.lastSeen);
+  card.appendChild(txt('p',[status,c.stale&&c.active===null?'zuletzt bekannt':null,severity,time].filter(Boolean).join(' · '),'hint'));
+  const details=document.createElement('details');
+  details.appendChild(txt('summary',c.description?'Beschreibung und technische Details':'Technische Details'));
+  if(c.description)details.appendChild(txt('p',c.description,'notes'));
+  details.appendChild(txt('p',['ID '+c.id,c.ecu!=null?c.ecuName+' (0x'+c.ecu.toString(16).toUpperCase().padStart(2,'0')+')':null,
+   c.color,c.symbolId!=null?'Symbol '+c.symbolId:null,c.riskClass,c.type,c.source,c.textSource,c.descriptionSource,c.occurrences?
+   c.occurrences+'× erfasst seit '+stamp(c.firstSeen):null].filter(Boolean).join(' · '),'hint'));
+  card.appendChild(details);
+  act.appendChild(card);
+ }
+ if(cc.status!=='read'){
+  const tech=txt('details','');
+  tech.appendChild(txt('summary','Technischer Abfragestatus'));
+  const causes={failed:'Listenabruf fehlgeschlagen.',unavailable:'Provider bzw. Listenquelle nicht verfügbar.',
+   stale:'Letzte vollständige Liste ist veraltet.',unknown:'Vollständige Liste noch nicht empfangen.'};
+  tech.appendChild(txt('p',[causes[cc.status],missingSignal(poll,['CheckControlMaster.basicList','KombiInterface_2.ccList','KombiInterface_2.ccListRiskClass'])]
+   .filter(Boolean).join(' · '),'hint'));
+  act.appendChild(tech);
+ }
+}
 function renderFaults(f){
  displayedFaults=f;
  setFaultBadge(f);
  const diagnosis=f.diagnosis||{},poll=diagnosis.poll||{},ecu=poll.signals&&poll.signals.Diagnostics;
  $('faultConnection').textContent=[poll.ok?'MGU erreichbar':'MGU-Status: '+(poll.error||'unbekannt'),vehicleState(poll),ecu?(ecu.available?'Diagnosedienst erreichbar':ecu.error||'Diagnosedienst nicht verfügbar'):'Keine Rückmeldung vom Diagnosedienst',diagnosis.running?'Abfrage läuft':''].filter(Boolean).join(' · ');
- const act=$('ccActive');act.replaceChildren();
- const ccReasons={failed:'Letzte Abfrage der vollständigen Meldungsliste fehlgeschlagen.',unavailable:'Schnittstelle für die vollständige Meldungsliste nicht verfügbar.',
-  stale:'Zuletzt bekannte Meldungen. Der Fahrzeugstand ist veraltet.',unknown:'Aktive Meldungen noch nicht vollständig gelesen. Einzelereignisse können bereits vorliegen.'};
- if(f.checkControl.status!=='read')act.appendChild(txt('p',
-  [ccReasons[f.checkControl.status]||ccReasons.unknown,missingSignal(poll,['CheckControlMaster.basicList','KombiInterface_2.ccList','KombiInterface_2.ccListRiskClass'])]
-   .filter(Boolean).join(' · '),'hint'));
- else act.appendChild(txt('p',f.checkControl.active.length?'Vollständige Liste empfangen · '+stamp(f.checkControl.listAt):'Erfolgreich gelesen · keine aktiven Meldungen','hint'));
- const ccStyle={RED:['critical','⚠','Kritisch'],YELLOW:['warning','⚠','Warnung'],ORANGE:['warning','⚠','Warnung'],
-  GREEN:['ok','ⓘ','Information'],WHITE:['neutral','ⓘ','Information'],DEFAULT:['neutral','ⓘ',null]};
- for(const c of f.checkControl.active){
-  const [style,icon,severity]=ccStyle[c.color]||ccStyle.DEFAULT;
-  const card=txt('div','','service-entry cc-message cc-'+style);
-  const heading=txt('strong',icon+' '+(c.text||'Meldung '+c.id));
-  card.appendChild(heading);
-  card.appendChild(txt('p',[severity,'Seit '+stamp(c.since),'zuletzt '+stamp(c.lastSeen)].filter(Boolean).join(' · '),'hint'));
-  const details=document.createElement('details');
-  details.appendChild(txt('summary',c.description?'Beschreibung und technische Details':'Technische Details'));
-  if(c.description)details.appendChild(txt('p',c.description,'notes'));
-  details.appendChild(txt('p',['ID '+c.id,c.ecu!=null?c.ecuName+' (0x'+c.ecu.toString(16).toUpperCase().padStart(2,'0')+')':null,
-   c.color,c.symbolId!=null?'Symbol '+c.symbolId:null,c.riskClass,c.type,c.source,c.textSource,c.occurrences?
-   c.occurrences+'× erfasst seit '+stamp(c.firstSeen):null].filter(Boolean).join(' · '),'hint'));
-  card.appendChild(details);
-  act.appendChild(card);
- }
+ const cc=f.checkControl,received=cc.received||[];
+ renderCheckControl($('ccActive'),cc,poll);
  const ev=$('ccEvents');ev.replaceChildren();
  if(!f.checkControl.events.length)ev.appendChild(txt('p','Noch kein Verlauf.','hint'));
  for(const e of f.checkControl.events){
   const row=txt('div','','list-row');row.appendChild(txt('span',stamp(e.at),'hint'));
-  row.appendChild(txt('strong',(e.text||'Meldung '+e.id)));row.appendChild(txt('span',e.active?'erschienen':'erloschen','pill '+(e.active?'due-pill-soon':'pill-off')));
+  row.appendChild(txt('strong',(e.text||'Meldung '+e.id)));row.appendChild(txt('span',e.active===null?'empfangen · Aktivstatus unbekannt':e.active?'bestätigt aktiv':'bestätigt erloschen','pill '+(e.active?'due-pill-soon':'pill-off')));
   ev.appendChild(row);
  }
  const fm=f.faultMemory,list=$('faultList');list.replaceChildren();
@@ -204,10 +219,14 @@ function renderFaults(f){
  archive.value=f.archiveKey||'';
  const texts=f.texts;
  if(texts?.reference?.state)showReference(texts.reference);
- $('faultTextCatalog').textContent=texts?texts.count+' geladene Fehlertexte · '+texts.ecuCount+' ECU-Zuordnungen':
-  'Fehlertextkatalog ungeprüft';
- if(texts?.reference?.meta)$('faultTextCatalog').textContent+=
-  ' · SQLite: '+[...Object.entries(texts.resolution||{})].map(([k,v])=>k+' '+v).join(', ');
+ const sqlite=texts?.reference;
+ const referenceSummary=sqlite?.state==='ready'?(sqlite.meta?.counts?.codes??0)+' DTCs in SQLite':
+  sqlite?.state==='missing'?'SQLite-Referenz fehlt':sqlite?.state?'SQLite-Referenz nicht verfügbar':'SQLite-Referenz ungeprüft';
+ $('faultTextCatalog').textContent=texts?[referenceSummary,
+  texts.count||texts.ecuCount?texts.count+' lokale JSON-Fehlertexte · '+texts.ecuCount+' ECU-Zuordnungen':null]
+   .filter(Boolean).join(' · '):'Fehlertextkatalog ungeprüft';
+ if(sqlite?.meta&&Object.keys(texts.resolution||{}).length)$('faultTextCatalog').textContent+=
+  ' · Zuordnung: '+Object.entries(texts.resolution).map(([k,v])=>k+' '+v).join(', ');
  const latest=fm.latest,last=fm.lastAttempt,filter=$('faultEcu'),selected=filter.value;
  const available=new Map([...(latest?.dtcs||[]),...fm.earlier].map(d=>[String(d.ecu),d.ecuName]));
  filter.replaceChildren(new Option('Alle',''),...Array.from(available,([id,name])=>new Option(name,id)));
@@ -215,7 +234,7 @@ function renderFaults(f){
  const query=$('faultQuery').value.trim().toLowerCase(),status=$('faultState').value;
  const matches=d=>(!filter.value||filter.value===String(d.ecu))&&(!status||(d.bits||[]).includes(status))&&
   (!query||[d.code,d.title,d.description,d.ecuName,d.referenceVariant,...(d.referenceCandidates||[]).flatMap(c=>[c.title,c.variant])].some(x=>String(x||'').toLowerCase().includes(query)));
- $('faultCounts').textContent=f.checkControl.active.length+' Check-Control im letzten Stand · '+(latest?latest.dtcs.length+' DTC insgesamt · '+latest.dtcs.filter(d=>d.active).length+' aktuell vorhanden im letzten Scan':'Noch kein DTC-Scan');
+ $('faultCounts').textContent=f.checkControl.active.length+' Check-Control zuletzt bestätigt aktiv · '+received.length+' mit unbekanntem Aktivstatus · '+(latest?latest.dtcs.length+' DTC insgesamt · '+latest.dtcs.filter(d=>d.active).length+' aktuell vorhanden im letzten Scan':'Noch kein DTC-Scan');
  $('faultInfo').textContent=!latest?(last&&last.error?'Letzter Versuch '+stamp(last.readAt)+' fehlgeschlagen: '+last.error:'Noch nicht ausgelesen. Das passiert bei jedem Fahrzeugstart einmal automatisch.')
   :'Ausgelesen '+stamp(latest.readAt)+': '+latest.dtcs.length+' Codes aus '+latest.ecus.length+' Steuergeräten'+(last&&last.error&&last.readAt!==latest.readAt?' · letzter Versuch fehlgeschlagen: '+last.error:'');
  if(latest){
@@ -284,6 +303,7 @@ $('referenceReport').onclick=()=>{
 async function refreshFaults(){if(!token)return;try{renderFaults(await api('/faults'+($('faultArchive').value?'?archive='+encodeURIComponent($('faultArchive').value):'')));}catch(e){notice(e.message);}}
 $('refreshFaults').onclick=refreshFaults;
 $('faultArchive').onchange=refreshFaults;
+$('vehicleCheckControlDetails').onclick=()=>openTab('faults');
 $('faultRead').onclick=async()=>{
  const b=$('faultRead');$('faultArchive').value='';b.disabled=true;b.textContent='Liest … (bis 90 s)';
  try{renderFaults(await api('/faults/read','POST'));notice('Fehlerspeicher ausgelesen.');}
@@ -706,6 +726,9 @@ function dueLine(d){
 }
 function renderVehicle(v){
  vehicleData=v;
+ const ccPanel=$('vehicleCheckControl');
+ ccPanel.hidden=!(v.checkControl?.active.length||v.checkControl?.received.length);
+ if(!ccPanel.hidden)renderCheckControl($('vehicleCheckControlList'),v.checkControl,v.poll||{});
  renderTyres(v.tyres||null);renderDpf(v.dpf||null);
  const m=v.mileage;
  const measured=v.live&&Number.isInteger(v.live.mileageKm)?v.live:null;
@@ -906,6 +929,7 @@ function missingSignal(p,keys){
   if(!row)continue;
   const why=reason[row.decodeReason]||(row.responseReceived&&row.decoded===false?'Antwort nicht auswertbar':
     row.manifestRead===false&&row.manifestSubscribe!==true?'Getter nicht im Manifest freigegeben':
+    row.getter==='waiting_provider'?'Wartet auf den SOME/IP-Provider':
     row.getter==='not_configured'?'Getter in der installierten Proxy-Konfiguration fehlt':
     ['failed','paused'].includes(row.getter)?'Getter antwortet nicht erfolgreich':
     family?.provider===false?'Provider nicht erreichbar':
@@ -954,7 +978,7 @@ async function renderTelemetry(){
     const stage={...p.stages?.[family],...p.stages?.[key]},yesNo=v=>v===true?'ja':v===false?'nein':'–';
     const states={config_missing_or_invalid:'Konfiguration fehlt oder ist ungültig',config_loaded:'Konfiguration geladen',
      native_unavailable:'SOME/IP-Bibliothek fehlt',not_configured:'Getter fehlt',not_requested:'entfällt',
-     pending:'läuft',ok:'erfolgreich',failed:'fehlgeschlagen',paused:'nach 3 Fehlern pausiert'};
+     pending:'läuft',ok:'erfolgreich',failed:'fehlgeschlagen',paused:'nach 3 Fehlern pausiert',waiting_provider:'wartet auf Provider'};
     if(typeof stage.manifestRead==='boolean'||stage.manifestMethod||stage.interface||stage.getter){
      const stages=[
       typeof stage.manifestRead==='boolean'?'Manifest Lesen '+yesNo(stage.manifestRead)+' / Abo '+yesNo(stage.manifestSubscribe):null,
@@ -963,6 +987,8 @@ async function renderTelemetry(){
       typeof stage.provider==='boolean'?'Provider '+yesNo(stage.provider):null,
       stage.initialGetter?'Initialabruf '+states[stage.initialGetter]:null,
       stage.getter?'Letzter Abruf '+states[stage.getter]:null,
+      stage.getterFailure?'Getter-Fehler '+stage.getterFailure:null,
+      typeof stage.providerAtFailure==='boolean'?'Provider beim Fehler '+yesNo(stage.providerAtFailure):null,
       stage.decodeReason?'Dekodierung: '+stage.decodeReason:null,
       stage.subscription?'Abo '+states[stage.subscription]:null,
       'Antwort '+yesNo(stage.responseReceived),'Dekodiert '+yesNo(stage.decoded)

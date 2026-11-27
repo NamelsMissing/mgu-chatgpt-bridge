@@ -165,7 +165,7 @@ class VehicleSnapshot {
     }
     stage(name, key, value) {
         const row=this.stages[name] || {};
-        if (key==='getter' && !row.initialGetter && value!=='pending') row.initialGetter=value;
+        if (key==='getter' && !row.initialGetter && value!=='pending' && value!=='waiting_provider') row.initialGetter=value;
         row[key]=value;
         this.stages[name]=row;
     }
