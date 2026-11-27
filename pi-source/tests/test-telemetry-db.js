@@ -64,19 +64,49 @@ const tripId='t'+start.toString(36)+'-abcdef';
   assert.equal(lost.summary.quality,'poor');
 
   // Series: full resolution and downsampled with kept extremes.
-  let series=await db.series(V,'speed',start,end,5000);
-  assert.equal(series.points.length,600);
-  series=await db.series(V,'speed',start,end,50);
-  assert.ok(series.points.length<=50);
-  assert.equal(Math.max(...series.points.map(p=>p[4])),60);assert.equal(Math.min(...series.points.map(p=>p[3])),0,'min and max survive downsampling');
+  let series=(await db.series(V,'speed',start,end,5000)).series.speed;
+  assert.equal(series.points.length,600);assert.equal(series.source,'raw');
+  series=(await db.series(V,['speed','rpm'],start,end,50)).series;
+  assert.ok(series.speed.points.length<=50&&series.rpm.points.length<=50);
+  assert.equal(Math.max(...series.speed.points.map(p=>p[4])),60);assert.equal(Math.min(...series.speed.points.map(p=>p[3])),0,'min and max survive downsampling');
+  assert.equal(s.version,2);
+  assert.deepEqual(s.speedBandsMs,[0,0,18*60000,0,0],'60 km/h is the 60-100 band');
+
+  // Overview for the statistics page.
+  const ov=await db.overview(V,cfg,start-1,end+1);
+  assert.equal(ov.trips.length,1);assert.equal(ov.trips[0].distanceKm,18);assert.equal(ov.trips[0].oilMax,100);
+  assert.deepEqual(ov.trips[0].speedBandsMs,[0,0,18*60000,0,0]);
+
+  // On-change values continue across a silent stop (Vehicle Data before 0.2.14 sent nothing while
+  // the speed stayed 0). A 4 min stop without rows is covered, a 15 min hole is not.
+  const T1=T0+86400000,gapTrip='t'+T1.toString(36)+'-aaaaaa',gr=[];
+  for(let t=T1;t<T1+120000;t+=2000)gr.push(['speed',t,2000,t<T1+60000?50:0,t<T1+60000?50:0,t<T1+60000?50:0,t<T1+60000?50:0,1]);
+  for(let t=T1+360000;t<T1+420000;t+=2000)gr.push(['speed',t,2000,50,50,50,50,1]);
+  await db.ingest(V,[packet('aaaaaaaa-9-'+T1,gr,[{type:'trip_start',trip:gapTrip,at:T1,odo:2000,reason:'speed'},{type:'trip_end',trip:gapTrip,at:T1+420000,odo:2002,reason:'parked'}])],cfg);
+  let gs=(await db.trip(V,gapTrip,cfg)).trip.summary;
+  assert.equal(gs.coverage.speed,1,'4 min stop continued');assert.equal(gs.filledMs.speed,240000);
+  assert.equal(gs.movingMs,120000);assert.equal(gs.standstillMs,300000);
+  const filledSeries=(await db.series(V,'speed',T1,T1+420000,5000,true)).series.speed.points;
+  assert.ok(filledSeries.some(p=>p[0]===T1+120000&&p[1]===240000&&p[2]===0),'charts continue the 0 as well');
+  const gapTrip2='t'+(T1+3600000).toString(36)+'-bbbbbb',gr2=[];
+  for(let t=T1+3600000;t<T1+3660000;t+=2000)gr2.push(['speed',t,2000,0,0,0,0,1]);
+  for(let t=T1+4560000;t<T1+4620000;t+=2000)gr2.push(['speed',t,2000,30,30,30,30,1]);
+  await db.ingest(V,[packet('aaaaaaaa-10-'+T1,gr2,[{type:'trip_start',trip:gapTrip2,at:T1+3600000,reason:'speed'},{type:'trip_end',trip:gapTrip2,at:T1+4620000,reason:'parked'}])],cfg);
+  gs=(await db.trip(V,gapTrip2,cfg)).trip.summary;
+  assert.ok(gs.coverage.speed<0.2,'a 15 min hole stays a hole: '+gs.coverage.speed);
 
   // Retention by age and size limit; trips stay.
   const stats=await db.stats(V);
-  assert.equal(stats.samples,rows.length);assert.equal(stats.trips,2);
+  assert.equal(stats.samples,rows.length+gr.length+gr2.length);assert.equal(stats.trips,4);
   assert.ok(stats.signals.some(x=>x.id==='exteriorRaw'&&x.verification==='unverified'));
   let m=await db.maintain(V,{...cfg,rawDays:7});
-  assert.equal(m.removedByAge,rows.length,'samples older than 7 days removed');
-  assert.equal((await db.stats(V)).trips,2,'trip summaries are kept');
+  assert.equal(m.removedByAge,rows.length+gr.length+gr2.length,'samples older than 7 days removed');
+  assert.equal((await db.stats(V)).trips,4,'trip summaries are kept');
+  // Minute aggregates outlive the raw data, so old trips still have curves.
+  const old=(await db.series(V,['oil','speed'],start,end,5000)).series;
+  assert.equal(old.oil.source,'minute');assert.equal(old.oil.points.length,20);
+  assert.equal(Math.max(...old.oil.points.map(p=>p[4])),100,'minute max kept');
+  assert.equal(old.speed.points[5][1],60000);assert.equal(old.speed.points[5][2],60,'time-weighted minute mean');
   assert.equal((await db.trip(V,tripId,cfg)).trip.summary.distanceKm,18,'stored summary survives raw-data removal');
   const now=Date.now(),bulk=[];
   for(let i=0;i<60000;i++)bulk.push(['rpm',now-3600000+i*50,50,1000,1000,1000,1000,1]);
@@ -95,6 +125,17 @@ const tripId='t'+start.toString(36)+'-abcdef';
   // Schema guard: a database from a newer version is not touched.
   execFileSync('python3',['-c','import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);d.execute("UPDATE meta SET value=\'9\' WHERE key=\'schema\'");d.commit()',db.file]);
   await assert.rejects(db.stats(V),/neueren Version/);
+
+  // Migration 1 -> 2: a database written by Pi 0.11.0 (no minute table, schema 1) gets minute
+  // aggregates from the raw samples it still has.
+  const legacy=telemetry.store(path.join(dir,'legacy.sqlite'));
+  await legacy.ingest(V,[packet('aaaaaaaa-1-'+T0,rows.slice(0,300),[])],cfg);
+  execFileSync('python3',['-c','import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);d.execute("DROP TABLE samples_minute");d.execute("UPDATE meta SET value=\'1\' WHERE key=\'schema\'");d.commit()',legacy.file]);
+  const upgradedMinutes=execFileSync('python3',['-c','import sqlite3,sys;print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM sqlite_master WHERE name=\'samples_minute\'").fetchone()[0])',legacy.file]).toString().trim();
+  assert.equal(upgradedMinutes,'0');
+  await legacy.stats(V);
+  const migrated=execFileSync('python3',['-c','import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);print(d.execute("SELECT value FROM meta WHERE key=\'schema\'").fetchone()[0], d.execute("SELECT count(*), sum(covered_ms) FROM samples_minute WHERE signal_id=\'speed\'").fetchone())',legacy.file]).toString().trim();
+  assert.match(migrated,/^2 \(\d+, \d+\)$/,'schema 2 with minute rows: '+migrated);
 
   // Settings validation.
   assert.throws(()=>telemetry.settings({},{rawDays:1}),/rawDays/);

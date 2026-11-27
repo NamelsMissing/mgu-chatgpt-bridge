@@ -1718,20 +1718,233 @@ restoreSession();
 renderPair();
 
 
-// ----- Statistiken: Fahrtenbuch aus der Fahrzeugtelemetrie -----
-// Nur echte Messwerte. Fehlende Werte erscheinen als „–“, nie als 0.
-let statsTrips=[],statsTripId=null,statsView=null;
-const dash='–';
+// ----- Statistiken: Fahrtenbuch und Diagramme aus der Fahrzeugtelemetrie -----
+// Nur echte Messwerte. Fehlende Werte erscheinen als „–“, nie als 0. Diagramme sind eigenes SVG
+// (keine externe Bibliothek, CSP style-src 'self': Formen über SVG-Attribute, Breiten über CSSOM).
+let statsTrips=[],statsTripId=null,statsView=null,statsRange='7',statsOverview=null;
+const chartRenders=new Map();
+const dash='–',SVGNS='http://www.w3.org/2000/svg';
+const COLOR={blue:'#3b7cf4',green:'#4fb35a',yellow:'#f0c64a',orange:'#ec8a4b'};
 const fmtNum=(v,d=0)=>v===null||v===undefined||!Number.isFinite(v)?dash:v.toLocaleString('de-DE',{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtKm=v=>v===null||v===undefined?dash:fmtNum(v,v<100?1:0)+' km';
 const fmtDur=ms=>{if(ms===null||ms===undefined)return dash;const m=Math.round(ms/60000);return m<60?m+' min':Math.floor(m/60)+' h '+String(m%60).padStart(2,'0')+' min';};
 const fmtDay=ts=>new Date(ts).toLocaleDateString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'});
 const fmtTime=ts=>new Date(ts).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+const weekday=ts=>new Date(ts).toLocaleDateString('de-DE',{weekday:'short'}).replace('.','');
 const DIST_SOURCE={odometer:'Kilometerstand',speed:'Geschwindigkeit integriert',speed_incomplete:'Geschwindigkeit, lückenhaft'};
 const QUALITY={good:'vollständig',partial:'teilweise',poor:'lückenhaft'};
+function svgEl(tag,attrs,parent){const e=document.createElementNS(SVGNS,tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
 function statBox(parent,label,value){const c=txt('div','','stat');c.appendChild(txt('span',label,'hint'));c.appendChild(txt('strong',value));parent.appendChild(c);}
 function tripLabel(t){return t.name||(fmtDay(t.start_ts)+' · '+fmtTime(t.start_ts)+(t.end_ts?'–'+fmtTime(t.end_ts):' · läuft'));}
+
+/** Smooth line through points without overshoot (monotone cubic, Fritsch-Carlson). */
+function smoothPath(pts){
+  const n=pts.length;if(!n)return '';
+  if(n===1)return 'M'+pts[0][0]+' '+pts[0][1]+'h0.5';
+  const dx=[],dy=[],m=[],t=[];
+  for(let i=0;i<n-1;i++){dx[i]=pts[i+1][0]-pts[i][0];dy[i]=pts[i+1][1]-pts[i][1];m[i]=dx[i]?dy[i]/dx[i]:0;}
+  t[0]=m[0];t[n-1]=m[n-2];
+  for(let i=1;i<n-1;i++)t[i]=m[i-1]*m[i]<=0?0:(m[i-1]+m[i])/2;
+  for(let i=0;i<n-1;i++){
+    if(m[i]===0){t[i]=0;t[i+1]=0;continue;}
+    const a=t[i]/m[i],b=t[i+1]/m[i],h=a*a+b*b;
+    if(h>9){const k=3/Math.sqrt(h);t[i]=k*a*m[i];t[i+1]=k*b*m[i];}
+  }
+  let d='M'+pts[0][0].toFixed(1)+' '+pts[0][1].toFixed(1);
+  for(let i=0;i<n-1;i++){
+    const h=dx[i]/3;
+    d+='C'+(pts[i][0]+h).toFixed(1)+' '+(pts[i][1]+t[i]*h).toFixed(1)+' '+(pts[i+1][0]-h).toFixed(1)+' '+(pts[i+1][1]-t[i+1]*h).toFixed(1)+' '+pts[i+1][0].toFixed(1)+' '+pts[i+1][1].toFixed(1);
+  }
+  return d;
+}
+
+/**
+ * Line chart in the style of the statistics page: legend with the value under the finger,
+ * dashed grid, y labels left, three x labels, cursor line with dots and a label on top.
+ * opt.series: [{name,color,unit,digits,points:[[x,y]...]}] (series without points show "–").
+ */
+function lineChart(host,opt){
+  const draw=()=>{
+    host.replaceChildren();
+    const legend=txt('div','','chart-legend');host.appendChild(legend);
+    const legs=opt.series.map(s=>{
+      const leg=txt('div','','leg'+(s.points.length?'':' off'));const bar=document.createElement('i');bar.style.background=s.color;leg.appendChild(bar);
+      const box=document.createElement('div');box.appendChild(txt('span',s.name));const val=txt('strong',dash);box.appendChild(val);leg.appendChild(box);legend.appendChild(leg);
+      return val;
+    });
+    const W=Math.max(280,Math.round(host.clientWidth||340)),H=opt.height||300,pad={l:opt.yTitle?80:62,r:12,t:34,b:30};
+    const svg=svgEl('svg',{viewBox:'0 0 '+W+' '+H,class:'chart-svg',role:'img','aria-label':opt.label||''},host);
+    const iw=W-pad.l-pad.r,ih=H-pad.t-pad.b;
+    const X=x=>pad.l+(opt.xMax===opt.xMin?iw:(x-opt.xMin)/(opt.xMax-opt.xMin)*iw);
+    const Y=y=>pad.t+ih-(y-opt.yMin)/(opt.yMax-opt.yMin)*ih;
+    const hasData=opt.series.some(s=>s.points.length);
+    for(const tick of opt.yTicks){
+      svgEl('line',{x1:pad.l,x2:W-pad.r,y1:Y(tick),y2:Y(tick),class:'grid'},svg);
+      if(hasData)svgEl('text',{x:pad.l-10,y:Y(tick)+4,'text-anchor':'end'},svg).textContent=opt.yFmt(tick);
+    }
+    if(opt.yTitle&&hasData){const t=svgEl('text',{x:18,y:pad.t+ih/2,'text-anchor':'middle',transform:'rotate(-90 18 '+(pad.t+ih/2)+')'},svg);t.textContent=opt.yTitle;}
+    const [xl,xm,xr]=opt.xLabels;
+    svgEl('text',{x:pad.l,y:H-8,'text-anchor':'start'},svg).textContent=xl;
+    svgEl('text',{x:pad.l+iw/2,y:H-8,'text-anchor':'middle'},svg).textContent=xm;
+    svgEl('text',{x:W-pad.r,y:H-8,'text-anchor':'end'},svg).textContent=xr;
+    if(!hasData){const e=txt('div',opt.empty||'Noch keine Messwerte.','chart-empty');host.appendChild(e);return;}
+    for(const s of opt.series){
+      // Separate segments at gaps: missing data stays a gap, never a straight line across.
+      let seg=[];
+      const flush=()=>{if(seg.length)svgEl('path',{d:smoothPath(seg),fill:'none',stroke:s.color,'stroke-width':2.4,'stroke-linejoin':'round','stroke-linecap':'round'},svg);seg=[];};
+      s.points.forEach((p,i)=>{if(i&&p[0]-s.points[i-1][0]>opt.gapX)flush();seg.push([X(p[0]),Y(Math.max(opt.yMin,Math.min(opt.yMax,p[1])))]);});
+      flush();
+    }
+    const cursor=svgEl('g',{},svg);
+    const line=svgEl('line',{y1:pad.t,y2:pad.t+ih,class:'cursor'},cursor);
+    const label=svgEl('text',{y:pad.t-14,class:'cursor-label'},cursor);
+    const dots=opt.series.map(s=>svgEl('circle',{r:6,fill:s.color,stroke:'#1b1d22','stroke-width':2},cursor));
+    const nearest=(pts,x)=>{let lo=0,hi=pts.length-1;if(hi<0)return null;while(lo<hi){const mid=(lo+hi)>>1;if(pts[mid][0]<x)lo=mid+1;else hi=mid;}
+      const c=[pts[lo],pts[lo-1]].filter(Boolean).sort((a,b)=>Math.abs(a[0]-x)-Math.abs(b[0]-x))[0];return Math.abs(c[0]-x)<=opt.gapX?c:null;};
+    const place=x=>{
+      x=Math.max(opt.xMin,Math.min(opt.xMax,x));const px=X(x);
+      line.setAttribute('x1',px);line.setAttribute('x2',px);
+      label.textContent=opt.cursorFmt(x);
+      label.setAttribute('x',px);label.setAttribute('text-anchor',px>W-60?'end':px<pad.l+40?'start':'middle');
+      opt.series.forEach((s,i)=>{
+        const p=nearest(s.points,x);
+        dots[i].setAttribute('visibility',p?'visible':'hidden');
+        if(p){dots[i].setAttribute('cx',px);dots[i].setAttribute('cy',Y(Math.max(opt.yMin,Math.min(opt.yMax,p[1]))));}
+        legs[i].textContent=p?fmtNum(p[1],s.digits||0)+' '+s.unit:dash;
+      });
+    };
+    const lastX=Math.max(...opt.series.filter(s=>s.points.length).map(s=>s.points[s.points.length-1][0]));
+    place(lastX);
+    const toX=e=>{const r=svg.getBoundingClientRect();const px=(e.clientX-r.left)*W/r.width;return opt.xMin+(px-pad.l)/iw*(opt.xMax-opt.xMin);};
+    svg.addEventListener('pointerdown',e=>place(toX(e)));
+    svg.addEventListener('pointermove',e=>{if(e.pointerType==='mouse'||e.buttons)place(toX(e));});
+    svg.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse')place(lastX);});
+  };
+  chartRenders.set(host,draw);
+  draw();
+  if(opt.maxRow){
+    const row=txt('div','','chart-max');
+    opt.maxRow.forEach(([l,v])=>{const c=document.createElement('div');c.appendChild(txt('span',l));c.appendChild(txt('strong',v));row.appendChild(c);});
+    host.appendChild(row);
+    const redraw=draw;chartRenders.set(host,()=>{redraw();host.appendChild(row);});
+  }
+}
+let resizeTimer=null;
+window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>chartRenders.forEach((f,host)=>{if(host.isConnected&&host.offsetParent)f();}),150);});
+
+function barList(host,rows,unitFmt){
+  host.replaceChildren();
+  const max=Math.max(1,...rows.map(r=>r.value||0));
+  if(!rows.length){host.appendChild(txt('p','Keine Fahrten in diesem Zeitraum.','stats-caption'));return;}
+  for(const r of rows){
+    const row=txt('div','','bar-row'),head=txt('div','','bar-head');
+    head.appendChild(txt('span',r.label));head.appendChild(txt('span',unitFmt(r.value)));
+    const track=txt('div','','bar-track'),fill=txt('div','','bar-fill');
+    fill.style.width=Math.max(0,Math.min(100,(r.value||0)/max*100))+'%';
+    track.appendChild(fill);row.appendChild(head);row.appendChild(track);host.appendChild(row);
+  }
+}
+const ICONS={
+  route:'<circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8.4 18H15a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h6.6"/>',
+  fuel:'<path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M3 21h12M4 10h10"/><path d="M14 8.5l3 3v6a1.5 1.5 0 0 0 3 0V9.5L17 6.5"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  gauge:'<path d="M4.5 17a8.5 8.5 0 1 1 15 0"/><path d="M12 13l4-4"/><circle cx="12" cy="13.5" r="1.2"/>'
+};
+function kpi(host,icon,label,value,unit){
+  const c=txt('div','','kpi');
+  const svg=svgEl('svg',{viewBox:'0 0 24 24','aria-hidden':'true'});
+  // Static, trusted markup of the four icons above.
+  svg.innerHTML=ICONS[icon];c.appendChild(svg);
+  c.appendChild(txt('span',label,'kpi-label'));c.appendChild(txt('span',value,'kpi-value'));
+  if(unit)c.appendChild(txt('span',unit,'kpi-unit'));
+  host.appendChild(c);
+}
+function rangeBounds(range){
+  const now=Date.now(),d=new Date();d.setHours(0,0,0,0);
+  if(range==='today')return [d.getTime(),now];
+  if(range==='7'){d.setDate(d.getDate()-6);return [d.getTime(),now];}
+  if(range==='30'){d.setDate(d.getDate()-29);return [d.getTime(),now];}
+  return [0,now];
+}
+function isoWeek(ts){const d=new Date(ts);d.setHours(0,0,0,0);d.setDate(d.getDate()+3-(d.getDay()+6)%7);const w1=new Date(d.getFullYear(),0,4);
+  return 1+Math.round(((d-w1)/86400000-3+(w1.getDay()+6)%7)/7);}
+function distanceRows(trips,range,[from]){
+  const km=t=>t.distanceKm||0;
+  if(range==='today')return [trips.map(t=>({label:fmtTime(t.start)+(t.name?' · '+t.name:''),value:km(t)})),'Heute, je Fahrt'];
+  if(range==='7'){
+    const rows=[];for(let i=0;i<7;i++){const d=new Date(from);d.setDate(d.getDate()+i);const a=d.getTime();d.setDate(d.getDate()+1);const b=d.getTime();
+      rows.push({label:weekday(a),value:trips.filter(t=>t.start>=a&&t.start<b).reduce((s,t)=>s+km(t),0)});}
+    return [rows,'Letzte sieben Tage'];
+  }
+  if(range==='30'){
+    const rows=new Map();for(let i=0;i<30;i++){const d=new Date(from);d.setDate(d.getDate()+i);const key='KW '+isoWeek(d.getTime());if(!rows.has(key))rows.set(key,0);}
+    trips.forEach(t=>{const key='KW '+isoWeek(t.start);rows.set(key,(rows.get(key)||0)+km(t));});
+    return [[...rows].map(([label,value])=>({label,value})),'Letzte 30 Tage, je Kalenderwoche'];
+  }
+  const rows=new Map();
+  trips.forEach(t=>{const key=new Date(t.start).toLocaleDateString('de-DE',{month:'short',year:'numeric'});rows.set(key,(rows.get(key)||0)+km(t));});
+  return [[...rows].slice(-12).map(([label,value])=>({label,value})),'Gesamter Zeitraum, je Monat'];
+}
+function renderOverview(){
+  const o=statsOverview;if(!o)return;
+  const trips=o.trips,closed=trips;
+  const k=$('statsKpis');k.replaceChildren();
+  const dist=closed.reduce((s,t)=>s+(t.distanceKm||0),0),time=closed.reduce((s,t)=>s+(t.durationMs||0),0);
+  const vmax=closed.reduce((m,t)=>t.maxSpeedKmh!=null&&t.maxSpeedKmh>m?t.maxSpeedKmh:m,-1);
+  kpi(k,'route','Fahrstrecke',closed.length?fmtKm(dist):dash);
+  kpi(k,'fuel','Ø Verbrauch',dash,'l/100 km · noch nicht verfügbar');
+  kpi(k,'clock','Fahrzeit',closed.length?fmtDur(time):dash);
+  kpi(k,'gauge','Höchstgeschwindigkeit',vmax>=0?fmtNum(vmax)+' km/h':dash);
+  const [rows,caption]=distanceRows(trips,statsRange,rangeBounds(statsRange));
+  barList($('statsDistance'),rows,v=>fmtNum(v,v>0&&v<10?1:0)+' km');
+  $('statsDistanceCaption').textContent=caption;
+  // Consumption: the chart appears once the tank level unit is confirmed. No invented values.
+  const [from,to]=rangeBounds(statsRange);
+  lineChart($('statsFuel'),{series:[{name:'Verbrauch',color:COLOR.blue,unit:'l/100 km',digits:1,points:[]}],xMin:from,xMax:to,yMin:0,yMax:10,yTicks:[0,2.5,5,7.5,10],
+    yFmt:v=>fmtNum(v,v%1?2:0)+' l/100 km',yTitle:'Verbrauch',xLabels:statsRange==='today'?['0 Uhr','Uhrzeit','jetzt']:statsRange==='7'?[weekday(from),'Tag',weekday(to)]:
+      statsRange==='30'?[new Date(from).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'}),'Tag','heute']:['','Monat',''],cursorFmt:()=>'',gapX:1,height:260,
+    empty:'Noch keine Verbrauchswerte. Der Verlauf erscheint, sobald die Einheit des Tankfüllstands bestätigt ist.'});
+  const bands=[0,0,0,0,0];closed.forEach(t=>(t.speedBandsMs||[]).forEach((v,i)=>{bands[i]+=v;}));
+  const names=['0–30 km/h','30–60 km/h','60–100 km/h','100–130 km/h','über 130 km/h'];
+  const total=bands.reduce((a,b)=>a+b,0);
+  barList($('statsBands'),total?bands.map((v,i)=>({label:names[i],value:v})):[],v=>fmtDur(v)+(total?' · '+fmtNum(v/total*100)+' %':''));
+}
+async function warmupChart(host,trip,captionEl){
+  if(!trip){host.replaceChildren(txt('p','Noch keine Fahrt aufgezeichnet.','stats-caption'));return;}
+  const id=trip.id,start=trip.start_ts??trip.start,end=trip.end_ts??trip.end??Date.now();
+  if(captionEl)captionEl.textContent=(trip.name||fmtDay(start)+' '+fmtTime(start))+' · Temperaturen in °C';
+  const d=await api('/telemetry/trips/'+id+'/series?signals=coolant,oil&max=900');
+  const toPts=k=>(d.series[k]?.points||[]).map(p=>[(p[0]+p[1]/2-start)/60000,p[2]]);
+  const coolant=toPts('coolant'),oil=toPts('oil');
+  const top=Math.max(120,...coolant.map(p=>p[1]),...oil.map(p=>p[1]));
+  const yMax=Math.ceil(top/30)*30,durMin=Math.max(1,(end-start)/60000);
+  const maxOf=k=>{const v=(d.series[k]?.points||[]).map(p=>p[4]);return v.length?fmtNum(Math.max(...v))+' °C':dash;};
+  lineChart(host,{series:[
+      {name:'Kühlmittel',color:COLOR.blue,unit:'°C',points:coolant},
+      {name:'Motoröl',color:COLOR.green,unit:'°C',points:oil},
+      {name:'Getriebeöl',color:COLOR.yellow,unit:'°C',points:[]}],
+    xMin:0,xMax:durMin,yMin:0,yMax,yTicks:Array.from({length:yMax/30+1},(_,i)=>i*30),yFmt:v=>v+' °C',
+    xLabels:['0 min','Minute',fmtNum(durMin)+' min'],cursorFmt:x=>fmtNum(x)+' min',gapX:3,label:'Warmlaufverlauf',
+    maxRow:[['Max. Motoröl',maxOf('oil')],['Max. Kühlmittel',maxOf('coolant')],['Max. Getriebeöl',dash]],
+    empty:'Für diese Fahrt liegen keine Temperaturwerte vor.'});
+}
+async function tripLineCharts(t){
+  const start=t.start_ts,end=t.end_ts||Date.now(),durMin=Math.max(1,(end-start)/60000);
+  const d=await api('/telemetry/trips/'+t.id+'/series?signals=speed,rpm&max=1200');
+  const pts=k=>(d.series[k]?.points||[]).map(p=>[(p[0]+p[1]/2-start)/60000,p[2]]);
+  const speed=pts('speed'),rpm=pts('rpm');
+  const vTop=Math.max(60,Math.ceil(Math.max(0,...speed.map(p=>p[1]))/30)*30);
+  lineChart($('statsTripSpeed'),{series:[{name:'Geschwindigkeit',color:COLOR.blue,unit:'km/h',points:speed}],xMin:0,xMax:durMin,yMin:0,yMax:vTop,
+    yTicks:Array.from({length:vTop/30+1},(_,i)=>i*30),yFmt:v=>v+' km/h',xLabels:['0 min','Minute',fmtNum(durMin)+' min'],cursorFmt:x=>fmtNum(x)+' min',gapX:1,height:240,
+    empty:'Keine Geschwindigkeitswerte.'});
+  const rTop=Math.max(2000,Math.ceil(Math.max(0,...rpm.map(p=>p[1]))/1000)*1000);
+  lineChart($('statsTripRpm'),{series:[{name:'Motordrehzahl',color:COLOR.orange,unit:'1/min',points:rpm}],xMin:0,xMax:durMin,yMin:0,yMax:rTop,
+    yTicks:Array.from({length:rTop/1000+1},(_,i)=>i*1000),yFmt:v=>fmtNum(v),yTitle:'1/min',xLabels:['0 min','Minute',fmtNum(durMin)+' min'],cursorFmt:x=>fmtNum(x)+' min',gapX:1,height:240,
+    empty:'Keine Drehzahlwerte.'});
+}
 function renderStatsHeader(v){
   statsView=v;const s=v.status,mgu=v.mgu,set=v.settings;
+  $('statsSubtitle').textContent=v.vehicleLabel+(s.lastStoredAt?' · Stand '+stamp(s.lastStoredAt):'');
   const rec=$('statsRecording');
   rec.textContent=!set.enabled?'Aufzeichnung aus':mgu?.tripActive?'Fahrt läuft':mgu?'Bereit':'MGU wartet';
   rec.className='pill '+(set.enabled&&mgu?'pill-live':'pill-off');
@@ -1743,8 +1956,8 @@ function renderStatsHeader(v){
   if(mgu?.buffer?.dropped)parts.push(mgu.buffer.dropped+' Pakete wegen Pufferlimit gekürzt');
   if(s.lastError)parts.push(s.lastError);
   $('statsStatus').textContent=parts.join(' · ');
-  $('statsEnabled').checked=set.enabled;
-  $('statsIdleEnd').value=set.idleEndMin;$('statsBuffer').value=set.bufferMb;$('statsRawDays').value=set.rawDays;
+  $('statsEnabled').checked=set.enabled;$('statsVehicleName').value=set.vehicleName||'';
+  $('statsIdleEnd').value=set.idleEndMin;$('statsBuffer').value=set.bufferMb;$('statsRawDays').value=set.rawDays;$('statsAggregateMonths').value=set.aggregateMonths;
   $('statsLimit').value=set.limitMb;$('statsOilThreshold').value=set.oilThresholdC;$('statsCoolantThreshold').value=set.coolantThresholdC;
   const db=v.database;
   $('statsStorage').textContent='Datenbank: '+fmtNum(db.bytes/1048576,1)+' MB von '+set.limitMb+' MB · '+fmtNum(db.samples)+' Messwerte · '+fmtNum(db.trips)+' Fahrten'+
@@ -1756,39 +1969,41 @@ function renderStatsHeader(v){
   (db.signals||[]).forEach(x=>{const row=txt('div','','list-row');row.appendChild(txt('span',x.nameDe+(x.unit&&x.unit!=='raw'?' ('+x.unit+')':'')));
     row.appendChild(txt('span',VER[x.verification]||x.verification,'pill '+(x.verification==='vehicle'?'pill-live':'pill-off')));list.appendChild(row);});
 }
-function renderTotals(){
-  const box=$('statsTotals');box.replaceChildren();
-  const closed=statsTrips.filter(t=>t.summary&&!t.summary.open);
-  if(!closed.length)return;
-  const km=closed.reduce((s,t)=>s+(t.summary.distanceKm||0),0),ms=closed.reduce((s,t)=>s+(t.summary.durationMs||0),0);
-  const vmax=Math.max(...closed.map(t=>t.summary.maxSpeedKmh??-1));
-  statBox(box,'Fahrten (angezeigt)',fmtNum(closed.length));
-  statBox(box,'Strecke',fmtNum(km,1)+' km');
-  statBox(box,'Fahrzeit',fmtDur(ms));
-  statBox(box,'Höchstgeschwindigkeit',vmax>=0?fmtNum(vmax)+' km/h':dash);
-}
-function renderTrips(append){
-  const box=$('statsTrips');if(!append)box.replaceChildren();
-  if(!statsTrips.length){box.appendChild(txt('p','Noch keine Fahrten aufgezeichnet. Die erste Fahrt erscheint, sobald Vehicle Data 0.2.13 und der Companion Agent 0.2.14 laufen und das Auto gefahren ist.','hint'));return;}
-  box.replaceChildren();
+function renderTrips(){
+  const box=$('statsTrips');box.replaceChildren();
+  if(!statsTrips.length){box.appendChild(txt('p','Noch keine Fahrten aufgezeichnet. Die erste Fahrt erscheint, sobald Vehicle Data und der Companion Agent laufen und das Auto gefahren ist.','hint'));return;}
   statsTrips.forEach(t=>{
     const s=t.summary||{},row=txt('div','','list-row maintenance-row');
     row.appendChild(txt('strong',tripLabel(t)));
-    row.appendChild(txt('span',[s.distanceKm!==null&&s.distanceKm!==undefined?fmtNum(s.distanceKm,1)+' km':null,fmtDur(s.durationMs),
+    row.appendChild(txt('span',[s.distanceKm!=null?fmtKm(s.distanceKm):null,fmtDur(s.durationMs),
       s.maxSpeedKmh!=null?'max. '+fmtNum(s.maxSpeedKmh)+' km/h':null,s.oil?.max!=null?'Öl max. '+fmtNum(s.oil.max)+' °C':null].filter(Boolean).join(' · '),'hint'));
     row.appendChild(txt('span',t.category||(t.status==='open'?'läuft':QUALITY[s.quality]||''),'pill '+(t.status==='open'?'pill-live':'pill-off')));
     row.onclick=()=>openTrip(t.id);
     box.appendChild(row);
   });
-  renderTotals();
+}
+async function loadOverview(){
+  const [from,to]=rangeBounds(statsRange);
+  statsOverview=await api('/telemetry/overview?from='+from+'&to='+to);
+  renderOverview();
+  const latest=[...statsOverview.trips].reverse()[0];
+  const trip=latest?{id:latest.id,start_ts:latest.start,end_ts:latest.end,name:latest.name}:statsTrips[0];
+  await warmupChart($('statsWarmup'),trip,$('statsWarmupCaption'));
+  if(trip&&!latest)$('statsWarmupCaption').textContent='Letzte Fahrt (außerhalb des Zeitraums) · Temperaturen in °C';
 }
 async function refreshStats(){
   try{
     renderStatsHeader(await api('/telemetry'));
     const d=await api('/telemetry/trips?limit=30');statsTrips=d.trips;renderTrips();
     $('statsMore').hidden=d.trips.length<30;
+    await loadOverview();
   }catch(e){$('statsStatus').textContent='Statistiken nicht verfügbar: '+e.message;}
 }
+$('statsRange').querySelectorAll('button').forEach(b=>b.onclick=async()=>{
+  statsRange=b.dataset.range;
+  $('statsRange').querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===b));
+  try{await loadOverview();}catch(e){notice(e.message);}
+});
 async function openTrip(id){
   try{
     const {trip:t}=await api('/telemetry/trips/'+id);statsTripId=id;const s=t.summary||{};
@@ -1796,7 +2011,7 @@ async function openTrip(id){
     $('statsTripInfo').textContent=fmtDay(t.start_ts)+' '+fmtTime(t.start_ts)+(t.end_ts?' bis '+fmtTime(t.end_ts):' · läuft noch')+
       (t.start_km!=null?' · Start '+fmtNum(t.start_km)+' km':'')+(t.end_km!=null?' · Ende '+fmtNum(t.end_km)+' km':'')+(t.partial?' · Anfang nachträglich rekonstruiert':'');
     const box=$('statsTripValues');box.replaceChildren();
-    statBox(box,'Strecke',s.distanceKm!=null?fmtNum(s.distanceKm,1)+' km':dash);
+    statBox(box,'Strecke',s.distanceKm!=null?fmtKm(s.distanceKm):dash);
     statBox(box,'Dauer',fmtDur(s.durationMs));
     statBox(box,'In Bewegung',fmtDur(s.movingMs));
     statBox(box,'Stillstand',fmtDur(s.standstillMs));
@@ -1809,15 +2024,17 @@ async function openTrip(id){
     for(const [k,label] of [['coolant','Kühlmittel'],['oil','Motoröl']]){
       const x=s[k];
       statBox(box,label+' Start / max.',x?fmtNum(x.start)+' / '+fmtNum(x.max)+' °C':dash);
-      statBox(box,label+' ≥ '+(x?.threshold??'')+' °C nach',x?.reached?fmtDur(x.reached.ms)+' · '+fmtNum(x.reached.km,1)+' km':x?'nicht erreicht':dash);
+      statBox(box,label+' ≥ '+(x?.threshold??'')+' °C nach',x?.reached?fmtDur(x.reached.ms)+' · '+fmtKm(x.reached.km):x?'nicht erreicht':dash);
     }
     statBox(box,'Verbrauch',dash);
-    const cov=s.coverage||{};
+    const cov=s.coverage||{},filled=s.filledMs?.speed;
     $('statsTripQuality').textContent='Datenqualität: '+(QUALITY[s.quality]||dash)+' · Abdeckung Geschwindigkeit '+fmtNum((cov.speed||0)*100)+' %, Drehzahl '+fmtNum((cov.rpm||0)*100)+
-      ' %, Temperaturen '+fmtNum((cov.oil||0)*100)+' % · Strecke aus '+(DIST_SOURCE[s.distanceSource]||dash)+
-      ' · Verbrauch erst, wenn der Tankfüllstand in Litern bestätigt ist · Werte am Fahrzeug noch nicht bestätigt.';
+      ' %, Temperaturen '+fmtNum((cov.oil||0)*100)+' %'+(filled?' (davon '+fmtDur(filled)+' Stillstand ohne neue Meldung fortgeführt)':'')+
+      ' · Strecke aus '+(DIST_SOURCE[s.distanceSource]||dash)+' · Verbrauch erst, wenn der Tankfüllstand in Litern bestätigt ist · Werte am Fahrzeug noch nicht bestätigt.';
     $('statsTripName').value=t.name||'';$('statsTripCategory').value=t.category||'';
     $('statsTrip').scrollIntoView({behavior:'smooth',block:'start'});
+    await warmupChart($('statsTripWarmup'),t,null);
+    await tripLineCharts(t);
   }catch(e){notice(e.message);}
 }
 $('refreshStats').onclick=async()=>{const b=$('refreshStats');b.disabled=true;try{renderStatsHeader(await api('/telemetry/pull','POST'));await refreshStats();}catch(e){notice(e.message);}finally{b.disabled=false;}};
@@ -1827,9 +2044,9 @@ $('statsTripSave').onclick=async()=>{if(!statsTripId)return;try{await api('/tele
 $('statsTripDelete').onclick=async()=>{if(!statsTripId||!confirm('Diese Fahrt und ihre Messwerte endgültig löschen?'))return;try{await api('/telemetry/trips/'+statsTripId+'?confirm=1','DELETE');$('statsTrip').hidden=true;statsTripId=null;notice('Fahrt gelöscht.');await refreshStats();}catch(e){notice(e.message);}};
 $('statsSaveSettings').onclick=async()=>{
   const n=id=>Number($(id).value);
-  try{renderStatsHeader(await api('/telemetry/settings','POST',{enabled:$('statsEnabled').checked,idleEndMin:n('statsIdleEnd'),bufferMb:n('statsBuffer'),rawDays:n('statsRawDays'),
-    limitMb:n('statsLimit'),oilThresholdC:n('statsOilThreshold'),coolantThresholdC:n('statsCoolantThreshold')}));notice('Gespeichert. Die MGU übernimmt die Aufzeichnungseinstellungen bei der nächsten Verbindung.');}
+  try{renderStatsHeader(await api('/telemetry/settings','POST',{enabled:$('statsEnabled').checked,vehicleName:$('statsVehicleName').value.trim(),idleEndMin:n('statsIdleEnd'),bufferMb:n('statsBuffer'),rawDays:n('statsRawDays'),
+    aggregateMonths:n('statsAggregateMonths'),limitMb:n('statsLimit'),oilThresholdC:n('statsOilThreshold'),coolantThresholdC:n('statsCoolantThreshold')}));notice('Gespeichert. Die MGU übernimmt die Aufzeichnungseinstellungen bei der nächsten Verbindung.');}
   catch(e){notice(e.message);}
 };
 $('statsReset').onclick=async()=>{if(!confirm('Alle Fahrten und Messwerte dieses Fahrzeugs löschen? Wartung und Fehlerspeicher bleiben erhalten.'))return;
-  try{renderStatsHeader(await api('/telemetry/reset','POST',{confirm:$('statsResetConfirm').value.trim()}));$('statsResetConfirm').value='';statsTrips=[];renderTrips();notice('Statistik zurückgesetzt.');}catch(e){notice(e.message);}};
+  try{renderStatsHeader(await api('/telemetry/reset','POST',{confirm:$('statsResetConfirm').value.trim()}));$('statsResetConfirm').value='';statsTrips=[];renderTrips();await loadOverview();notice('Statistik zurückgesetzt.');}catch(e){notice(e.message);}};

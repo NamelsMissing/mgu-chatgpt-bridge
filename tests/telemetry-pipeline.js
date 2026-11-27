@@ -102,8 +102,18 @@ async function stop(child){if(child&&child.exitCode===null&&child.signalCode===n
     assert.equal((await api('/telemetry/trips/t1-zzzzzz')).status,404);
     assert.equal((await api('/telemetry/trips/..%2f..')).status,404);
     const series=(await api('/telemetry/series?signal=speed&from='+T0+'&to='+(T0+1500000)+'&max=100')).body;
-    assert.ok(series.points.length<=100&&series.points.length>50);
+    assert.ok(series.series.speed.points.length<=100&&series.series.speed.points.length>50);
     assert.equal((await api('/telemetry/series?signal=evil&from=0&to=1')).status,400);
+    assert.equal((await api('/telemetry/series?signals=gear&from=0&to=1')).status,400,'enums are no curves');
+    // Phase 2: overview for the time filter and trip series for the warm-up chart.
+    const ov=(await api('/telemetry/overview?from='+(T0-3600000)+'&to='+Date.now())).body;
+    assert.equal(ov.trips.length,1);assert.equal(ov.trips[0].oilMax,facts.maxOil);
+    assert.ok(ov.trips[0].speedBandsMs.reduce((a,b)=>a+b,0)>15*60000,'speed bands cover the moving time');
+    assert.ok(ov.trips[0].speedBandsMs[3]>0,'motorway band 100-130 km/h');
+    const warm=(await api('/telemetry/trips/'+trip.id+'/series?signals=coolant,oil&max=300')).body;
+    assert.equal(warm.trip.id,trip.id);assert.ok(warm.series.oil.points.length>50&&warm.series.coolant.points.length>50);
+    assert.equal(Math.max(...warm.series.oil.points.map(p=>p[4])),facts.maxOil);
+    assert.equal((await api('/telemetry/trips/t1-zzzzzz/series?signals=oil')).status,404);
 
     // Settings go to Vehicle Data through the agent.
     view=(await api('/telemetry/settings','POST',{enabled:false,idleEndMin:15})).body;

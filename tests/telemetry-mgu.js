@@ -108,6 +108,12 @@ test('time-weighted mean, kept peaks, held values and gaps', () => {
     assert.deepStrictEqual(out[3].slice(1, 4), [6000, 1000, 50]);
     a.roll(20000, out);
     assert.strictEqual(out.length, 4, 'no rows after a gap');
+    const short = new T.Aggregator({ id: 'z', intervalMs: 2000 }, 600000);
+    const shortRows = [];
+    short.long = false;
+    short.add(5, 0, shortRows);
+    short.roll(100000, shortRows);
+    assert.strictEqual(shortRows.reduce((s2, r) => s2 + r[2], 0), 30000, 'outside a trip a value holds 30 s');
     const held = new T.Aggregator({ id: 'y', intervalMs: 2000 }, 3000);
     const rows = [];
     held.add(10, 0, rows);
@@ -149,6 +155,19 @@ test('synthetic drive: one trip from cold start to parking, start-stop and coast
     const status = r.status();
     assert.strictEqual(status.trip, null);
     assert.ok(status.signals.speed.valid > 7000);
+});
+
+test('a long stop with no speed notification stays covered during a trip', () => {
+    const dir = tmp(), clock = { t: T0 };
+    const r = recorder(dir, clock);
+    for (let s = 0; s < 60; s++) { clock.t = T0 + s * 1000; r.ingest(IF.speed[0], IF.speed[1], RAW.speed(40 - Math.min(40, s))); r.tick(); }
+    // 0 km/h is reported once; the car then waits 4 minutes at a light without new notifications.
+    tickUntil(r, clock, T0 + 60000 + 240000);
+    r.ingest(IF.speed[0], IF.speed[1], RAW.speed(10));
+    r.flush(true);
+    const rows = [].concat.apply([], packets(dir).map((p) => p.rows)).filter((x) => x[0] === 'speed');
+    const covered = rows.reduce((s, x) => s + x[2], 0);
+    assert.ok(covered >= 299000, 'covered ' + covered + ' of 300000 ms');
 });
 
 test('trip without vehicle-condition signal ends after the standstill limit', () => {

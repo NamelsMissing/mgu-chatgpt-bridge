@@ -1,6 +1,6 @@
 # Fahrzeugtelemetrie und Fahrtenbuch
 
-Ab Vehicle Data 0.2.13, Companion Agent 0.2.14 und Pi 0.11.0. Phase 1: Datenerfassung, Fahrterkennung, Offline-Puffer und Pi-Datenbank. Statistikseite mit Diagrammen, erweiterte UDS-Werte und KI-Abfragen folgen in den nächsten Phasen.
+Ab Vehicle Data 0.2.13, Companion Agent 0.2.14 und Pi 0.11.0 (Phase 1: Erfassung, Fahrterkennung, Puffer, Datenbank). Phase 2 mit Vehicle Data 0.2.14 und Pi 0.12.0 bringt die Statistikseite mit Diagrammen, Minutenaggregate und die Korrektur der Abdeckung im Stillstand. Erweiterte UDS-Werte und KI-Abfragen folgen.
 
 ```
 SOME/IP-Notifier ─► Vehicle Data (MGU)                 ─► Companion Agent (MGU) ─► Pi
@@ -46,7 +46,7 @@ python3 tools/check_manifest_catalog.py vehicle_data --catalog /privat/someip-in
 
 ## Aggregation auf der MGU
 
-Felder kommen bei Änderung. Ein Wert gilt bis zur nächsten Meldung, längstens 30 s bei schnellen Signalen und 15 bis 30 min bei Temperaturen. Meldet ein Provider „nicht verfügbar“, endet der Wert sofort. Pro Signal und Intervall entsteht eine Zeile:
+Felder kommen bei Änderung. Ein Wert gilt bis zur nächsten Meldung: während einer Fahrt oder bei Fahrbereitschaft bis zu 10 min bei schnellen Signalen (ein langer Ampelhalt ohne neue Meldung bleibt abgedeckt) und 15 bis 30 min bei Temperaturen, außerhalb einer Fahrt höchstens 30 s. Meldet ein Provider „nicht verfügbar“, endet der Wert sofort. Bis Vehicle Data 0.2.13 galt auch während der Fahrt nur 30 s; der Pi führt deshalb bei Geschwindigkeit, Drehzahl und den anderen schnellen Signalen Lücken bis 10 min innerhalb einer Fahrt mit dem letzten Wert fort und weist die fortgeführte Zeit aus (`filledMs`). Pro Signal und Intervall entsteht eine Zeile:
 
 ```
 [signal, Bucket-Start ms UTC, abgedeckte ms, zeitgewichtetes Mittel, Min, Max, letzter Wert, Anzahl Meldungen]
@@ -75,17 +75,18 @@ Getrennt von `state.json`, der Fehlertext- und der Servicecode-Datenbank. Zugrif
 
 | Tabelle | Inhalt |
 |---|---|
-| `meta` | Schemaversion (1). Eine Datenbank aus einer neueren Version wird nicht angefasst. |
+| `meta` | Schemaversion (2). Eine Datenbank aus einer neueren Version wird nicht angefasst. Version 1 wird beim ersten Zugriff migriert. |
 | `vehicles` | Fahrzeugschlüssel (Hash der MGU-Adresse, wie bei der Wartung) |
 | `signals` | Katalog mit Prüfstatus |
 | `packets` | Empfangene Paket-IDs zur Deduplizierung, mit verworfenen Zeilen und Uhr-Plausibilität |
 | `samples` | Fahrzeug, Signal, ts (ms UTC, Messzeit), Dauer, Mittel, Min, Max, letzter Wert, Anzahl, Quelle, Paket. Indizes `(vehicle, signal, ts)` und `(vehicle, ts)` |
+| `samples_minute` | Minutenwerte je Signal (abgedeckte ms, gewichtete Summe, Min, Max, Anzahl), beim Ingest fortgeschrieben, standardmäßig 24 Monate aufbewahrt. Diagramme älterer Fahrten nutzen sie, wenn die Rohdaten gelöscht sind. |
 | `trips` | Start und Ende, km, Gründe, Status, Name, Kategorie, Zusammenfassung (JSON), `partial` bei rekonstruiertem Anfang |
 | `events` | Fahrtereignisse je Paket |
 
 Der Pi verwirft Zeilen mit unbekanntem Signal, nicht endlichen Zahlen, Min > Mittel, Mittel > Max, Werten außerhalb des Katalogbereichs, Zeitstempeln vor 2025 oder mehr als 10 min in der Zukunft, sowie Zeilen aus Paketen ohne plausible MGU-Uhr.
 
-Die Aufbewahrung ist einstellbar: Rohdaten standardmäßig 30 Tage (7 bis 365). Das Speicherlimit liegt standardmäßig bei 500 MB. Ist es überschritten, werden die ältesten Messwerte in 10-%-Schritten gelöscht. Fahrten und ihre Zusammenfassungen bleiben erhalten. Die Wartung läuft einmal täglich. Minuten-, Stunden- und Tagesaggregate kommen mit Phase 2.
+Die Aufbewahrung ist einstellbar: Rohdaten standardmäßig 30 Tage (7 bis 365). Das Speicherlimit liegt standardmäßig bei 500 MB. Ist es überschritten, werden die ältesten Messwerte in 10-%-Schritten gelöscht. Fahrten und ihre Zusammenfassungen bleiben erhalten. Die Wartung läuft einmal täglich. Tages-, Wochen- und Monatswerte der Statistikseite entstehen aus den Fahrtzusammenfassungen; gruppiert wird im Browser nach Ortszeit, damit Tagesgrenzen und Zeitumstellung stimmen.
 
 ## Fahrtzusammenfassung
 
@@ -94,6 +95,7 @@ Die Aufbewahrung ist einstellbar: Rohdaten standardmäßig 30 Tage (7 bis 365). 
 - **Geschwindigkeiten:** Ø in Bewegung ist die Strecke durch die Bewegungszeit, Ø gesamt die Strecke durch die Gesamtdauer. Die Höchstgeschwindigkeit ist das Max der bereits plausibilisierten Buckets.
 - **Temperaturen:** „Start“ ist das zeitgewichtete Mittel des ersten 10-s-Buckets. Dazu kommen Min, Max und Mittel sowie Zeit und Strecke bis zur Schwelle (Öl und Kühlmittel je 80 °C, einstellbar).
 - **Verbrauch:** Nicht verfügbar, solange der Tankfüllstand nicht in Litern bestätigt ist.
+- **Geschwindigkeitsbereiche:** Bewegungszeit in 0–30, 30–60, 60–100, 100–130 und über 130 km/h (`speedBandsMs`).
 - **Datenqualität:** Abdeckung je Signal. `good` heißt Geschwindigkeit ≥ 90 % und Drehzahl ≥ 80 %. `partial` heißt Geschwindigkeit ≥ 50 %. Alles darunter ist `poor`.
 
 ## API (Pi, angemeldet)
@@ -105,9 +107,17 @@ Die Aufbewahrung ist einstellbar: Rohdaten standardmäßig 30 Tage (7 bis 365). 
 | `POST /api/v1/telemetry/pull` | Sofort abfragen |
 | `GET /api/v1/telemetry/trips?limit&before` | Fahrtenliste |
 | `GET` / `POST` / `DELETE /api/v1/telemetry/trips/<id>` | Details, Name und Kategorie, Löschen nur mit `?confirm=1` |
-| `GET /api/v1/telemetry/series?signal&from&to&max` | Zeitreihe; bei Ausdünnung bleiben Min und Max erhalten |
+| `GET /api/v1/telemetry/series?signals=a,b&from&to&max&fill` | Zeitreihen (bis 6 numerische Signale); Minutenwerte, wo keine Rohdaten mehr vorliegen; bei Ausdünnung bleiben Min und Max erhalten |
+| `GET /api/v1/telemetry/trips/<id>/series?signals=coolant,oil` | Zeitreihen einer Fahrt |
+| `GET /api/v1/telemetry/overview?from&to` | Fahrten eines Zeitraums mit Kennzahlen für die Statistikseite |
 | `POST /api/v1/telemetry/reset` | Nur mit `{"confirm":"STATISTIK LÖSCHEN"}`. Wartung und Fehlerspeicher bleiben. |
 
 ## Datenschutz
 
 Es gibt kein GPS. Die Messwerte bleiben auf dem Pi. In `state.json` stehen nur Einstellungen und Pufferstatus, keine Fahrtzeiten und keine Messwerte. Der GitHub-Diagnoseexport arbeitet mit einer festen Feldliste und enthält keine Telemetrie.
+
+## Statistikseite (Pi 0.12.0)
+
+Aufbau nach den Entwürfen des Eigentümers: Zeitfilter Heute, 7 Tage, 30 Tage, Gesamt; Kacheln Fahrstrecke, Ø Verbrauch, Fahrzeit, Höchstgeschwindigkeit; „Zurückgelegte Strecke“ als Balken (heute je Fahrt, 7 Tage je Tag, 30 Tage je Kalenderwoche, gesamt je Monat); „Kraftstoffverbrauch“ als Liniendiagramm; „Warmlaufverlauf“ der letzten Fahrt mit Kühlmittel, Motoröl und Getriebeöl und den Maximalwerten darunter; „Zeit nach Geschwindigkeit“. In den Fahrtdetails zusätzlich Warmlauf, Geschwindigkeit und Drehzahl, jeweils mit eigener Achse.
+
+Die Diagramme sind eigenes SVG ohne externe Bibliothek: glatte, nicht überschwingende Kurven, gestrichelte Hilfslinien, Lücken bleiben Lücken, Finger oder Maus zeigen den Wert an jeder Stelle (Legende, Punkte, Zeitlabel oben). Verbrauch und Getriebeöl zeigen „–“, bis es echte Werte gibt: der Tankfüllstand ist noch nicht in Litern bestätigt, die Getriebeöltemperatur kommt per UDS in Phase 3.

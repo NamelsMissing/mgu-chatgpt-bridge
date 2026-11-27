@@ -15,7 +15,7 @@ const githubDiagnostics=require('./github-diagnostics');
 const serviceReference=require('./service-reference');
 const telemetry=require('./telemetry');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.11.0'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.12.0'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -1445,7 +1445,9 @@ async function pullTelemetryOnce(status){
 async function telemetryView(){
   const stats=await telemetryDb.stats(telemetryVehicle());
   const rec=M.poll.recorder||null;
-  return {settings:st.telemetry.settings,limits:telemetry.LIMITS,categories:telemetry.CATEGORIES,
+  const profile=st.vehicle?.maintenance?.profile;
+  const vehicleLabel=st.telemetry.settings.vehicleName||(profile==='g21-diesel'||profile==='legacy-plan'?'BMW 3er Touring (G21) Diesel':'BMW');
+  return {settings:st.telemetry.settings,limits:telemetry.LIMITS,categories:telemetry.CATEGORIES,vehicleLabel,
     status:{...TS,lastMaintainAt:TS.lastMaintainAt?new Date(TS.lastMaintainAt).toISOString():null},
     mgu:rec,database:{bytes:telemetryDb.size(),...stats}};
 }
@@ -2178,11 +2180,25 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     const r=await telemetryDb.remove(telemetryVehicle(),tm[1]);audit('telemetry_trip_deleted',tm[1]);
     return r.deleted?send(res,200,r):fail(res,404,'Unbekannte Fahrt');
   }
-  if(p==='/api/v1/telemetry/series'&&req.method==='GET'){
-    const signal=q.get('signal')||'',from=Number(q.get('from')),to=Number(q.get('to'));
-    if(!telemetry.CATALOG.signals.some(x=>x.id===signal))return fail(res,400,'Unbekannter Messwert');
+  const tsm=p.match(/^\/api\/v1\/telemetry\/trips\/(t[0-9a-z]{1,12}-[0-9a-f]{6})\/series$/);
+  if((p==='/api/v1/telemetry/series'||tsm)&&req.method==='GET'){
+    const signals=String(q.get('signals')||q.get('signal')||'').split(',').filter(Boolean);
+    if(!signals.length||signals.length>6||!signals.every(id=>telemetry.CATALOG.signals.some(x=>x.id===id&&x.kind==='numeric')))return fail(res,400,'Unbekannter Messwert');
+    const max=Math.min(5000,Math.max(10,Number(q.get('max'))||1500));
+    let from=Number(q.get('from')),to=Number(q.get('to')),trip=null;
+    if(tsm){
+      trip=(await telemetryDb.trip(telemetryVehicle(),tsm[1],st.telemetry.settings)).trip;
+      if(!trip)return fail(res,404,'Unbekannte Fahrt');
+      from=trip.start_ts;to=trip.end_ts||Date.now();
+    }
     if(!Number.isFinite(from)||!Number.isFinite(to)||to<from||to-from>366*86400000)return fail(res,400,'Ungültiger Zeitraum');
-    return send(res,200,await telemetryDb.series(telemetryVehicle(),signal,from,to,Math.min(5000,Math.max(10,Number(q.get('max'))||2000))));
+    const r=await telemetryDb.series(telemetryVehicle(),signals,from,to,max,q.get('fill')!=='0');
+    return send(res,200,{...r,trip:trip?{id:trip.id,start:trip.start_ts,end:trip.end_ts,status:trip.status}:null});
+  }
+  if(p==='/api/v1/telemetry/overview'&&req.method==='GET'){
+    const from=Number(q.get('from')),to=Number(q.get('to'));
+    if(!Number.isFinite(from)||!Number.isFinite(to)||to<from||to-from>20*366*86400000)return fail(res,400,'Ungültiger Zeitraum');
+    return send(res,200,await telemetryDb.overview(telemetryVehicle(),st.telemetry.settings,from,to));
   }
   if(p==='/api/v1/telemetry/reset'&&req.method==='POST'){
     const d=await body(req,512);

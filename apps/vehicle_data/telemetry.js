@@ -10,8 +10,10 @@
  *   time-weighted mean, min, max, last, sample count) -> packet file in data/telemetry/
  *   -> companion agent -> Pi (acknowledges each packet id, then the agent deletes it).
  *
- * Fields are notified on change, so a value holds until the next notification, but only
- * for holdMs and only while the provider is available. Gaps stay gaps.
+ * Fields are notified on change, so a value holds until the next notification while the
+ * provider is available: during a trip (or with the car ready) for up to holdMs (10 min for
+ * speed and engine values, so a long stop at a light stays covered), otherwise for 30 s.
+ * Gaps stay gaps.
  */
 var fs = require('fs');
 var path = require('path');
@@ -71,20 +73,23 @@ function decode(def, raw) {
  * Time-weighted buckets aligned to the signal's interval. The held value counts until the
  * next sample, until holdMs has passed, or until the signal is marked unavailable.
  */
+var SHORT_HOLD_MS = 30000;
 function Aggregator(def, holdMs) {
     this.def = def;
     this.interval = def.intervalMs;
     this.holdMs = holdMs;
+    this.long = true;           // false outside trips: hold at most SHORT_HOLD_MS
     this.last = null;           // {v, t}: value that currently holds
     this.bucket = null;
 }
 Aggregator.prototype._open = function (start) {
     this.bucket = { start: start, integral: 0, covered: 0, min: null, max: null, n: 0 };
 };
+Aggregator.prototype.hold = function () { return this.long ? this.holdMs : Math.min(this.holdMs, SHORT_HOLD_MS); };
 Aggregator.prototype._integrate = function (to) {
     var b = this.bucket, l = this.last;
     if (!b || !l) return;
-    var from = Math.max(b.start, l.t), until = Math.min(to, l.t + this.holdMs, b.start + this.interval);
+    var from = Math.max(b.start, l.t), until = Math.min(to, l.t + this.hold(), b.start + this.interval);
     if (until <= from) return;
     b.integral += l.v * (until - from);
     b.covered += until - from;
@@ -105,7 +110,7 @@ Aggregator.prototype.roll = function (t, out) {
         var next = this.bucket.start + this.interval;
         this._integrate(next);
         this._close(out);
-        if (this.last && this.last.t + this.holdMs > next) this._open(next);
+        if (this.last && this.last.t + this.hold() > next) this._open(next);
     }
 };
 Aggregator.prototype.add = function (v, t, out) {
@@ -295,7 +300,7 @@ PacketStore.prototype.status = function () {
 };
 
 function holdFor(def) {
-    if (def.intervalMs <= 2000) return 30000;
+    if (def.intervalMs <= 2000) return 10 * 60000;
     if (def.intervalMs <= 10000) return 15 * 60000;
     return 30 * 60000;
 }
@@ -392,7 +397,9 @@ TelemetryRecorder.prototype._sample = function (def, d, t) {
     } else if (def.id === 'rpm') this.trips.rpmSample(d.value, t);
     else if (def.id === 'odometer') this.trips.odometerSample(d.value, t);
     this._count(def, d);
-    this.aggregators[def.id].add(d.value, t, this.rows);
+    var agg = this.aggregators[def.id];
+    agg.long = !!this.trips.trip || this.trips.readySince !== null;
+    agg.add(d.value, t, this.rows);
 };
 TelemetryRecorder.prototype._count = function (def, d) {
     var s = this.seen[def.id];
@@ -428,7 +435,8 @@ TelemetryRecorder.prototype.tick = function () {
         }
     }
     if (!this.config.enabled) return;
-    Object.keys(this.aggregators).forEach(function (id) { self.aggregators[id].roll(t, self.rows); });
+    var active = !!this.trips.trip || this.trips.readySince !== null;
+    Object.keys(this.aggregators).forEach(function (id) { self.aggregators[id].long = active; self.aggregators[id].roll(t, self.rows); });
     var tripBefore = this.trips.trip && this.trips.trip.id;
     this.trips.tick(t);
     var tripNow = this.trips.trip && this.trips.trip.id;
