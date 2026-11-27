@@ -24,6 +24,8 @@ from validate_someip_manifest import (
 )
 
 AUTOSTART_APPS = ("vehicle_data",)
+CHECK_CONTROL_INTERFACE = "de.bmw.infotainment.KombiInterface_2"
+CHECK_CONTROL_GETTERS = ("ccList", "ccListRiskClass")
 START_TYPES = ("autostart", "manually")
 # Canonical JSON SHA-256 of the packaged manifest from the installed v0.2.1.
 VEHICLE_BASE_MANIFEST_SHA256 = "fef209704187d45e15c09ad4171be402948ed44670e3e515fd16803c72ab01b9"
@@ -62,7 +64,7 @@ def _verify(archive, member, app_id, start_type):
         raise BuildError(str(archive) + " lacks the requested start type")
 
 
-def patch_start_type(root, app_id, start_type, manifest=None):
+def patch_start_type(root, app_id, start_type, manifest=None, suffix=""):
     if app_id not in AUTOSTART_APPS or start_type not in START_TYPES:
         raise BuildError("Unsupported start type for " + app_id + ": " + str(start_type))
     version = read_json(root / "apps" / app_id / "app.json")["version"]
@@ -71,7 +73,8 @@ def patch_start_type(root, app_id, start_type, manifest=None):
     package = read_json(package_path)
     if package.get("name") != app_id or package.get("version") != version:
         raise BuildError("Staged app/version mismatch; rebuild with your SDK")
-    npm, mgu = dist / (app_id + "@" + version + ".tgz"), dist / (app_id + "@" + version + ".mgu")
+    name = app_id + "@" + version + suffix
+    npm, mgu = dist / (name + ".tgz"), dist / (name + ".mgu")
     if not (stage / "meta.json").is_file():
         raise BuildError("Expected staged meta.json is missing")
     package["mguAppStartType"] = start_type
@@ -105,11 +108,13 @@ def vehicle_manifest(root, args):
         print("SOME/IP: Pflichtmanifest identisch zu 0.2.1; Zielkatalog nicht geprüft.")
         return base
     validate(base, args.catalog, args.app_management, args.uid)
-    if not args.with_supported_getters:
+    check_control_getter = args.check_control_getter
+    if not args.with_supported_getters and not check_control_getter:
         print("SOME/IP: Pflichtmanifest gegen den angegebenen Zielkatalog geprüft.")
         return base
     current = base
-    for interface, fields in VEHICLE_GETTERS.items():
+    requested = {CHECK_CONTROL_INTERFACE: (check_control_getter,)} if check_control_getter else VEHICLE_GETTERS
+    for interface, fields in requested.items():
         for field in fields:
             candidate = copy.deepcopy(current)
             entry = candidate["proxies"].setdefault(interface, {"instances": "1"})
@@ -117,6 +122,8 @@ def vehicle_manifest(root, args):
             try:
                 validate(candidate, args.catalog, args.app_management, args.uid)
             except Incompatible:
+                if check_control_getter:
+                    raise
                 print("SOME/IP: optionaler Getter nicht freigegeben: " + interface + "." + field)
                 continue
             current = candidate
@@ -134,8 +141,12 @@ def main(argv=None):
     parser.add_argument("--uid", type=int)
     parser.add_argument("--with-supported-getters", action="store_true",
                         help="Zusatz-Getter in ein lokales, kataloggebundenes Vehicle-Data-Paket aufnehmen")
+    parser.add_argument("--check-control-getter", choices=CHECK_CONTROL_GETTERS,
+                        help="Nur diesen Check-Control-Getter prüfen und bei Freigabe ins lokale Paket aufnehmen")
     args = parser.parse_args(argv)
-    if args.catalog or args.app_management or args.uid is not None or args.with_supported_getters:
+    if args.check_control_getter and args.with_supported_getters:
+        parser.error("--check-control-getter und --with-supported-getters schließen sich aus")
+    if args.catalog or args.app_management or args.uid is not None or args.with_supported_getters or args.check_control_getter:
         if args.app_id != "vehicle_data" or not all((args.catalog, args.app_management, args.uid)):
             parser.error("Zielkatalog-Prüfung benötigt vehicle_data, --catalog, --app-management und --uid")
     app_id, root = args.app_id, Path(__file__).resolve().parents[1]
@@ -150,7 +161,8 @@ def main(argv=None):
         manifest = vehicle_manifest(root, args) if app_id == "vehicle_data" else None
         if app_id in AUTOSTART_APPS:
             start_type = read_json(root / "apps" / app_id / "app.json").get("mguAppStartType")
-            npm, mgu = patch_start_type(root, app_id, start_type, manifest)
+            suffix = "-" + args.check_control_getter if args.check_control_getter else ""
+            npm, mgu = patch_start_type(root, app_id, start_type, manifest, suffix)
             print("Verified " + app_id + " " + start_type + " in " + str(npm) + " and " + str(mgu))
     except Unverified as exc:
         print("NICHT VERIFIZIERT: " + str(exc), file=sys.stderr)

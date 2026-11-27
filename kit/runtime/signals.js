@@ -130,8 +130,11 @@ async function watch(iface, instance, handlers, log, opts) {
             try {
                 await nativeTick(() => p.subscribe({ name: f, onReceive: (v) => {
                     if (stopped) return;
-                    generations[f] = (generations[f] || 0) + 1;
-                    try { handlers[f](v, 'event'); } catch (e) { report(f, 'decode', e); }
+                    // A consumer may explicitly report that the notification did not change state.
+                    // In that case a concurrent getter response is still needed.
+                    let applied;
+                    try { applied = handlers[f](v, 'event'); } catch (e) { report(f, 'decode', e); }
+                    if (applied !== false) generations[f] = (generations[f] || 0) + 1;
                 } }));
                 trace(f,'subscription','ok');
             } catch (e) { trace(f,'subscription','failed'); report(f, 'subscribe', e); }

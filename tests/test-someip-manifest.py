@@ -105,11 +105,24 @@ class ManifestTest(unittest.TestCase):
                     del value["instance"]
             catalog.write_text(json.dumps(data).replace("${userId}", "123"))
             actual = vehicle_manifest(folder, SimpleNamespace(catalog=catalog,app_management=firmware,
-                                                               uid=123,with_supported_getters=True))
+                                                               uid=123,with_supported_getters=True,check_control_getter=None))
             self.assertEqual(actual["proxies"][kombi]["attributes"],
                              {**base["proxies"][kombi]["attributes"], "ccList": "r"})
             self.assertNotIn("de.bmw.infrastructure.VehicleInformation", actual["proxies"])
             self.assertEqual(json.loads(target.read_text()), actual)
+            # Explicit Check-Control builds request only the selected getter, even when other getters pass.
+            data[kombi]["fields"]["cbsDataServiceList"] = {"getter": {"id": 3}}
+            catalog.write_text(json.dumps(data).replace("${userId}", "123"))
+            args = SimpleNamespace(catalog=catalog, app_management=firmware, uid=123,
+                                   with_supported_getters=False, check_control_getter="ccList")
+            target.write_text(json.dumps(base))
+            self.assertEqual(vehicle_manifest(folder,args), actual)
+            target.write_text(json.dumps(base))
+            args.check_control_getter = "ccListRiskClass"
+            with self.assertRaises(Incompatible):
+                vehicle_manifest(folder,args)
+            self.assertEqual(json.loads(target.read_text()),base)
+
 
 
 if __name__ == "__main__":

@@ -241,6 +241,29 @@ const ReadOnlyDiag = new Function('Diag', roSrc + '; return ReadOnlyDiag;')(Diag
     assert.equal(failedCalls,5,'a new provider connection retries the getter');
     await capped.shutdown();
 
+    // A concurrent empty Check-Control event cannot hide a valid getter.
+    const received=[];
+    let emit,resolveGetter;
+    cfg={fields:{basicList:{getter:{id:1},event:{id:32769}}}};
+    proxy.getValue=()=>new Promise(resolve=>{resolveGetter=resolve;});
+    proxy.subscribe=({onReceive})=>{emit=onReceive;};
+    const ccWatch=await mod.exports.watch('de.bmw.infotainment.checkcontrol.CheckControlMaster','1',
+      {basicList:(value,origin)=>{received.push(origin);return value.length>0;}},null,
+      {initialRead:true,strictGetters:true,maxGetterFailures:3});
+    await new Promise(resolve=>setImmediate(resolve));
+    emit([]);
+    resolveGetter([{ccmId:10,activeState:0}]);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepStrictEqual(received,['event','get']);
+    available(true);
+    await new Promise(resolve=>setImmediate(resolve));
+    emit([{ccmId:10,activeState:1}]);
+    resolveGetter([{ccmId:10,activeState:0}]);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepStrictEqual(received,['event','get','event'],'a real update still supersedes an in-flight getter');
+    await ccWatch.shutdown();
+
+
     const sent = [];
     const d = new ReadOnlyDiag({ call: async (p, m, args) => { sent.push(args.serviceID); return 'NO_ERROR'; } }, { info() {}, warn() {} });
     d.p = {}; d.quiet = true;

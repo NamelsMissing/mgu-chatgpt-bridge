@@ -2,7 +2,7 @@
   "id": "vehicle_data",
   "title": "Vehicle Data",
   "description": "Mileage, service due messages, the car's service history, check-control messages, tyre pressures, fault memory and DPF values, read-only. Shares them with your private BMW AI server.",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "vendor": "custom",
   "loggingId": "OVD1",
   "iconGlyph": "service",

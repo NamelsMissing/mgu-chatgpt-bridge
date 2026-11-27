@@ -119,3 +119,6 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 **0.10.13:** Der Pi wertet numerische ServiceHistory-Einträge mit dokumentierten Klartexten aus. Die mitgelieferte Referenz bleibt auch ohne SQLite-Import nutzbar. [Quellen und Regressionstests](docs/PRUEFBERICHT-SERVICEHISTORY-0.10.13.md).
 
 **0.10.14:** Check-Control verarbeitet vollständige `basicList`-Antworten und Einzelereignisse, zeigt verfügbare BMW-Texte und Warnfarben und erhält den Verlauf bei Verbindungsunterbrechungen. Dazu Vehicle Data 0.2.10 und Companion Agent 0.2.13 im MGU Store aktualisieren. [Prüfbericht und Fahrzeugabnahme](docs/PRUEFBERICHT-CHECK-CONTROL-0.10.14.md).
+
+
+**Vehicle Data 0.2.11:** Ein leeres oder unbrauchbares Check-Control-Event verwirft keine parallel eingehende Getter-Antwort mehr. Der private Fahrzeugdiagnoseexport enthält jetzt unter `poll.stages` den klassifizierten Getter-Fehler. [Zielgerätbezogene Prüfung für `ccList`](docs/PRUEFBERICHT-CHECK-CONTROL-0.10.14.md#fahrzeugnachtest-vom-27112026).

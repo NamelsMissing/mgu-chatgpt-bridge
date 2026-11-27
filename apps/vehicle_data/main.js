@@ -80,6 +80,16 @@ mgu.run({
             snap.receivedValue(name,raw,validCount);
             flush();
         };
+        const ccGetters = ['CheckControlMaster.basicList','KombiInterface_2.ccList','KombiInterface_2.ccListRiskClass'];
+        const ccTransportFailure = (error) => {
+            const detail = String(error && (error.message || error));
+            if (/getter deadline exceeded/i.test(detail)) return 'local_watchdog';
+            if (/time.?out|timed out/i.test(detail)) return 'proxy_timeout';
+            if (/has no getter/i.test(detail)) return 'no_generated_getter';
+            if (/not available|unavailable/i.test(detail)) return 'provider_unavailable';
+            if (/access.denied|permission|not authorized/i.test(detail)) return 'access_denied';
+            return 'proxy_rejected';
+        };
         // Reads are restricted to fields already declared with r in the manifest.
         const watch = (iface, handlers, opts, attempt) => {
             const name = iface.split('.').pop();
@@ -109,9 +119,19 @@ mgu.run({
             }
             const configured = Object.assign({initialRead:true,strictGetters:true,maxGetterFailures:3},opts,{readFields:reads,readOnlyFields:getterOnly});
             return signals.watch(iface, '1', enabledHandlers, log, Object.assign(configured, {
-                onTrace: (field,stage,value) => { snap.stage(field==='*'?name:name+'.'+field,stage,value);flush(); },
+                onTrace: (field,stage,value) => {
+                    const key = field==='*'?name:name+'.'+field;
+                    if (stage==='getter' && value==='ok' && ccGetters.includes(key)) snap.stage(key,'getterFailure',null);
+                    snap.stage(key,stage,value);
+                    flush();
+                },
                 onAvailability: (ok) => { snap.stage(name,'provider',ok);snap.available(name,ok);flush(); },
-                onError: (field, stage) => { snap.available(name, snap.state.signals[name] && snap.state.signals[name].available, stage+' '+field);flush(); },
+                onError: (field, stage, error) => {
+                    const key = name+'.'+field;
+                    if (stage==='get' && ccGetters.includes(key)) snap.stage(key,'getterFailure',ccTransportFailure(error));
+                    snap.available(name, snap.state.signals[name] && snap.state.signals[name].available, stage+' '+field);
+                    flush();
+                },
             })).then(async (sub) => {
                 if (iface===KOMBI && !sub.error) kombi=sub.proxy;
                 snap.stage(name,'proxy',sub.error?'failed':'ready');
@@ -181,6 +201,7 @@ mgu.run({
             sample(source,v,result.rejected ? null : result.valid);
             const active = result.rows.filter(row=>row.active).sort((a,b)=>(textAttempts.get(a.id)||0)-(textAttempts.get(b.id)||0));
             for (const row of active) ccText(row.id);
+            return result.rows.length > 0;
         };
         watch(CHECK_CONTROL, { basicList: (v,origin) => ccRows('CheckControlMaster.basicList',v,origin) },
             {readFields:['basicList'],pollMs:60000,retryAfterMs:5*60000});

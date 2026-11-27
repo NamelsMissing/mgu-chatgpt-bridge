@@ -52,3 +52,20 @@ Pi 0.10.14 über Stable aktualisieren und im MGU Store Vehicle Data 0.2.10 und C
 Bei eingeschaltetem Fahrzeug die aktiven Meldungen in **Fehler** mit den tatsächlich angezeigten iDrive-Meldungen vergleichen. Eine Meldung unter normalen Betriebsbedingungen erlöschen lassen und prüfen, ob sie in den Verlauf wechselt. Anschließend nach MGU-Neustart und bei getrennter Verbindung den Status prüfen. Bei einer Abweichung den Export unter **Fahrzeug → Technische Fahrzeugdaten-Diagnose** privat sichern. Relevant sind der `basicList:getter`-Eintrag, die zuletzt empfangenen Events, die Provider-/Kombinationsfähigkeiten und die Antwort von `requestCCMessage`.
 
 Eine echte Installation auf der Ziel-MGU, ein SOME/IP-Livemitschnitt und der direkte iDrive-Vergleich lagen für diese Prüfung nicht vor.
+
+
+## Fahrzeugnachtest vom 27.11.2026
+
+iDrive zeigte „AdBlue Reserve.“ Der BMW AI Assistant zeigte einen fehlgeschlagenen `basicList`-Getter und fehlende Manifestfreigaben für die beiden KOMBI-Getter. Der Kilometerstand und ein Fehlerspeicherscan funktionierten. Aus den Fotos geht weder der genaue Rückgabefehler des SOME/IP-Proxys noch die OAP-Freigabe für `ccList` hervor.
+
+Vehicle Data 0.2.11 unterscheidet im Export `poll.stages["CheckControlMaster.basicList"].getterFailure` zwischen Proxy-Zeitüberschreitung, lokalem Zeitlimit, nicht erreichbarem Provider, verweigertem Zugriff, fehlendem generierten Getter und einem sonstigen Proxy-Fehler. Die Klassifizierung basiert auf der Rückmeldung des Proxys. Die App kann eine Getter-Antwort weiter auswerten, auch wenn während des Abrufs ein leeres oder vollständig verworfenes Event eingetroffen ist. Ein tatsächlich angewendetes Statusereignis hat weiter Vorrang. Der Pi und der Companion Agent können auf 0.10.14 und 0.2.13 bleiben.
+
+Die lokal vorliegende BMW-App `x_call` fordert `KombiInterface_2.ccList` lesend auf Instanz 1 an. Der kombinierte generierte Berechtigungsstand und ein Fahrzeugantwort-Mitschnitt fehlen weiterhin. Der normale Store-Bau behält das bestehende Pflichtmanifest. Für einen Test mit den Referenzen der Ziel-MGU prüft der Paketbau genau den ausgewählten zusätzlichen Getter und das Gesamtmanifest:
+
+```sh
+python3 tools/build_store_app.py vehicle_data \
+  --catalog "$TARGET_CATALOG" --app-management "$TARGET_APP_MANAGEMENT" \
+  --uid "$VEHICLE_DATA_UID" --check-control-getter ccList
+```
+
+`VEHICLE_DATA_UID` ist die numerische OAP-ID der Zielinstallation. Das lokale Paket erhält den Dateisuffix `-ccList`. Bei einer Generator-Ablehnung oder fehlenden Firmware-Datei bricht der Bau vor dem Verpacken der zielgebundenen Variante ab. Die Tests prüfen mit einem Generator-Testdoppel, dass eine Freigabe nur den gewählten Getter ergänzt und eine Ablehnung kein geändertes Manifest erzeugt. Um die tatsächliche Freigabe zu prüfen, genügt zunächst der private Diagnoseexport bei erreichbarer Ziel-MGU. Relevant sind `capabilities.rows` für `ccList` und `ccListRiskClass` sowie die Check-Control-Empfangsbelege.
