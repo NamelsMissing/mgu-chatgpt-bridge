@@ -84,7 +84,7 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
-  assert.equal(diag.poll.versions.agent,'0.2.13');
+  assert.equal(diag.poll.versions.agent,'0.2.14');
   assert.equal(diag.checkControl.active[0].color,'YELLOW');
   assert.equal(diag.checkControl.receipts['CheckControlMaster.basicList'].authoritative,true);
   assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');

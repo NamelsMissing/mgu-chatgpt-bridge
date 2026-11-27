@@ -37,6 +37,7 @@
   <button data-tab="chat" class="active">Chat</button>
   <button data-tab="jobs">Freigaben <span id="jobBadge" class="badge" hidden>0</span></button>
   <button data-tab="vehicle">Fahrzeug</button>
+  <button data-tab="stats">Statistiken</button>
   <button data-tab="faults">Fehler <span id="faultBadge" class="badge" hidden>0</span></button>
   <button data-tab="diag">Diagnose</button>
   <button data-tab="console">Konsole</button>
@@ -237,6 +238,65 @@
 </section>
 
 <!-- ===== Fehler ===== -->
+<section id="stats" class="tab" hidden>
+  <div class="section-head">
+    <h2>Statistiken</h2>
+    <button id="refreshStats" class="secondary">Aktualisieren</button>
+  </div>
+  <div class="panel">
+    <div class="section-head">
+      <h3>Fahrtenbuch</h3>
+      <span id="statsRecording" class="pill pill-off">–</span>
+    </div>
+    <p class="hint" id="statsStatus">Noch nicht geladen.</p>
+    <div id="statsTotals" class="stat-grid"></div>
+    <div id="statsTrips"></div>
+    <button type="button" id="statsMore" class="textbutton" hidden>Ältere Fahrten</button>
+  </div>
+  <div id="statsTrip" class="panel" hidden>
+    <div class="section-head">
+      <h3 id="statsTripTitle">Fahrt</h3>
+      <button type="button" id="statsTripClose" class="secondary">Schließen</button>
+    </div>
+    <p class="hint" id="statsTripInfo"></p>
+    <div id="statsTripValues" class="stat-grid"></div>
+    <p class="hint" id="statsTripQuality"></p>
+    <div class="toolbar">
+      <input type="text" id="statsTripName" maxlength="80" placeholder="Name der Fahrt" autocomplete="off">
+      <select id="statsTripCategory" aria-label="Kategorie"><option value="">Keine Kategorie</option></select>
+      <button id="statsTripSave">Speichern</button>
+    </div>
+    <button type="button" id="statsTripDelete" class="danger">Fahrt löschen</button>
+  </div>
+  <details class="panel">
+    <summary>Einstellungen und Speicher</summary>
+    <p class="hint">Die Messwerte bleiben auf diesem Pi. Sie gehen weder an GitHub noch an einen Cloud-Dienst. Standort und GPS werden nicht aufgezeichnet.</p>
+    <label class="check"><input type="checkbox" id="statsEnabled"> Fahrten automatisch aufzeichnen</label>
+    <div class="form-grid">
+      <label>Stillstand bis Fahrtende (Minuten)<input type="number" id="statsIdleEnd" inputmode="numeric"></label>
+      <label>Puffer auf der MGU (MB)<input type="number" id="statsBuffer" inputmode="numeric"></label>
+      <label>Rohdaten aufbewahren (Tage)<input type="number" id="statsRawDays" inputmode="numeric"></label>
+      <label>Speicherlimit Datenbank (MB)<input type="number" id="statsLimit" inputmode="numeric"></label>
+      <label>Motoröl-Schwelle Warmlauf (°C)<input type="number" id="statsOilThreshold" inputmode="numeric"></label>
+      <label>Kühlmittel-Schwelle Warmlauf (°C)<input type="number" id="statsCoolantThreshold" inputmode="numeric"></label>
+    </div>
+    <div class="actions"><button id="statsSaveSettings">Einstellungen speichern</button></div>
+    <p class="hint" id="statsStorage"></p>
+    <details>
+      <summary>Messwerte und Prüfstatus</summary>
+      <div id="statsSignals"></div>
+    </details>
+    <details>
+      <summary>Statistikdaten zurücksetzen</summary>
+      <p class="hint">Löscht alle Fahrten und Messwerte dieses Fahrzeugs. Wartung, Servicehistorie und Fehlerspeicher bleiben unverändert.</p>
+      <div class="toolbar">
+        <input type="text" id="statsResetConfirm" placeholder="STATISTIK LÖSCHEN" autocomplete="off">
+        <button id="statsReset" class="danger">Zurücksetzen</button>
+      </div>
+    </details>
+  </details>
+</section>
+
 <section id="faults" class="tab" hidden>
   <div class="section-head">
     <h2>Fehler</h2>

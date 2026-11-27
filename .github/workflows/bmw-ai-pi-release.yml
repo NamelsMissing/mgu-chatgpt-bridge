@@ -81,6 +81,8 @@ jobs:
           node pi-source/tests/test-maintenance-migration.js
           node tests/vehicle-pipeline.js
           node tests/vehicle-diagnostics-scheduling.js
+          node pi-source/tests/test-telemetry-db.js
+          node tests/telemetry-pipeline.js
           python3 - <<'PY'
           import hashlib,json,os,pathlib,re,subprocess,tempfile,zipfile
           root=pathlib.Path('pi-source')
@@ -93,12 +95,15 @@ jobs:
             paths=[entry['path'] for entry in json.loads(baseline.read('manifest.json'))['files']]
           contents={x:(root/x).read_bytes() for x in paths}
           server=contents['server.js'].decode()
-          for variable, module in [('ssh','mgu-ssh'),('dtcImport','dtc-import'),('githubDiagnostics','github-diagnostics'),('serviceReference','service-reference')]:
+          for variable, module in [('ssh','mgu-ssh'),('dtcImport','dtc-import'),('githubDiagnostics','github-diagnostics'),('serviceReference','service-reference'),('telemetry','telemetry')]:
             source_import="const "+variable+"=require('./"+module+"');"
             assert server.count(source_import)==1, 'Could not locate module import: '+module
             local_source=(root/(module+'.js')).read_text()
             if module == 'service-reference':
               local_source=local_source.replace("require('./service-reference-seed.json')",(root/'service-reference-seed.json').read_text().strip(),1)
+            if module == 'telemetry':
+              assert local_source.count("require('./telemetry-catalog.json')")==1
+              local_source=local_source.replace("require('./telemetry-catalog.json')",(root/'telemetry-catalog.json').read_text().strip(),1)
             bundled="const "+variable+"=(()=>{\nconst module={exports:{}};\n"+local_source+"\nreturn module.exports;\n})();"
             server=server.replace(source_import,bundled,1)
           program="const referenceProgram=()=>fs.readFileSync(path.join(__dirname,'dtc-reference.py'),'utf8');"
@@ -114,6 +119,7 @@ jobs:
               target=d/name
               target.parent.mkdir(parents=True,exist_ok=True)
               target.write_bytes(raw)
+            assert b"require('./telemetry" not in contents['server.js'], 'telemetry module must be bundled'
             subprocess.run(['node','-e',
               "if(typeof require('./server').route!=='function')process.exit(1)"],
               cwd=d,env={**os.environ,'LOGIN_PASSWORD':'release-smoke-test-local-only',

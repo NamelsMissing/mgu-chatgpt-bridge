@@ -108,7 +108,7 @@ class ManifestTest(unittest.TestCase):
                                                                uid=123,with_supported_getters=True,check_control_getter=None))
             self.assertEqual(actual["proxies"][kombi]["attributes"],
                              {**base["proxies"][kombi]["attributes"], "ccList": "r"})
-            self.assertNotIn("de.bmw.infrastructure.VehicleInformation", actual["proxies"])
+            self.assertNotIn("Range", actual["proxies"]["de.bmw.infrastructure.VehicleInformation"]["attributes"])
             self.assertEqual(json.loads(target.read_text()), actual)
             # Explicit Check-Control builds request only the selected getter, even when other getters pass.
             data[kombi]["fields"]["cbsDataServiceList"] = {"getter": {"id": 3}}
@@ -123,6 +123,48 @@ class ManifestTest(unittest.TestCase):
                 vehicle_manifest(folder,args)
             self.assertEqual(json.loads(target.read_text()),base)
 
+
+
+class CatalogExcerptTest(unittest.TestCase):
+    """Static getter/notifier check against the committed G21 catalog excerpt."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import check_manifest_catalog
+        self.c = check_manifest_catalog
+        self.catalog = self.c.normalise(json.loads(self.c.EXCERPT.read_text(encoding="utf-8")))
+
+    def test_vehicle_data_manifest_matches_catalog(self):
+        self.assertEqual(self.c.check(self.c.manifest("vehicle_data"), self.catalog), [])
+
+    def test_store_refusal_of_022_is_reproduced(self):
+        manifest = self.c.manifest("vehicle_data")
+        manifest["proxies"]["de.bmw.infrastructure.VehicleInformation"]["attributes"]["Range"] = "r"
+        self.catalog["de.bmw.infrastructure.VehicleInformation"]["fields"]["Range"] = {"getter": False, "notifier": True}
+        self.assertEqual(self.c.check(manifest, self.catalog),
+                         ["de.bmw.infrastructure.VehicleInformation.Range: kein Getter im Katalog"])
+
+    def test_telemetry_requests_only_notifiers(self):
+        spec = json.loads((ROOT / "apps" / "vehicle_data" / "app.json").read_text())
+        base = {"de.bmw.infrastructure.SecureMileage", "de.bmw.infrastructure.MileageSupreme",
+                "de.bmw.infotainment.ConditionBasedServicesLegacy", "de.bmw.infotainment.checkcontrol.CheckControlMaster",
+                "de.bmw.infotainment.KombiInterface_2", "de.bmw.infotainment.vehicle.TPMSInternalData",
+                "com.harman.infotainment.systemfunctions.servicehistory.ServiceHistory",
+                "com.harman.infotainment.systemfunctions.tasu.tasu.InternalTasu"}
+        for interface, fields in spec["signals"].items():
+            if interface in base:
+                continue
+            for field, flags in fields.items():
+                if interface == "de.bmw.infrastructure.EnvironmentalInformation" and field == "UnitBN2020":
+                    self.assertEqual(flags, "rs", "platform entry must stay identical")
+                    continue
+                self.assertEqual(flags, "s", interface + "." + field + " is a notifier-only telemetry request")
+
+    def test_missing_notifier_is_refused(self):
+        manifest = self.c.manifest("vehicle_data")
+        self.catalog["de.bmw.infotainment.vehicle.CDS"]["fields"]["statusEngineSpeed2"]["notifier"] = False
+        self.assertIn("de.bmw.infotainment.vehicle.CDS.statusEngineSpeed2: kein Notifier im Katalog",
+                      self.c.check(manifest, self.catalog))
 
 
 if __name__ == "__main__":

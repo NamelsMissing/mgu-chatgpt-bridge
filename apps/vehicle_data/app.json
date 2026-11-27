@@ -1,8 +1,8 @@
 {
   "id": "vehicle_data",
   "title": "Vehicle Data",
-  "description": "Mileage, service due messages, the car's service history, check-control messages, tyre pressures, fault memory and DPF values, read-only. Shares them with your private BMW AI server.",
-  "version": "0.2.12",
+  "description": "Mileage, service due messages, the car's service history, check-control messages, tyre pressures, fault memory, DPF values and a drive log (speed, engine, temperatures), read-only. Shares them with your private BMW AI server.",
+  "version": "0.2.13",
   "vendor": "custom",
   "loggingId": "OVD1",
   "iconGlyph": "service",
@@ -50,6 +50,36 @@
       "_broadcasts": [
         "sendTasuResponse"
       ]
+    },
+    "de.bmw.infotainment.vehicle.Vehicle2": {
+      "statusCarSpeed2": "s"
+    },
+    "de.bmw.infotainment.vehicle.CDS": {
+      "statusEngineSpeed2": "s",
+      "statusEngineTemperature": "s"
+    },
+    "de.bmw.infotainment.drivingexcitement.FES": {
+      "statusActualValueTorque2": "s"
+    },
+    "de.bmw.infotainment.vehicle.CDS2": {
+      "statusLongitudinalAccelerationMassCenter": "s",
+      "statusLateralAccelerationMassCenter": "s"
+    },
+    "de.bmw.infrastructure.EnvironmentalInformation": {
+      "UnitBN2020": "rs",
+      "ExteriorTemperature": "s"
+    },
+    "de.bmw.infotainment.KombiIF": {
+      "statusRangeTankStatus": "s"
+    },
+    "de.bmw.infrastructure.VehicleInformation": {
+      "statusGearboxDrive": "s"
+    },
+    "de.bmw.infrastructure.VehicleCondition": {
+      "VehicleCondition": "s"
+    },
+    "de.bmw.infotainment.drivingexcitement.Efficiencytainment": {
+      "statusPowerTrainSailing": "s"
     }
   },
   "screens": [

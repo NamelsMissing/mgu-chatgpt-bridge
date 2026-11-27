@@ -51,3 +51,7 @@ Bleiben gültige SOME/IP-Daten aus, liest Vehicle Data den Motorsteuergerät-Kil
 ### Kilometerstand ab 0.2.8
 
 Bei fehlendem frischem SOME/IP-Wert verwendet die App KOMBI D122, KOMBI D10D RAM, BDC 1700 und schließlich DDE 558E. [Quellennachweis und Teststatus](../../docs/PRUEFBERICHT-KOMBI-KILOMETERSTAND-0.10.10.md).
+
+### Fahrtenbuch ab 0.2.13
+
+Vehicle Data abonniert zusätzlich elf Felder nur als Notifier (`s`), ohne neue Getter. Daraus entstehen Geschwindigkeit, Drehzahl, Drehmoment, Längs- und Querbeschleunigung, Kühlmittel- und Öltemperatur, Gang und Fahrstufe, Fahrzeugzustand, Segeln, Kombi-Kilometerstand sowie Rohwerte für Außentemperatur, Tankfüllstand und Reichweite. Die App verdichtet sie zu 2-s- bzw. 10-s-Werten mit Minimum und Maximum, erkennt Fahrten am Fahrzeugzustand (Start-Stopp und Segeln beenden keine Fahrt) und puffert sie in `data/telemetry/` bis zu 20 MB, bis der Pi sie abholt. Auf der MGU gibt es keine Anzeige während der Fahrt. Katalog, Fahrterkennung und Paketformat: [docs/telemetry.md](../../docs/telemetry.md).

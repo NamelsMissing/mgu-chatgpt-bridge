@@ -30,7 +30,7 @@ Fahrzeug ── SOME/IP und UDS (nur lesen) ──► Vehicle Data (App auf der 
 |---|---|---|---|
 | **BMW AI Bridge** (App) | MGU | `apps/mgu_chatgpt_bridge` | Tailscale-Anmeldung und Kopplung mit dem Pi per QR-Code, Verbindungsstatus |
 | **BMW AI Companion Agent** (Hintergrunddienst) | MGU | `native/mgu-ai-agent` | Führt freigegebene Leseaufträge aus (Diagnose, Dateien, Lesebefehle) und gibt die Fahrzeugdaten an den Pi weiter |
-| **Vehicle Data** (App, startet mit dem Auto) | MGU | `apps/vehicle_data` | Liest Kilometerstand, Servicebedarf, Servicehistorie, Check-Control-Meldungen, Reifendruck, Fehlerspeicher und DPF-Werte aus dem Fahrzeug, [Details](apps/vehicle_data/README.md) |
+| **Vehicle Data** (App, startet mit dem Auto) | MGU | `apps/vehicle_data` | Liest Kilometerstand, Servicebedarf, Servicehistorie, Check-Control-Meldungen, Reifendruck, Fehlerspeicher und DPF-Werte aus dem Fahrzeug und zeichnet Fahrten auf (Geschwindigkeit, Motor, Temperaturen), [Details](apps/vehicle_data/README.md) |
 | **Pi-Server** | Raspberry Pi | `pi-source/` | Website und API, Claude-Zugang (MCP), signierte Updates (`pi-updates/`) |
 | Älterer ChatGPT-Vermittlungsserver | eigener Server | `broker/`, `agent/`, `native/chatgpt-bridge` | Erste Version mit eigenem HTTPS-Server, [Anleitung](docs/CHATGPT-BROKER.md) |
 
@@ -41,6 +41,7 @@ Fahrzeug ── SOME/IP und UDS (nur lesen) ──► Vehicle Data (App auf der 
 | Chat | Fragen zum Fahrzeug und zu Diagnoseergebnissen, Import und Export von Chats |
 | Freigaben | Aufträge aus dem Chat und von Claude einzeln bestätigen oder ablehnen, mit Verlauf |
 | Fahrzeug | Kilometerstand mit Verlauf, BMW-CBS und Wartungsplan, gemeinsame Servicehistorie, Reifendruck und Dieselpartikelfilter |
+| Statistiken | Automatisches Fahrtenbuch: Strecke, Dauer, Bewegungs- und Leerlaufzeit, Geschwindigkeiten, Drehzahl, Warmlauf von Öl und Kühlmittel, Datenqualität; Name und Kategorie je Fahrt; Aufbewahrung und Speicherlimit |
 | Fehler | Aktive Check-Control-Meldungen mit Fahrzeugtext und Verlauf, Fehlerspeicher aller Steuergeräte (Codes, Status, neu seit dem letzten Auslesen) |
 | Diagnose | Diagnosemodus für Claude, MGU-Status, Systemdiagnosen, Berichte |
 | Konsole | Einzelne Lesebefehle auf der MGU, jeweils mit Freigabe |
@@ -74,6 +75,7 @@ Pi-Server und Tests brauchen Node 20 oder neuer, keine npm-Abhängigkeiten. Code
 ```sh
 npm run test:pi                                # Pi-Server, Agent, Vehicle Data
 python3 tools/build_store_app.py vehicle_data  # App-Paket bauen (wie der MGU Store)
+python3 tools/check_manifest_catalog.py vehicle_data   # SOME/IP-Anforderungen gegen den G21-Katalogauszug
 ```
 
 Für App-Builds wird ein lokal aus dem eigenen Fahrzeug extrahiertes BMW-SDK unter `oap-sdk/` benötigt. Für Änderungen an Vehicle Data zusätzlich der Signalkatalog unter `reference/someip-interfaces.json`. Beides wird nicht veröffentlicht und steht in `.gitignore`.
@@ -124,3 +126,5 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 **Vehicle Data 0.2.11:** Ein leeres oder unbrauchbares Check-Control-Event verwirft keine parallel eingehende Getter-Antwort mehr. Der private Fahrzeugdiagnoseexport enthält jetzt unter `poll.stages` den klassifizierten Getter-Fehler. [Zielgerätbezogene Prüfung für `ccList`](docs/PRUEFBERICHT-CHECK-CONTROL-0.10.14.md#fahrzeugnachtest-vom-27112026).
 
 **Pi 0.10.15 und Vehicle Data 0.2.12:** Empfangene Check-Control-Meldungen erscheinen mit Originaltext und Zeit im Verlauf, auch wenn der Aktivstatus noch offen ist. [Fahrzeugbefund und Prüfbericht](docs/PRUEFBERICHT-CHECK-CONTROL-0.10.15.md).
+
+**Pi 0.11.0, Vehicle Data 0.2.13 und Companion Agent 0.2.14:** Neuer Reiter „Statistiken“ mit automatischem Fahrtenbuch. Vehicle Data abonniert dafür Geschwindigkeit, Drehzahl, Drehmoment, Beschleunigung, Öl- und Kühlmitteltemperatur, Gang, Fahrzeugzustand und Segeln, nur als Notifier und ohne neue Getter. Jedes Feld ist gegen den G21-Katalog geprüft. Die Werte werden auf der MGU verdichtet und gepuffert, über den Agenten abgeholt und in einer eigenen Datenbank auf dem Pi gespeichert. Es gibt kein GPS, und die Daten gehen nicht an GitHub. Alle drei Komponenten aktualisieren. [Technik](docs/telemetry.md) · [Prüfbericht und Checkliste für den ersten Fahrtest](docs/PRUEFBERICHT-STATISTIK-0.11.0.md).

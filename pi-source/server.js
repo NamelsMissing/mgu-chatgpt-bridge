@@ -13,8 +13,9 @@ const ssh=require('./mgu-ssh');
 const dtcImport=require('./dtc-import');
 const githubDiagnostics=require('./github-diagnostics');
 const serviceReference=require('./service-reference');
+const telemetry=require('./telemetry');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.10.15'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.11.0'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -34,6 +35,8 @@ fs.mkdirSync(DATA,{recursive:true,mode:0o700});fs.chmodSync(DATA,0o700);
 const UPLOADS=path.join(DATA,'files');fs.mkdirSync(UPLOADS,{recursive:true,mode:0o700});
 const STATEFILE=path.join(DATA,'state.json');
 const serviceCatalog=serviceReference.catalog(path.join(DATA,'service-reference.sqlite'));
+// Fahrzeugtelemetrie in einer eigenen Datenbank; state.json bekommt nur Einstellungen und Status.
+const telemetryDb=telemetry.store(path.join(DATA,'vehicle-telemetry.sqlite'));
 const diagnosticPublisher=githubDiagnostics.publisher(path.join(DATA,'github-diagnostics.json'));
 const UPDATE_ROOT=process.env.BMW_AI_UPDATE_ROOT||'/var/lib/bmw-ai/updater'; // Created by the root-owned install script.
 const UPDATE_INBOX=path.join(UPDATE_ROOT,'inbox');
@@ -63,6 +66,8 @@ try{st=JSON.parse(fs.readFileSync(STATEFILE,'utf8'));}catch(e){if(e.code!=='ENOE
 for(const k of ['sessions','conversations','messages','jobs','reports','files','logs'])if(st[k]===undefined)st[k]=k==='logs'?[]:{};
 // Claude/MCP access: registered OAuth clients and hashed tokens. Never the tokens themselves.
 if(!st.mcp||typeof st.mcp!=='object')st.mcp={};
+if(!st.telemetry||typeof st.telemetry!=='object')st.telemetry={};
+try{st.telemetry.settings=telemetry.settings(st.telemetry.settings);}catch(e){st.telemetry.settings=telemetry.settings();}
 for(const k of ['clients','tokens','refresh'])if(!st.mcp[k]||typeof st.mcp[k]!=='object')st.mcp[k]={};
 function save(){const temp=STATEFILE+'.'+process.pid+'.tmp';fs.writeFileSync(temp,JSON.stringify(st),{mode:0o600});fs.renameSync(temp,STATEFILE);fs.chmodSync(STATEFILE,0o600);}
 function audit(action,details){st.logs.unshift({at:now(),action,details:String(details||'').slice(0,300)});st.logs=st.logs.slice(0,400);save();}
@@ -1357,6 +1362,9 @@ function recordMguStatus(s){
     reason:v.reason||null,heartbeatAt:v.heartbeatAt||null,signals:v.signals||{},
     received:v.telemetry?.received||M.poll.received||{},
     stages:v.telemetry?.stages||{},
+    // Nur Zustand und Puffergröße, keine Fahrtzeiten: M.poll liegt in state.json.
+    recorder:v.recorder?{enabled:v.recorder.enabled,tripActive:!!v.recorder.trip,buffer:v.recorder.buffer,
+      idleEndMin:v.recorder.idleEndMin,bufferMb:v.recorder.bufferMb}:null,
     versions:{pi:SERVER_VERSION,agent:s.agentVersion||null,vehicleDataInstalled:s.vehicleDataInstalled||[],
       vehicleDataRunning:v.source?.match(/^Vehicle Data ([0-9.]+)$/)?.[1]||null},
     transfer:{snapshotAt:v.telemetry?.snapshotAt||v.writtenAt||null,
@@ -1386,11 +1394,60 @@ async function probeMgu(){
     recordMguStatus(s);
     mgu=s;
     pollFailures=0;
+    pullTelemetry(s).catch(()=>{});
   }catch(e){if(key!==maintenanceVehicleKey())return null;pollFailures=Math.min(pollFailures+1,5);recordMguFailure(e);}
   try{checkServiceNotifications();}catch(e){}
   if(!M.poll.ok)save();
   publishDiagnosticStatus();
   return mgu;
+}
+// ----- Fahrzeugtelemetrie: Pakete von Vehicle Data über den Agenten holen, speichern, bestätigen -----
+// Gespeichert wird nur, was dauerhaft in der Datenbank liegt; erst danach löscht der Agent die
+// Pakete auf der MGU. Doppelt gesendete Pakete erkennt die Datenbank an der Paket-ID.
+let telemetryPull=null;
+const TS={state:'idle',lastPullAt:null,lastStoredAt:null,lastError:null,packets:0,duplicates:0,rejected:0,mguPending:null,lastMaintainAt:0,lastConfigAt:null};
+function telemetryVehicle(){return maintenanceVehicleKey()||'default';}
+function pullTelemetry(status){
+  if(!telemetryPull)telemetryPull=pullTelemetryOnce(status).finally(()=>{telemetryPull=null;});
+  return telemetryPull;
+}
+async function pullTelemetryOnce(status){
+  const cfg=st.telemetry.settings,rec=status?.vehicle?.recorder;
+  TS.lastPullAt=now();
+  try{
+    // Einstellungen an Vehicle Data weitergeben, wenn sie dort abweichen.
+    if(rec&&(rec.enabled!==cfg.enabled||rec.idleEndMin!==cfg.idleEndMin||rec.bufferMb!==cfg.bufferMb)&&
+       (!TS.lastConfigAt||Date.now()-Date.parse(TS.lastConfigAt)>60000)){
+      await mguRequest('POST','/v1/telemetry/config',{enabled:cfg.enabled,idleEndMin:cfg.idleEndMin,bufferMb:cfg.bufferMb});
+      TS.lastConfigAt=now();
+    }
+    if(!rec){TS.state=status?.vehicle?.appState==='running'?'app_without_recorder':'waiting_for_app';return;}
+    const key=telemetryVehicle();
+    for(let round=0;round<10;round++){
+      const batch=await(await mguRequest('GET','/v1/telemetry?max=200',null,30000)).json();
+      TS.mguPending=batch.pending;
+      if(!Array.isArray(batch.packets)||!batch.packets.length)break;
+      if(key!==telemetryVehicle())return;
+      const r=await telemetryDb.ingest(key,batch.packets,cfg);
+      TS.packets+=r.stored.length;TS.duplicates+=r.duplicate.length;TS.rejected+=r.rejected;
+      if(r.stored.length)TS.lastStoredAt=now();
+      const ack=await(await mguRequest('POST','/v1/telemetry/ack',{ids:r.stored.concat(r.duplicate)})).json();
+      TS.mguPending=ack.pending;
+      if(!ack.pending)break;
+    }
+    if(Date.now()-TS.lastMaintainAt>24*3600000){TS.lastMaintainAt=Date.now();await telemetryDb.maintain(key,cfg);}
+    TS.state='ok';TS.lastError=null;
+  }catch(e){
+    TS.state=e.status===404?'agent_without_telemetry':'error';
+    TS.lastError=String(e.message||e).slice(0,200);
+  }
+}
+async function telemetryView(){
+  const stats=await telemetryDb.stats(telemetryVehicle());
+  const rec=M.poll.recorder||null;
+  return {settings:st.telemetry.settings,limits:telemetry.LIMITS,categories:telemetry.CATEGORIES,
+    status:{...TS,lastMaintainAt:TS.lastMaintainAt?new Date(TS.lastMaintainAt).toISOString():null},
+    mgu:rec,database:{bytes:telemetryDb.size(),...stats}};
 }
 function publishDiagnosticStatus(){
   diagnosticPublisher.tick(M.poll,diagnosticLog,SERVER_VERSION).catch(()=>{});
@@ -2093,6 +2150,46 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
     return send(res,200,{schema:1,ecu});
   }
   if(req.method==='GET'&&p==='/api/v1/vehicle')return send(res,200,vehicleView());
+  // ----- Statistiken: Fahrtenbuch und Telemetrie (nur lesen, Daten bleiben auf dem Pi) -----
+  if(p==='/api/v1/telemetry'&&req.method==='GET')return send(res,200,await telemetryView());
+  if(p==='/api/v1/telemetry/settings'&&req.method==='POST'){
+    const d=await body(req,2048);
+    st.telemetry.settings=telemetry.settings(st.telemetry.settings,d);save();audit('telemetry_settings',JSON.stringify(d).slice(0,200));
+    TS.lastConfigAt=null;
+    return send(res,200,await telemetryView());
+  }
+  if(p==='/api/v1/telemetry/pull'&&req.method==='POST'){await pollOnce();await(telemetryPull||Promise.resolve());return send(res,200,await telemetryView());}
+  if(p==='/api/v1/telemetry/trips'&&req.method==='GET'){
+    const limit=Math.min(200,Math.max(1,Number(q.get('limit'))||50)),before=Number(q.get('before'))||undefined;
+    return send(res,200,await telemetryDb.trips(telemetryVehicle(),st.telemetry.settings,{limit,before}));
+  }
+  const tm=p.match(/^\/api\/v1\/telemetry\/trips\/(t[0-9a-z]{1,12}-[0-9a-f]{6})$/);
+  if(tm&&req.method==='GET'){const r=await telemetryDb.trip(telemetryVehicle(),tm[1],st.telemetry.settings,q.get('recompute')==='1');return r.trip?send(res,200,r):fail(res,404,'Unbekannte Fahrt');}
+  if(tm&&req.method==='POST'){
+    const d=await body(req,2048);
+    const name=d.name===undefined||d.name===null||d.name===''?null:str(d.name,80);
+    const category=d.category===undefined||d.category===null||d.category===''?null:telemetry.CATEGORIES.includes(d.category)?d.category:null;
+    if(d.category&&!category)return fail(res,400,'Unbekannte Kategorie');
+    const r=await telemetryDb.update(telemetryVehicle(),tm[1],name,category);
+    return r.updated?send(res,200,await telemetryDb.trip(telemetryVehicle(),tm[1],st.telemetry.settings)):fail(res,404,'Unbekannte Fahrt');
+  }
+  if(tm&&req.method==='DELETE'){
+    if(q.get('confirm')!=='1')return fail(res,400,'Löschen muss bestätigt werden');
+    const r=await telemetryDb.remove(telemetryVehicle(),tm[1]);audit('telemetry_trip_deleted',tm[1]);
+    return r.deleted?send(res,200,r):fail(res,404,'Unbekannte Fahrt');
+  }
+  if(p==='/api/v1/telemetry/series'&&req.method==='GET'){
+    const signal=q.get('signal')||'',from=Number(q.get('from')),to=Number(q.get('to'));
+    if(!telemetry.CATALOG.signals.some(x=>x.id===signal))return fail(res,400,'Unbekannter Messwert');
+    if(!Number.isFinite(from)||!Number.isFinite(to)||to<from||to-from>366*86400000)return fail(res,400,'Ungültiger Zeitraum');
+    return send(res,200,await telemetryDb.series(telemetryVehicle(),signal,from,to,Math.min(5000,Math.max(10,Number(q.get('max'))||2000))));
+  }
+  if(p==='/api/v1/telemetry/reset'&&req.method==='POST'){
+    const d=await body(req,512);
+    if(d.confirm!=='STATISTIK LÖSCHEN')return fail(res,400,'Zum Zurücksetzen „STATISTIK LÖSCHEN“ eingeben');
+    await telemetryDb.reset(telemetryVehicle());audit('telemetry_reset',telemetryVehicle().slice(0,12));
+    return send(res,200,await telemetryView());
+  }
   if(req.method==='POST'&&p==='/api/v1/vehicle/maintenance'){configureMaintenance(await body(req,4096));return send(res,200,vehicleView());}
   // ----- Fehler: Check-Control und Fehlerspeicher -----
   if(req.method==='GET'&&p==='/api/v1/faults/reference')return send(res,200,faultsView().texts.reference);

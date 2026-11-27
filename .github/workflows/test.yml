@@ -13,5 +13,7 @@ jobs:
         with:
           node-version: '22'
       - run: npm test
+      - run: npm run test:pi
+      - run: python3 tools/check_manifest_catalog.py vehicle_data
       - run: python3 tests/test-someip-manifest.py
       - run: node tests/motorscope-import.mjs

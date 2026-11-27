@@ -3,6 +3,7 @@
 // Strictly read-only diagnostics/files; actual vehicle control requires verified adapter and is disabled.
 var http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto'),cp=require('child_process');
 var readOnlyConsole=require('./console-readonly');
+var outbox=require('./telemetry-outbox');
 var ROOT='/var/opt/mgu-ai-agent',CONFIG=process.env.MGU_AI_CONFIG||ROOT+'/config.json';
 var DATA=process.env.MGU_AI_DATA||ROOT+'/data';
 var PORT=Number(process.env.MGU_AI_PORT||18766);
@@ -10,7 +11,7 @@ var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.13';
+var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.14';
 function installedVehicleApps(){
  var result=[];
  try{fs.readdirSync(OAP_APPS).forEach(function(dir){
@@ -75,7 +76,9 @@ function vehicleData(best){
   checkControl:doc.checkControl&&typeof doc.checkControl==='object'?{listAt:doc.checkControl.listAt||null,source:doc.checkControl.source||null,receipts:doc.checkControl.receipts||null,active:array(doc.checkControl.active).slice(0,120),events:array(doc.checkControl.events).slice(-50)}:null,
   tyres:doc.tyres&&Array.isArray(doc.tyres.wheels)?{at:doc.tyres.at,source:doc.tyres.source,wheels:doc.tyres.wheels.slice(0,5).map(function(w){return {position:w.position,pressureBar:w.pressureBar,targetBar:w.targetBar,temperatureC:w.temperatureC,battery:w.battery};}),unverified:true}:null,
   faultMemory:doc.faultMemory&&typeof doc.faultMemory==='object'?{requestId:doc.faultMemory.requestId,readAt:doc.faultMemory.readAt,error:doc.faultMemory.error,ecus:array(doc.faultMemory.ecus).slice(0,120),dtcs:array(doc.faultMemory.dtcs).slice(0,600)}:null,
-  dpf:doc.dpf&&typeof doc.dpf==='object'?doc.dpf:null};
+  dpf:doc.dpf&&typeof doc.dpf==='object'?doc.dpf:null,
+  recorder:doc.recorder&&typeof doc.recorder==='object'?{enabled:doc.recorder.enabled,catalogVersion:doc.recorder.catalogVersion,trip:doc.recorder.trip||null,
+    condition:doc.recorder.condition||null,buffer:doc.recorder.buffer||null,counters:doc.recorder.counters||null,idleEndMin:doc.recorder.idleEndMin,bufferMb:doc.recorder.bufferMb}:null};
 }
 // Ask the Vehicle Data app for a fresh fault-memory read (UDS 0x19, read-only) and wait for it.
 var faultReadPending=false;
@@ -244,6 +247,16 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
  }
  if(req.method==='GET'&&url==='/v1/vehicle/capabilities')return capabilityReport(res);
  if(req.method==='GET'&&url==='/v1/status'){latest.paired=true;var vehicle=vehicleData();return json(res,200,{online:true,agentVersion:AGENT_VERSION,vehicleDataInstalled:installedVehicleApps(),at:new Date().toISOString(),host:run('/bin/uname',['-n']).trim(),vehicleDataAvailable:vehicle.appState==='running'&&vehicle.status==='ok',vehicle:vehicle,capabilities:{diagnostics:PRESETS,files:true,actions:false},latestMessage:latest.message,lastDiagnostic:latest.lastDiagnostic});}
+ if(url==='/v1/telemetry'||url.indexOf('/v1/telemetry/')===0){
+  var snap=vehicleSnapshot();
+  if(!snap.dir)return json(res,503,{code:snap.state||'not_detected',error:snap.reason||'Vehicle Data nicht gefunden'});
+  try{
+   if(req.method==='GET'&&url==='/v1/telemetry'){var max=Number((/[?&]max=(\d{1,3})/.exec(req.url)||[])[1]);return json(res,200,outbox.list(snap.dir,max));}
+   if(req.method==='POST'&&url==='/v1/telemetry/ack')return json(res,200,outbox.ack(snap.dir,b.ids));
+   if(req.method==='POST'&&url==='/v1/telemetry/config')return json(res,200,outbox.writeConfig(snap.dir,b));
+  }catch(e){return json(res,e.code?502:400,{code:'telemetry_ipc',error:String(e.message).slice(0,200)});}
+  return json(res,404,{error:'Not found'});
+ }
  if(req.method==='POST'&&url==='/v1/vehicle/fault-memory')return readFaultMemory(function(r){json(res,r.status,r.body);});
  if(req.method==='POST'&&url==='/v1/console')return json(res,200,readOnlyConsole.run(b.command));
  if(req.method==='POST'&&url==='/v1/diagnostics'){var d=diag(b.preset);latest.lastDiagnostic={preset:d.preset,at:d.at,preview:JSON.stringify(d.values).slice(0,350)};emitUI();return json(res,200,d);}

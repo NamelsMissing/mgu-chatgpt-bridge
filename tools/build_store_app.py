@@ -22,13 +22,16 @@ from pathlib import Path
 from validate_someip_manifest import (
     Incompatible, Unverified, VEHICLE_GETTERS, read_manifest, validate,
 )
+from check_manifest_catalog import EXCERPT as CATALOG_EXCERPT, check as catalog_check, normalise as catalog_normalise
 
 AUTOSTART_APPS = ("vehicle_data",)
 CHECK_CONTROL_INTERFACE = "de.bmw.infotainment.KombiInterface_2"
 CHECK_CONTROL_GETTERS = ("ccList", "ccListRiskClass")
 START_TYPES = ("autostart", "manually")
-# Canonical JSON SHA-256 of the packaged manifest from the installed v0.2.1.
-VEHICLE_BASE_MANIFEST_SHA256 = "fef209704187d45e15c09ad4171be402948ed44670e3e515fd16803c72ab01b9"
+# Canonical JSON SHA-256 of the reviewed mandatory manifest. 0.2.1 (installed, fef20970...) plus
+# the telemetry notifier subscriptions of 0.2.13, each checked against the G21 catalog
+# (tools/check_manifest_catalog.py, tools/someip-catalog-excerpt.json). Any other change fails.
+VEHICLE_BASE_MANIFEST_SHA256 = "af9d7824122d2d0253dbd6cb170c8bf4f665d414bfcb6f74ec9a62bb3aa348c3"
 MGU_MEMBERS = ("meta.json", "source", "rhmiData", "rhmiDataStartWidget", "oapgen")
 
 
@@ -103,9 +106,12 @@ def vehicle_manifest(root, args):
     base = read_manifest(file)
     canonical = json.dumps(base, sort_keys=True, separators=(",", ":")).encode()
     if hashlib.sha256(canonical).hexdigest() != VEHICLE_BASE_MANIFEST_SHA256:
-        raise BuildError("Das Pflichtmanifest weicht vom Installationsstand 0.2.1 ab")
+        raise BuildError("Das Pflichtmanifest weicht vom geprüften Stand ab")
+    failures = catalog_check(base, catalog_normalise(json.loads(CATALOG_EXCERPT.read_text(encoding="utf-8"))))
+    if failures:
+        raise BuildError("Pflichtmanifest passt nicht zum Katalogauszug: " + "; ".join(failures))
     if args.catalog is None:
-        print("SOME/IP: Pflichtmanifest identisch zu 0.2.1; Zielkatalog nicht geprüft.")
+        print("SOME/IP: Pflichtmanifest geprüft (Getter/Notifier gegen den G21-Katalogauszug).")
         return base
     validate(base, args.catalog, args.app_management, args.uid)
     check_control_getter = args.check_control_getter

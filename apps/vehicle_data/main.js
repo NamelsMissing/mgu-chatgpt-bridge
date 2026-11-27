@@ -19,6 +19,7 @@ const { VehicleSnapshot, CBS_FIELDS } = require('./vehicle_snapshot.js');
 const { FaultState } = require('./vehicle_faults.js');
 const DPF = require('./dpf_dids.js');
 const VUDS = require('./vehicle_uds.js');
+const { TelemetryRecorder } = require('./telemetry.js');
 
 const SECURE = 'de.bmw.infrastructure.SecureMileage';
 const SUPREME = 'de.bmw.infrastructure.MileageSupreme';
@@ -72,7 +73,13 @@ mgu.run({
         } catch (e) {
             if (e.code!=='ENOENT') log.warn('Previous Check-Control snapshot unavailable');
         }
-        snap.extra = () => faults.document();
+        // Telemetry: notifier-only subscriptions, aggregated here, stored and evaluated on the Pi.
+        let recorder = null, recorderStatus = null;
+        try {
+            recorder = new TelemetryRecorder({ dataDir, log });
+            recorderStatus = recorder.status();
+        } catch (e) { log.warn('telemetry recorder: ' + e); }
+        snap.extra = () => Object.assign({}, faults.document(), { recorder: recorderStatus });
         const flush = (force) => { try { snap.flush(force); } catch (e) { log.warn('vehicle snapshot: ' + e); } };
         flush(true);
         setInterval(() => flush(true), 20000);
@@ -170,6 +177,46 @@ mgu.run({
         watch('de.bmw.infrastructure.VehicleInformation', { Range: (v) =>
             sample('VehicleInformation.Range',v,snap.range(v) === null ? null : 1),
         }, {readFields:['Range'],readOnlyFields:['Range'],pollMs:5*60000});
+        // Telemetry signals are declared with "s" only: no getter is called, values arrive on change.
+        function watchTelemetry(iface, fields, attempt) {
+            const name = iface.split('.').pop(), declared = (proxies[iface] || {}).attributes || {};
+            const handlers = {}, key = field => 'Telemetry.'+name+'.'+field;
+            fields.forEach(field => {
+                snap.stage(key(field),'manifestRead',/r/.test(declared[field] || ''));
+                snap.stage(key(field),'manifestSubscribe',/s/.test(declared[field] || ''));
+                if (!/s/.test(declared[field] || '')) return;
+                handlers[field] = (v) => { if (recorder) recorder.ingest(iface, field, v); };
+            });
+            if (!Object.keys(handlers).length) return Promise.resolve(null);
+            return signals.watch(iface, '1', handlers, log, {
+                onTrace: (field, stage, value) => { if (stage==='subscription') snap.stage(key(field),'subscription',value); },
+                onAvailability: (ok) => {
+                    if (recorder) recorder.availability(iface, ok);
+                    snap.stage('Telemetry.'+name,'provider',ok);
+                    Object.keys(handlers).forEach(field => snap.stage(key(field),'provider',ok));
+                },
+                onError: (field, stage) => snap.stage('Telemetry.'+name+'.'+field,'error',stage),
+            }).then(async (sub) => {
+                snap.stage('Telemetry.'+name,'proxy',sub.error?'failed':'ready');
+                if (sub.error && (attempt || 0) < 3) {
+                    await sub.shutdown();
+                    setTimeout(() => watchTelemetry(iface, fields, (attempt || 0) + 1), 5000*Math.pow(2,attempt || 0));
+                }
+                return sub;
+            }).catch(e => { log.warn('telemetry '+name+': '+e); return null; });
+        }
+        if (recorder) {
+            const telemetryFields = recorder.fields();
+            Object.keys(telemetryFields).forEach(iface => watchTelemetry(iface, telemetryFields[iface]));
+            let lastStatus = 0;
+            setInterval(() => {
+                try {
+                    recorder.tick();
+                    if (Date.now() - lastStatus > 30000) { lastStatus = Date.now(); recorderStatus = recorder.status(); }
+                } catch (e) { log.warn('telemetry tick: ' + e); }
+            }, 1000);
+        }
+
         const cbsHandlers = {};
         for (const f of CBS_FIELDS) cbsHandlers[f] = (v) => {
             snap.cbs(f, v); sample('ConditionBasedServicesLegacy.'+f,v,snap.state.cbs[f] ? 1 : null);

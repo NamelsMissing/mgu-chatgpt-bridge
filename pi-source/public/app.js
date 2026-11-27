@@ -343,7 +343,7 @@ function openTab(name){
  if(name==='console')history.replaceState(null,'',location.pathname+location.search+'#console');
  document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==name);
  $('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===button));
- ({jobs:refreshJobs,vehicle:refreshVehicle,faults:refreshFaults,diag:refreshDiag,files:refreshFilesTab,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
+ ({jobs:refreshJobs,vehicle:refreshVehicle,stats:refreshStats,faults:refreshFaults,diag:refreshDiag,files:refreshFilesTab,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
 }
 $('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
 
@@ -910,7 +910,8 @@ const telemetryGroups={
  'Servicehistorie':['ServiceHistory'],
  'Reifen':['TPMSInternalData','TPMS','UDS.DC98','UDS.DC99','UDS.DC9A','UDS.DC9B'],
  'DPF':['UDS.DPF','Diagnostics'],
- 'Fehlerspeicher':['UDS.1902','Diagnostics']
+ 'Fehlerspeicher':['UDS.1902','Diagnostics'],
+ 'Fahrtenbuch (Notifier-Abos)':['Telemetry']
 };
 function mguConnectionText(p){
  if(p.connection==='unreachable')return 'MGU derzeit nicht erreichbar. Fahrzeug möglicherweise ausgeschaltet oder im Standby.';
@@ -1715,3 +1716,120 @@ bmaiCheckServerBuild();
 // ----- Start -----
 restoreSession();
 renderPair();
+
+
+// ----- Statistiken: Fahrtenbuch aus der Fahrzeugtelemetrie -----
+// Nur echte Messwerte. Fehlende Werte erscheinen als „–“, nie als 0.
+let statsTrips=[],statsTripId=null,statsView=null;
+const dash='–';
+const fmtNum=(v,d=0)=>v===null||v===undefined||!Number.isFinite(v)?dash:v.toLocaleString('de-DE',{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtDur=ms=>{if(ms===null||ms===undefined)return dash;const m=Math.round(ms/60000);return m<60?m+' min':Math.floor(m/60)+' h '+String(m%60).padStart(2,'0')+' min';};
+const fmtDay=ts=>new Date(ts).toLocaleDateString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'});
+const fmtTime=ts=>new Date(ts).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+const DIST_SOURCE={odometer:'Kilometerstand',speed:'Geschwindigkeit integriert',speed_incomplete:'Geschwindigkeit, lückenhaft'};
+const QUALITY={good:'vollständig',partial:'teilweise',poor:'lückenhaft'};
+function statBox(parent,label,value){const c=txt('div','','stat');c.appendChild(txt('span',label,'hint'));c.appendChild(txt('strong',value));parent.appendChild(c);}
+function tripLabel(t){return t.name||(fmtDay(t.start_ts)+' · '+fmtTime(t.start_ts)+(t.end_ts?'–'+fmtTime(t.end_ts):' · läuft'));}
+function renderStatsHeader(v){
+  statsView=v;const s=v.status,mgu=v.mgu,set=v.settings;
+  const rec=$('statsRecording');
+  rec.textContent=!set.enabled?'Aufzeichnung aus':mgu?.tripActive?'Fahrt läuft':mgu?'Bereit':'MGU wartet';
+  rec.className='pill '+(set.enabled&&mgu?'pill-live':'pill-off');
+  const states={ok:'Daten aktuell',idle:'Noch nicht abgefragt',error:'Abruf fehlgeschlagen',agent_without_telemetry:'Companion Agent ab 0.2.14 nötig',
+    app_without_recorder:'Vehicle Data ab 0.2.13 nötig',waiting_for_app:'Vehicle Data meldet sich noch nicht'};
+  const parts=[states[s.state]||s.state];
+  if(s.lastStoredAt)parts.push('zuletzt gespeichert '+stamp(s.lastStoredAt));
+  if(Number.isInteger(s.mguPending)&&s.mguPending)parts.push(s.mguPending+' Pakete warten auf der MGU');
+  if(mgu?.buffer?.dropped)parts.push(mgu.buffer.dropped+' Pakete wegen Pufferlimit gekürzt');
+  if(s.lastError)parts.push(s.lastError);
+  $('statsStatus').textContent=parts.join(' · ');
+  $('statsEnabled').checked=set.enabled;
+  $('statsIdleEnd').value=set.idleEndMin;$('statsBuffer').value=set.bufferMb;$('statsRawDays').value=set.rawDays;
+  $('statsLimit').value=set.limitMb;$('statsOilThreshold').value=set.oilThresholdC;$('statsCoolantThreshold').value=set.coolantThresholdC;
+  const db=v.database;
+  $('statsStorage').textContent='Datenbank: '+fmtNum(db.bytes/1048576,1)+' MB von '+set.limitMb+' MB · '+fmtNum(db.samples)+' Messwerte · '+fmtNum(db.trips)+' Fahrten'+
+    (db.oldestSample?' · Rohdaten seit '+fmtDay(db.oldestSample):'');
+  const sel=$('statsTripCategory');
+  if(sel.options.length<=1)v.categories.forEach(c=>sel.appendChild(new Option(c,c)));
+  const list=$('statsSignals');list.replaceChildren();
+  const VER={reference:'Skalierung belegt, am Fahrzeug noch nicht bestätigt',unverified:'Rohwert, Skalierung unbekannt',vehicle:'am Fahrzeug bestätigt'};
+  (db.signals||[]).forEach(x=>{const row=txt('div','','list-row');row.appendChild(txt('span',x.nameDe+(x.unit&&x.unit!=='raw'?' ('+x.unit+')':'')));
+    row.appendChild(txt('span',VER[x.verification]||x.verification,'pill '+(x.verification==='vehicle'?'pill-live':'pill-off')));list.appendChild(row);});
+}
+function renderTotals(){
+  const box=$('statsTotals');box.replaceChildren();
+  const closed=statsTrips.filter(t=>t.summary&&!t.summary.open);
+  if(!closed.length)return;
+  const km=closed.reduce((s,t)=>s+(t.summary.distanceKm||0),0),ms=closed.reduce((s,t)=>s+(t.summary.durationMs||0),0);
+  const vmax=Math.max(...closed.map(t=>t.summary.maxSpeedKmh??-1));
+  statBox(box,'Fahrten (angezeigt)',fmtNum(closed.length));
+  statBox(box,'Strecke',fmtNum(km,1)+' km');
+  statBox(box,'Fahrzeit',fmtDur(ms));
+  statBox(box,'Höchstgeschwindigkeit',vmax>=0?fmtNum(vmax)+' km/h':dash);
+}
+function renderTrips(append){
+  const box=$('statsTrips');if(!append)box.replaceChildren();
+  if(!statsTrips.length){box.appendChild(txt('p','Noch keine Fahrten aufgezeichnet. Die erste Fahrt erscheint, sobald Vehicle Data 0.2.13 und der Companion Agent 0.2.14 laufen und das Auto gefahren ist.','hint'));return;}
+  box.replaceChildren();
+  statsTrips.forEach(t=>{
+    const s=t.summary||{},row=txt('div','','list-row maintenance-row');
+    row.appendChild(txt('strong',tripLabel(t)));
+    row.appendChild(txt('span',[s.distanceKm!==null&&s.distanceKm!==undefined?fmtNum(s.distanceKm,1)+' km':null,fmtDur(s.durationMs),
+      s.maxSpeedKmh!=null?'max. '+fmtNum(s.maxSpeedKmh)+' km/h':null,s.oil?.max!=null?'Öl max. '+fmtNum(s.oil.max)+' °C':null].filter(Boolean).join(' · '),'hint'));
+    row.appendChild(txt('span',t.category||(t.status==='open'?'läuft':QUALITY[s.quality]||''),'pill '+(t.status==='open'?'pill-live':'pill-off')));
+    row.onclick=()=>openTrip(t.id);
+    box.appendChild(row);
+  });
+  renderTotals();
+}
+async function refreshStats(){
+  try{
+    renderStatsHeader(await api('/telemetry'));
+    const d=await api('/telemetry/trips?limit=30');statsTrips=d.trips;renderTrips();
+    $('statsMore').hidden=d.trips.length<30;
+  }catch(e){$('statsStatus').textContent='Statistiken nicht verfügbar: '+e.message;}
+}
+async function openTrip(id){
+  try{
+    const {trip:t}=await api('/telemetry/trips/'+id);statsTripId=id;const s=t.summary||{};
+    $('statsTrip').hidden=false;$('statsTripTitle').textContent=tripLabel(t);
+    $('statsTripInfo').textContent=fmtDay(t.start_ts)+' '+fmtTime(t.start_ts)+(t.end_ts?' bis '+fmtTime(t.end_ts):' · läuft noch')+
+      (t.start_km!=null?' · Start '+fmtNum(t.start_km)+' km':'')+(t.end_km!=null?' · Ende '+fmtNum(t.end_km)+' km':'')+(t.partial?' · Anfang nachträglich rekonstruiert':'');
+    const box=$('statsTripValues');box.replaceChildren();
+    statBox(box,'Strecke',s.distanceKm!=null?fmtNum(s.distanceKm,1)+' km':dash);
+    statBox(box,'Dauer',fmtDur(s.durationMs));
+    statBox(box,'In Bewegung',fmtDur(s.movingMs));
+    statBox(box,'Stillstand',fmtDur(s.standstillMs));
+    statBox(box,'Motorlaufzeit',fmtDur(s.engineMs));
+    statBox(box,'Leerlauf',fmtDur(s.idleMs));
+    statBox(box,'Ø in Bewegung',s.avgSpeedMovingKmh!=null?fmtNum(s.avgSpeedMovingKmh)+' km/h':dash);
+    statBox(box,'Ø gesamt',s.avgSpeedKmh!=null?fmtNum(s.avgSpeedKmh)+' km/h':dash);
+    statBox(box,'Höchstgeschwindigkeit',s.maxSpeedKmh!=null?fmtNum(s.maxSpeedKmh)+' km/h':dash);
+    statBox(box,'Max. Drehzahl',s.maxRpm!=null?fmtNum(s.maxRpm)+' 1/min':dash);
+    for(const [k,label] of [['coolant','Kühlmittel'],['oil','Motoröl']]){
+      const x=s[k];
+      statBox(box,label+' Start / max.',x?fmtNum(x.start)+' / '+fmtNum(x.max)+' °C':dash);
+      statBox(box,label+' ≥ '+(x?.threshold??'')+' °C nach',x?.reached?fmtDur(x.reached.ms)+' · '+fmtNum(x.reached.km,1)+' km':x?'nicht erreicht':dash);
+    }
+    statBox(box,'Verbrauch',dash);
+    const cov=s.coverage||{};
+    $('statsTripQuality').textContent='Datenqualität: '+(QUALITY[s.quality]||dash)+' · Abdeckung Geschwindigkeit '+fmtNum((cov.speed||0)*100)+' %, Drehzahl '+fmtNum((cov.rpm||0)*100)+
+      ' %, Temperaturen '+fmtNum((cov.oil||0)*100)+' % · Strecke aus '+(DIST_SOURCE[s.distanceSource]||dash)+
+      ' · Verbrauch erst, wenn der Tankfüllstand in Litern bestätigt ist · Werte am Fahrzeug noch nicht bestätigt.';
+    $('statsTripName').value=t.name||'';$('statsTripCategory').value=t.category||'';
+    $('statsTrip').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){notice(e.message);}
+}
+$('refreshStats').onclick=async()=>{const b=$('refreshStats');b.disabled=true;try{renderStatsHeader(await api('/telemetry/pull','POST'));await refreshStats();}catch(e){notice(e.message);}finally{b.disabled=false;}};
+$('statsMore').onclick=async()=>{try{const last=statsTrips[statsTrips.length-1];const d=await api('/telemetry/trips?limit=30&before='+last.start_ts);statsTrips=statsTrips.concat(d.trips);renderTrips();$('statsMore').hidden=d.trips.length<30;}catch(e){notice(e.message);}};
+$('statsTripClose').onclick=()=>{$('statsTrip').hidden=true;statsTripId=null;};
+$('statsTripSave').onclick=async()=>{if(!statsTripId)return;try{await api('/telemetry/trips/'+statsTripId,'POST',{name:$('statsTripName').value.trim(),category:$('statsTripCategory').value});notice('Gespeichert.');await refreshStats();await openTrip(statsTripId);}catch(e){notice(e.message);}};
+$('statsTripDelete').onclick=async()=>{if(!statsTripId||!confirm('Diese Fahrt und ihre Messwerte endgültig löschen?'))return;try{await api('/telemetry/trips/'+statsTripId+'?confirm=1','DELETE');$('statsTrip').hidden=true;statsTripId=null;notice('Fahrt gelöscht.');await refreshStats();}catch(e){notice(e.message);}};
+$('statsSaveSettings').onclick=async()=>{
+  const n=id=>Number($(id).value);
+  try{renderStatsHeader(await api('/telemetry/settings','POST',{enabled:$('statsEnabled').checked,idleEndMin:n('statsIdleEnd'),bufferMb:n('statsBuffer'),rawDays:n('statsRawDays'),
+    limitMb:n('statsLimit'),oilThresholdC:n('statsOilThreshold'),coolantThresholdC:n('statsCoolantThreshold')}));notice('Gespeichert. Die MGU übernimmt die Aufzeichnungseinstellungen bei der nächsten Verbindung.');}
+  catch(e){notice(e.message);}
+};
+$('statsReset').onclick=async()=>{if(!confirm('Alle Fahrten und Messwerte dieses Fahrzeugs löschen? Wartung und Fehlerspeicher bleiben erhalten.'))return;
+  try{renderStatsHeader(await api('/telemetry/reset','POST',{confirm:$('statsResetConfirm').value.trim()}));$('statsResetConfirm').value='';statsTrips=[];renderTrips();notice('Statistik zurückgesetzt.');}catch(e){notice(e.message);}};
