@@ -112,7 +112,7 @@ function renderDpf(d){
  const vals=$('dpfValues'),regs=$('dpfRegens');vals.replaceChildren();regs.replaceChildren();
  $('dpfAge').textContent=d?(d.stale?'Veraltet · ':'Gelesen · ')+stamp(d.latest.at):'keine Daten';
  $('dpfAge').className='pill '+(d&&!d.stale?'pill-live':'pill-off');
- if(!d){vals.appendChild(txt('p','Noch keine Werte. Sie kommen alle 5 Minuten bei laufendem Auto von der App „Vehicle Data“.','hint'));return;}
+ if(!d){vals.appendChild(txt('p','Noch keine Werte.','hint'));return;}
  const l=d.latest;
  for(const [label,key,unit] of [['Ruß','soot',' g'],['Asche','ash',' g'],['Seit Regeneration','distance',' km'],['Regenerationen','regenCount',''],['Ø Abstand','regenAverage',' km'],['Temperatur','temperature',' °C']]){
   const value=l[key];
@@ -342,10 +342,16 @@ function openTab(name){
  currentTab=name;
  if(name==='console')history.replaceState(null,'',location.pathname+location.search+'#console');
  document.querySelectorAll('section.tab').forEach(s=>s.hidden=s.id!==name);
- $('tabs').querySelectorAll('button').forEach(t=>t.classList.toggle('active',t===button));
+ $('tabs').querySelectorAll('button[data-tab]').forEach(t=>t.classList.toggle('active',t===button));
+ $('tabsMoreToggle').classList.toggle('active',!!button.closest('#tabsExtra'));
+ setMoreTabs(false);
  ({jobs:refreshJobs,vehicle:refreshVehicle,stats:refreshStats,faults:refreshFaults,diag:refreshDiag,files:refreshFilesTab,system:refreshSystem,console:refreshConsoleConnection}[name]||(()=>{}))();
 }
-$('tabs').querySelectorAll('button').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
+$('tabs').querySelectorAll('button[data-tab]').forEach(b=>b.onclick=()=>openTab(b.dataset.tab));
+// iPhone: seltene Reiter liegen unter „Mehr“.
+function setMoreTabs(open){$('tabs').classList.toggle('more-open',open);$('tabsMoreToggle').setAttribute('aria-expanded',String(open));}
+$('tabsMoreToggle').onclick=e=>{e.stopPropagation();setMoreTabs(!$('tabs').classList.contains('more-open'));};
+document.addEventListener('click',e=>{if(!e.target.closest('#tabs'))setMoreTabs(false);});
 
 // ----- Chat -----
 async function refreshConvos(){try{const data=await api('/conversations'),sel=$('convos');sel.replaceChildren();sel.appendChild(new Option('Neuer Chat',''));data.conversations.forEach(c=>sel.appendChild(new Option((c.importSource==='ChatGPT'?'[ChatGPT-Import] ':'')+c.title,c.id)));sel.value=conversationId;if(conversationId)await loadMessages();}catch(e){notice(e.message);}}
@@ -1892,7 +1898,7 @@ function renderOverview(){
   const dist=closed.reduce((s,t)=>s+(t.distanceKm||0),0),time=closed.reduce((s,t)=>s+(t.durationMs||0),0);
   const vmax=closed.reduce((m,t)=>t.maxSpeedKmh!=null&&t.maxSpeedKmh>m?t.maxSpeedKmh:m,-1);
   kpi(k,'route','Fahrstrecke',closed.length?fmtKm(dist):dash);
-  kpi(k,'fuel','Ø Verbrauch',dash,'l/100 km · noch nicht verfügbar');
+  kpi(k,'fuel','Ø Verbrauch',dash,'l/100 km');
   kpi(k,'clock','Fahrzeit',closed.length?fmtDur(time):dash);
   kpi(k,'gauge','Höchstgeschwindigkeit',vmax>=0?fmtNum(vmax)+' km/h':dash);
   const [rows,caption]=distanceRows(trips,statsRange,rangeBounds(statsRange));
@@ -1903,7 +1909,7 @@ function renderOverview(){
   lineChart($('statsFuel'),{series:[{name:'Verbrauch',color:COLOR.blue,unit:'l/100 km',digits:1,points:[]}],xMin:from,xMax:to,yMin:0,yMax:10,yTicks:[0,2.5,5,7.5,10],
     yFmt:v=>fmtNum(v,v%1?2:0)+' l/100 km',yTitle:'Verbrauch',xLabels:statsRange==='today'?['0 Uhr','Uhrzeit','jetzt']:statsRange==='7'?[weekday(from),'Tag',weekday(to)]:
       statsRange==='30'?[new Date(from).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit'}),'Tag','heute']:['','Monat',''],cursorFmt:()=>'',gapX:1,height:260,
-    empty:'Noch keine Verbrauchswerte. Der Verlauf erscheint, sobald die Einheit des Tankfüllstands bestätigt ist.'});
+    empty:'Noch keine Verbrauchswerte'});
   const bands=[0,0,0,0,0];closed.forEach(t=>(t.speedBandsMs||[]).forEach((v,i)=>{bands[i]+=v;}));
   const names=['0–30 km/h','30–60 km/h','60–100 km/h','100–130 km/h','über 130 km/h'];
   const total=bands.reduce((a,b)=>a+b,0);
@@ -2030,7 +2036,7 @@ async function openTrip(id){
     const cov=s.coverage||{},filled=s.filledMs?.speed;
     $('statsTripQuality').textContent='Datenqualität: '+(QUALITY[s.quality]||dash)+' · Abdeckung Geschwindigkeit '+fmtNum((cov.speed||0)*100)+' %, Drehzahl '+fmtNum((cov.rpm||0)*100)+
       ' %, Temperaturen '+fmtNum((cov.oil||0)*100)+' %'+(filled?' (davon '+fmtDur(filled)+' Stillstand ohne neue Meldung fortgeführt)':'')+
-      ' · Strecke aus '+(DIST_SOURCE[s.distanceSource]||dash)+' · Verbrauch erst, wenn der Tankfüllstand in Litern bestätigt ist · Werte am Fahrzeug noch nicht bestätigt.';
+      ' · Strecke aus '+(DIST_SOURCE[s.distanceSource]||dash);
     $('statsTripName').value=t.name||'';$('statsTripCategory').value=t.category||'';
     $('statsTrip').scrollIntoView({behavior:'smooth',block:'start'});
     await warmupChart($('statsTripWarmup'),t,null);

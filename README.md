@@ -131,3 +131,5 @@ Der [Prüfbericht zu 0.10.3](docs/PRUEFBERICHT-FAHRZEUGDATEN-0.10.3.md) dokument
 
 **Pi 0.12.0 und Vehicle Data 0.2.14:** Statistikseite mit Zeitfilter, Kennzahlen, Strecke je Tag, Woche oder Monat, Warmlaufverlauf, Zeit nach Geschwindigkeit sowie Geschwindigkeits- und Drehzahlverlauf je Fahrt, mit Fingerbedienung. Korrigiert die Abdeckung im Stillstand: Die MGU meldet eine unveränderte Geschwindigkeit nicht erneut, deshalb galten Ampelhalte als Lücke. Vehicle Data 0.2.14 hält den Wert während der Fahrt bis zu 10 min, der Pi korrigiert bereits gespeicherte Fahrten. Vehicle Data im MGU Store aktualisieren. [Prüfbericht](docs/PRUEFBERICHT-STATISTIK-0.12.0.md).
 
+**Pi 0.12.1:** Website überarbeitet. Einheitliches dunkles Design wie auf der Statistikseite. Am iPhone sitzt die Reiterleiste unten (Chat, Fahrzeug, Statistik, Fehler, Freigaben); Diagnose, Konsole, Dateien und System liegen unter „Mehr“. Selbsterklärende Hinweistexte sind entfernt oder gekürzt. Fehlertext-Import, ECU-Vorlage und ChatGPT-Status sind nach System verschoben, Referenzdaten und Protokolle dort zusammengefasst.
+

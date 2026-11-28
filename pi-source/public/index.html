@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111215">
 <title>BMW AI Assistant</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
 <header>
-  <div class="brand">◈ BMW AI Assistant</div>
+  <div class="brand"><span class="brand-mark" aria-hidden="true">AI</span>BMW AI Assistant</div>
   <div class="header-status">
     <span id="diagPill" class="pill pill-live" hidden>Diagnosemodus aktiv</span>
     <span id="connection">Privater Raspberry-Pi-Server</span>
@@ -24,25 +25,30 @@
 
 <!-- Anmeldung -->
 <div id="login" class="login">
-  <h2>Privater Zugang</h2>
-  <p>Diese Oberfläche ist nur in deinem Tailscale-Netz erreichbar.</p>
+  <h2>Anmelden</h2>
+  <p>Privater Zugang über dein Tailscale-Netz.</p>
   <input type="password" id="password" placeholder="Serverpasswort" autocomplete="current-password">
-  <label class="check"><input type="checkbox" id="rememberMe"> 30 Tage angemeldet bleiben (nur auf eigenen Geräten)</label>
+  <label class="check"><input type="checkbox" id="rememberMe"> 30 Tage angemeldet bleiben</label>
   <button id="loginButton">Anmelden</button>
   <p id="loginError" class="error"></p>
 </div>
 
 <div id="shell" hidden>
 <nav id="tabs">
-  <button data-tab="chat" class="active">Chat</button>
-  <button data-tab="jobs">Freigaben <span id="jobBadge" class="badge" hidden>0</span></button>
-  <button data-tab="vehicle">Fahrzeug</button>
-  <button data-tab="stats">Statistiken</button>
-  <button data-tab="faults">Fehler <span id="faultBadge" class="badge" hidden>0</span></button>
-  <button data-tab="diag">Diagnose</button>
-  <button data-tab="console">Konsole</button>
-  <button data-tab="files">Dateien</button>
-  <button data-tab="system">System</button>
+  <div class="tabs-main">
+    <button data-tab="chat" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg>Chat</button>
+    <button data-tab="vehicle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 15l2-6a2 2 0 0 1 2-1.4h10A2 2 0 0 1 19 9l2 6v3h-2.5M3 15v3h2.5M3 15h18"/><circle cx="7.5" cy="18" r="1.8"/><circle cx="16.5" cy="18" r="1.8"/></svg>Fahrzeug</button>
+    <button data-tab="stats"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Statistik</button>
+    <button data-tab="faults"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18h.01"/></svg>Fehler<span id="faultBadge" class="badge" hidden>0</span></button>
+    <button data-tab="jobs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12l3 3 5-6"/><rect x="3" y="3" width="18" height="18" rx="5"/></svg>Freigaben<span id="jobBadge" class="badge" hidden>0</span></button>
+    <button type="button" id="tabsMoreToggle" aria-expanded="false" aria-controls="tabsExtra"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>Mehr</button>
+    <div class="tabs-extra" id="tabsExtra">
+      <button data-tab="diag">Diagnose</button>
+      <button data-tab="console">Konsole</button>
+      <button data-tab="files">Dateien</button>
+      <button data-tab="system">System</button>
+    </div>
+  </div>
 </nav>
 
 <main>
@@ -51,24 +57,22 @@
 <section id="chat" class="tab">
   <div class="toolbar">
     <select id="convos" aria-label="Unterhaltung wählen"><option value="">Neuer Chat</option></select>
-    <button id="newChat">Neuer Chat</button>
+    <button id="newChat" class="secondary">+ Neu</button>
   </div>
   <div class="messages" id="messages"></div>
   <div class="composer">
     <select id="chatFile" aria-label="Datei anhängen"><option value="">Ohne Datei</option></select>
-    <textarea id="chatInput" placeholder="Frage zu deinem BMW oder zu den Diagnoseergebnissen ..."></textarea>
+    <textarea id="chatInput" placeholder="Frage zu deinem BMW …"></textarea>
     <button id="sendChat">Senden</button>
   </div>
-  <p class="hint">KI-Antworten sind keine Bestätigung, dass das Fahrzeug einen Befehl ausgeführt hat.</p>
-  <p id="chatgptPlanStatus" class="hint">ChatGPT-Planstatus wird geladen ...</p>
-  <div class="toolbar">
-    <button id="openChatImport" class="secondary">ChatGPT-Chats importieren</button>
-    <button id="openChatExport" class="secondary">Chats exportieren</button>
+  <div class="toolbar chat-links">
+    <button id="openChatImport" class="textbutton">ChatGPT-Chats importieren</button>
+    <button id="openChatExport" class="textbutton">Chats exportieren</button>
   </div>
 
   <div id="chatImportPanel" class="panel" hidden>
     <h3>ChatGPT-Projektchats importieren</h3>
-    <p>ChatGPT → Einstellungen → Datenkontrollen → Daten exportieren. ZIP in der Dateien-App entpacken und <code>conversations.json</code> auswählen. Die Datei wird <strong>nur lokal im Browser</strong> ausgewertet. Nur die angehakten Textnachrichten werden an deinen Raspberry Pi übertragen. Originalchats werden nicht synchronisiert.</p>
+    <p class="hint">ChatGPT → Einstellungen → Datenkontrollen → Daten exportieren, ZIP entpacken und <code>conversations.json</code> wählen. Ausgewertet wird im Browser; nur die angehakten Chats gehen an den Pi.</p>
     <input type="file" id="chatExport" accept=".json,application/json">
     <input type="search" id="chatImportSearch" placeholder="Chat-Titel suchen, z. B. MGU, DSP, Ambient">
     <div id="chatImportList" class="import-list"></div>
@@ -81,7 +85,6 @@
 
   <div id="chatExportPanel" class="panel" hidden>
     <h3>BMW-AI-Chats exportieren</h3>
-    <p>Wähle die gewünschten Chats und exportiere sie als Markdown-Datei (z. B. als Kontext für ChatGPT oder Claude) oder als JSON-Datei (Archiv). Dateien werden nur auf dein Gerät heruntergeladen; es erfolgt keine automatische Übertragung.</p>
     <input type="search" id="chatExportSearch" placeholder="Chats durchsuchen">
     <div class="import-list" id="chatExportList"></div>
     <div class="toolbar">
@@ -98,11 +101,9 @@
       <button id="closeChatExport" type="button" class="secondary">Schließen</button>
     </div>
     <p id="chatExportResult" class="hint" role="status"></p>
-    <p class="hint">Die Markdown-Datei kannst du im gewünschten ChatGPT-Projektchat als Kontext anhängen. <a href="https://chatgpt.com/" rel="noopener noreferrer" target="_blank">ChatGPT öffnen</a></p>
     <details>
       <summary>Automatische lokale Exportkopie</summary>
       <label class="check"><input type="checkbox" id="autoChatExport"> Eine aktuelle Exportkopie automatisch auf meinem Raspberry Pi bereithalten</label>
-      <p class="hint">Lokaler Export aus den bis zu 25 neuesten Chats. Keine Cloud-Synchronisierung. Die Datei bleibt im privaten Datenverzeichnis des Pi gespeichert.</p>
       <button id="downloadChatSnapshot" type="button" class="secondary">Letzten lokalen Export herunterladen</button>
       <p class="hint" id="chatExportInfo"></p>
     </details>
@@ -115,7 +116,7 @@
     <h2>Freigaben</h2>
     <button id="refreshJobs" class="secondary">Aktualisieren</button>
   </div>
-  <p class="hint">Nichts wird am Fahrzeug ausgeführt, bevor du den genauen Auftrag hier einmalig freigibst. Das gilt für Vorschläge aus dem Chat und von Claude sowie für Konsolenbefehle. Lesen und Herunterladen im Dateibrowser löst du direkt selbst aus.</p>
+  <p class="hint">Aufträge an die MGU laufen erst nach deiner Freigabe.</p>
   <div id="jobList"></div>
   <details id="jobHistoryBox">
     <summary>Verlauf <span id="jobHistoryCount"></span></summary>
@@ -185,7 +186,7 @@
         <label>Intervall km <input type="number" id="itemKm" min="0" max="300000" step="500" inputmode="numeric" placeholder="0 = keins"></label>
         <label>Nächste Fälligkeit (Datum) <input type="date" id="itemDueDate"></label>
         <label>Nächste Fälligkeit (km) <input type="number" id="itemDueKm" min="0" inputmode="numeric"></label>
-        <p class="hint wide">Eine feste Fälligkeit (z. B. laut Anzeige im Fahrzeug) gilt statt des Intervalls, bis du die Wartung als erledigt einträgst.</p>
+        <p class="hint wide">Eine feste Fälligkeit ersetzt das Intervall bis zum nächsten Eintrag.</p>
         <div class="actions wide">
           <button type="submit" id="itemSave">Speichern</button>
           <button type="button" id="itemCancel" class="secondary">Neu</button>
@@ -239,13 +240,11 @@
 
 <!-- ===== Fehler ===== -->
 <section id="stats" class="tab" hidden>
-  <div class="section-head">
-    <h2>Statistiken</h2>
-    <button id="refreshStats" class="secondary">Aktualisieren</button>
-  </div>
-
   <div class="panel stats-card">
-    <h3 class="stats-title">Fahrzeugstatistiken</h3>
+    <div class="section-head">
+      <h2 class="stats-title">Fahrzeugstatistiken</h2>
+      <button id="refreshStats" class="secondary">Aktualisieren</button>
+    </div>
     <p class="stats-sub" id="statsSubtitle">BMW</p>
     <div class="segmented" id="statsRange" role="tablist" aria-label="Zeitraum">
       <button type="button" data-range="today">Heute</button>
@@ -307,7 +306,6 @@
   </div>
   <details class="panel" id="statsSettingsPanel">
     <summary>Einstellungen und Speicher</summary>
-    <p class="hint">Die Messwerte bleiben auf diesem Pi. Sie gehen weder an GitHub noch an einen Cloud-Dienst. Standort und GPS werden nicht aufgezeichnet.</p>
     <label class="check"><input type="checkbox" id="statsEnabled"> Fahrten automatisch aufzeichnen</label>
     <div class="form-grid">
       <label class="wide">Fahrzeugname (Überschrift)<input type="text" id="statsVehicleName" maxlength="40" placeholder="z. B. BMW 318d" autocomplete="off"></label>
@@ -327,7 +325,7 @@
     </details>
     <details>
       <summary>Statistikdaten zurücksetzen</summary>
-      <p class="hint">Löscht alle Fahrten und Messwerte dieses Fahrzeugs. Wartung, Servicehistorie und Fehlerspeicher bleiben unverändert.</p>
+      <p class="hint">Wartung und Fehlerspeicher bleiben erhalten.</p>
       <div class="toolbar">
         <input type="text" id="statsResetConfirm" placeholder="STATISTIK LÖSCHEN" autocomplete="off">
         <button id="statsReset" class="danger">Zurücksetzen</button>
@@ -349,7 +347,6 @@
       <summary>Verlauf</summary>
       <div id="ccEvents"></div>
     </details>
-    <p class="hint">Die Warnungen, die das Fahrzeug anzeigt, mit dem Text aus dem Fahrzeug. Der Pi sammelt sie im Hintergrund, solange die MGU erreichbar ist.</p>
   </div>
 
   <div class="panel">
@@ -360,41 +357,31 @@
     <p class="hint" id="faultConnection"></p>
     <p class="hint" id="faultInfo">Wird bei jedem Fahrzeugstart einmal ausgelesen.</p>
     <p class="hint" id="faultCounts"></p>
-    <p class="hint" id="faultTextCatalog"></p>
-    <label>Fahrzeugarchiv <select id="faultArchive"><option value="">Aktuelle Kopplung</option></select></label>
-    <button id="faultEcuWorksheet" class="secondary" type="button">ECU-Zuordnungsvorlage herunterladen</button>
-    <details>
-      <summary>Private BMW-Fehlertexte aus MotorScope importieren</summary>
-      <form id="faultCatalogForm">
-        <label>MotorScope-Katalog <input id="faultCatalogFile" type="file" accept=".json,application/json" required></label>
-        <label>Bestätigte ECU-Zuordnung <input id="faultIdentityFile" type="file" accept=".json,application/json" required></label>
-        <button type="submit">Privaten Katalog auf dem Pi installieren</button>
-        <p id="faultImportResult" class="hint" role="status"></p>
-      </form>
-    </details>
     <div class="toolbar">
       <label>Steuergerät <select id="faultEcu"><option value="">Alle</option></select></label>
       <label>Status <select id="faultState"><option value="">Alle</option><option value="testFailed">Aktuell vorhanden</option><option value="pendingDTC">Vorläufig</option><option value="confirmedDTC">Bestätigt</option></select></label>
       <label>Suche <input id="faultQuery" type="search" placeholder="Code oder Fehlertext"></label>
+      <label>Fahrzeug <select id="faultArchive"><option value="">Aktuelle Kopplung</option></select></label>
     </div>
     <div id="faultList"></div>
     <details>
       <summary>Frühere Fehlercodes</summary>
       <div id="faultEarlier"></div>
     </details>
-    <p class="hint">Nur lesend (UDS 0x19), gelöscht wird nichts. Fehlertexte stammen aus dem lokal hinterlegten Steuergeräte-Katalog, sofern eine eindeutige Zuordnung vorliegt. Auslesen dauert bis zu 90 Sekunden.</p>
+    <p class="hint">Nur lesend, es wird nichts gelöscht.</p>
   </div>
 </section>
 
 <!-- ===== Diagnose ===== -->
 <section id="diag" class="tab" hidden>
+  <h2>Diagnose</h2>
 
   <div class="panel" id="diagModePanel">
     <div class="section-head">
-      <h2>Diagnosemodus für Claude</h2>
+      <h3>Diagnosemodus für Claude</h3>
       <span id="diagModeState" class="pill pill-off">Aus</span>
     </div>
-    <p>Öffnet für eine begrenzte Zeit den MCP-Zugang, über den Claude Diagnoseaufträge <strong>vorschlagen</strong> kann. Jeder Auftrag muss weiterhin von dir unter „Freigaben“ bestätigt werden. Außerhalb des Diagnosemodus ist der Zugang geschlossen.</p>
+    <p class="hint">Claude kann zeitlich begrenzt Aufträge vorschlagen. Ausgeführt wird nur, was du unter „Freigaben“ bestätigst.</p>
     <div class="toolbar">
       <label>Dauer: <select id="diagModeMinutes"><option value="30">30 Minuten</option><option value="120" selected>2 Stunden</option><option value="480">8 Stunden</option></select></label>
       <button id="diagModeToggle">Diagnosemodus starten</button>
@@ -407,7 +394,7 @@
         <button id="diagCopyUrl" type="button" class="secondary">Kopieren</button>
       </div>
       <h3>Verbindungsanfragen</h3>
-      <p class="hint">Claude zeigt beim Verbinden einen sechsstelligen Code. Erlaube nur die Anfrage, deren Code mit deiner Claude-Seite übereinstimmt.</p>
+      <p class="hint">Nur erlauben, wenn der Code mit der Claude-Seite übereinstimmt.</p>
       <div id="diagRequests"></div>
     </div>
 
@@ -434,7 +421,7 @@
 
   <div class="panel">
     <div class="section-head">
-      <h2>MGU</h2>
+      <h3>MGU</h3>
       <button id="refreshStatus" class="secondary">Aktualisieren</button>
     </div>
     <div id="pairPanel" class="panel" hidden>
@@ -447,11 +434,10 @@
       <summary>Rohdaten</summary>
       <pre id="statusResult">Noch keine Abfrage</pre>
     </details>
-    <p class="hint">Nicht verfügbare Live-Daten bleiben ausdrücklich als nicht verfügbar markiert. Fahrzeugfunktionen (Lenkrad-/Sitzheizung, Ambiente) sind gesperrt, solange kein geprüfter Steuergeräte-Adapter vorhanden ist.</p>
   </div>
 
   <div class="panel">
-    <h2>Systemdiagnose</h2>
+    <h3>Systemdiagnose</h3>
     <div class="toolbar">
       <select id="preset" aria-label="Diagnose wählen">
         <option value="system">System</option>
@@ -469,7 +455,7 @@
 
   <div class="panel">
     <div class="section-head">
-      <h2>Berichte</h2>
+      <h3>Berichte</h3>
       <button id="refreshReports" class="secondary">Aktualisieren</button>
     </div>
     <div id="reportList"></div>
@@ -485,7 +471,7 @@
 <!-- ===== Konsole ===== -->
 <section id="console" class="tab" hidden>
   <div class="console-heading">
-    <div><h2>MGU-Terminal</h2><p class="hint">Befehle auf der Headunit ausführen – im geschützten Lesemodus.</p></div>
+    <div><h2>Konsole</h2></div>
     <div class="console-connection"><span id="consoleDot" class="console-dot"></span><span id="consoleConnectionText">MGU prüfen ...</span><button type="button" id="consoleRefreshConnection" class="console-utility" title="Verbindung erneut prüfen">↻</button></div>
   </div>
   <div class="console-terminal">
@@ -511,7 +497,7 @@
   </div>
   <p id="consoleResult" class="console-result hint" role="status"></p>
   <div class="console-shortcuts">
-    <div class="console-shortcut-header"><strong>Schnellbefehle</strong><span>Antippen füllt das Eingabefeld</span></div>
+    <div class="console-shortcut-header"><strong>Schnellbefehle</strong></div>
     <div class="console-shortcut-list">
       <button type="button" class="console-chip" data-console-command="help">help</button>
       <button type="button" class="console-chip" data-console-command="ls /etc/cinemo">Dateien anzeigen</button>
@@ -557,7 +543,6 @@
     </div>
     <div id="mguCrumbs" class="crumbs"></div>
     <div id="mguListing" class="file-list"><p class="hint">Ordner oben wählen.</p></div>
-    <p class="hint">Browser-Downloads werden direkt übertragen. „Auf Pi speichern“ legt eine Kopie in der Bibliothek ab.</p>
   </div>
 
   <div class="panel">
@@ -566,7 +551,6 @@
       <button id="refreshFoundLogs" class="secondary">Aktualisieren</button>
     </div>
     <label class="check"><input type="checkbox" id="foundLogsAuto" disabled> Von Claude gefundene Logs automatisch auf den Pi holen</label>
-    <p class="hint">Claude meldet Logdateien, die es bei freigegebenen Aufträgen findet. Ohne Automatik holst du sie hier per Klick. Inhalte gehen dabei nicht an Claude.</p>
     <div id="foundLogs"></div>
   </div>
 
@@ -589,70 +573,15 @@
 
 <!-- ===== System ===== -->
 <section id="system" class="tab" hidden>
-  <details class="panel" id="serviceReferencePanel">
-    <summary>BMW-Servicecode-Referenz</summary>
-    <p id="serviceReferenceStatus" role="status"></p>
-    <div class="toolbar">
-      <input type="search" id="serviceReferenceSearch" placeholder="Code, Name oder Namensraum" aria-label="Servicecodes suchen">
-      <select id="serviceReferenceFilter" aria-label="Nach Referenzstatus filtern">
-        <option value="">Alle</option><option value="verified">Bestätigt</option><option value="external">Extern dokumentiert</option><option value="unknown">Unbekannt</option>
-        <option value="ambiguous">Mehrdeutig</option><option value="reserved">Reserviert</option><option value="unverified">Ungeprüft</option>
-      </select>
-      <button type="button" id="serviceReferenceExport" class="secondary">Unbekannte Codes exportieren</button>
-    </div>
-    <form id="serviceReferenceForm" class="toolbar">
-      <label>Referenzdaten <input type="file" id="serviceReferenceFile" accept=".json,application/json" required></label>
-      <button type="submit">Referenz importieren</button>
-    </form>
-    <div id="serviceReferenceRows"></div>
-  </details>
+  <h2>System</h2>
   <div class="panel">
-    <h3>Fehlertextdatenbank</h3>
-    <p id="referenceStatus" role="status"></p>
-    <button id="referenceCheck" class="secondary" type="button">Status aktualisieren</button>
-    <form id="referenceForm">
-      <label>Lokale SQLite-Referenz <input id="referenceFile" type="file" accept=".sqlite" required></label>
-      <button type="submit">Validieren und installieren</button>
-    </form>
-    <div class="toolbar">
-      <button id="referenceRestore" type="button" class="secondary">Letzte Sicherung wiederherstellen</button>
-      <button id="referenceReport" type="button" class="secondary">Importbericht herunterladen</button>
-    </div>
-  </div>
-  <div class="panel">
-    <h2>Verbindungen</h2>
-    <div class="toolbar"><button id="connectionRefresh">Aktualisieren</button><button id="sshProbe">SSH prüfen</button></div>
-    <pre id="connectionStatus" role="status"></pre>
-    <details id="connectionLogPanel">
-      <summary>Live-Diagnoselog</summary>
-      <div class="toolbar">
-        <button id="connectionLogCopy">Kopieren</button><button id="connectionLogClear">Leeren</button>
-        <button id="connectionLogText">TXT</button><button id="connectionLogJson">JSON</button>
-        <label><input id="connectionLogScroll" type="checkbox" checked> Automatisch scrollen</label>
-      </div>
-      <pre id="connectionLog" class="terminal-output"></pre>
-    </details>
-  </div>
-  <details class="panel" id="githubDiagnosticsPanel">
-    <summary>Diagnoseberichte auf GitHub</summary>
-    <p class="hint">Überträgt Änderungen am technischen Diagnosezustand an ein privates Repository. Der Bericht enthält Status, Zeiten und Versionen.</p>
-    <form id="githubDiagnosticsForm" class="form-grid" autocomplete="off">
-      <label class="wide">Privates Repository <input id="githubDiagnosticsRepo" type="text" maxlength="140" placeholder="Konto/Repository" autocapitalize="none" spellcheck="false"></label>
-      <label class="wide">Fine-grained GitHub-Token <input id="githubDiagnosticsToken" type="password" maxlength="259" autocomplete="new-password" autocapitalize="none" spellcheck="false"></label>
-      <label class="check wide"><input type="checkbox" id="githubDiagnosticsEnabled"> Automatische Übertragung freigeben</label>
-      <button id="githubDiagnosticsSave" type="submit" disabled>Speichern</button>
-    </form>
-    <p class="hint" id="githubDiagnosticsStatus" role="status"></p>
-  </details>
-  <h2>Raspberry-Pi-Updates</h2>
-  <p class="hint">Nur ZIP-Pakete mit einer geprüften BMW-AI-Herausgebersignatur können installiert werden. Vorher wird ein Backup erstellt; bei fehlgeschlagenem Health-Test erfolgt ein Rollback. Die Anmeldedaten, Chats und Fahrzeugkopplung werden nicht ersetzt.</p>
-  <div class="panel">
-    <button id="refreshUpdates">Jetzt auf Updates prüfen</button>
-    <p id="updateCheckResult" class="hint" role="status">Manuelle Prüfung startet einen GitHub-Abruf. Bei aktivierter Automatik werden neue signierte Versionen installiert.</p>
+    <div class="section-head"><h3>Updates</h3><button id="refreshUpdates" class="secondary">Jetzt prüfen</button></div>
+    <p id="updateCheckResult" class="hint" role="status"></p>
     <label class="check"><input type="checkbox" id="autoUpdate" disabled> Signierte Updates automatisch installieren</label>
-    <p class="hint" id="autoUpdateInfo" role="status">Gespeicherte Einstellung wird beim Öffnen geladen.</p>
+    <p class="hint" id="autoUpdateInfo" role="status"></p>
     <details>
       <summary>Technische Details</summary>
+      <p class="hint">Installiert werden nur signierte Pakete. Vorher entsteht ein Backup, bei fehlgeschlagenem Health-Test folgt ein Rollback. Anmeldedaten, Chats und Kopplung bleiben.</p>
       <pre id="updateStatus">Noch nicht abgefragt</pre>
     </details>
   </div>
@@ -667,9 +596,21 @@
       <button id="cancelUpdate" class="danger">Abbrechen</button>
     </div>
   </details>
-
   <div class="panel">
-    <h2>Benachrichtigungen</h2>
+    <div class="section-head"><h3>Verbindungen</h3><div class="actions"><button id="connectionRefresh" class="secondary">Aktualisieren</button><button id="sshProbe" class="secondary">SSH prüfen</button></div></div>
+    <pre id="connectionStatus" role="status"></pre>
+    <details id="connectionLogPanel">
+      <summary>Live-Diagnoselog</summary>
+      <div class="toolbar">
+        <button id="connectionLogCopy">Kopieren</button><button id="connectionLogClear">Leeren</button>
+        <button id="connectionLogText">TXT</button><button id="connectionLogJson">JSON</button>
+        <label><input id="connectionLogScroll" type="checkbox" checked> Automatisch scrollen</label>
+      </div>
+      <pre id="connectionLog" class="terminal-output"></pre>
+    </details>
+  </div>
+  <div class="panel">
+    <h3>Benachrichtigungen</h3>
     <label class="check"><input type="checkbox" id="notifyEnabled"> Benachrichtigungen aufs Handy senden</label>
     <div class="form-grid">
       <label>Server <input type="text" id="notifyServer" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
@@ -694,19 +635,77 @@
     <div id="notifyLog"></div>
     <p class="hint" id="pollInfo"></p>
   </div>
-
-  <div class="section-head">
-    <h2>Serverprotokoll</h2>
+  <div class="panel">
+    <h3>ChatGPT</h3>
+    <p id="chatgptPlanStatus" class="hint">Status wird geladen …</p>
+  </div>
+  <p class="group-title">Referenzdaten</p>
+  <details class="panel" id="faultTextPanel">
+    <summary>Fehlertexte</summary>
+    <p class="hint" id="faultTextCatalog"></p>
+    <h3>SQLite-Fehlertextdatenbank</h3>
+    <p id="referenceStatus" role="status"></p>
+    <button id="referenceCheck" class="secondary" type="button">Status aktualisieren</button>
+    <form id="referenceForm">
+      <label>Lokale SQLite-Referenz <input id="referenceFile" type="file" accept=".sqlite" required></label>
+      <button type="submit">Validieren und installieren</button>
+    </form>
+    <div class="toolbar">
+      <button id="referenceRestore" type="button" class="secondary">Letzte Sicherung wiederherstellen</button>
+      <button id="referenceReport" type="button" class="secondary">Importbericht herunterladen</button>
+    </div>
+    <h3>MotorScope-Katalog</h3>
+    <button id="faultEcuWorksheet" class="secondary" type="button">ECU-Zuordnungsvorlage herunterladen</button>
+    <details>
+      <summary>Private BMW-Fehlertexte aus MotorScope importieren</summary>
+      <form id="faultCatalogForm">
+        <label>MotorScope-Katalog <input id="faultCatalogFile" type="file" accept=".json,application/json" required></label>
+        <label>Bestätigte ECU-Zuordnung <input id="faultIdentityFile" type="file" accept=".json,application/json" required></label>
+        <button type="submit">Privaten Katalog auf dem Pi installieren</button>
+        <p id="faultImportResult" class="hint" role="status"></p>
+      </form>
+    </details>
+  </details>
+  <details class="panel" id="serviceReferencePanel">
+    <summary>BMW-Servicecode-Referenz</summary>
+    <p id="serviceReferenceStatus" role="status"></p>
+    <div class="toolbar">
+      <input type="search" id="serviceReferenceSearch" placeholder="Code, Name oder Namensraum" aria-label="Servicecodes suchen">
+      <select id="serviceReferenceFilter" aria-label="Nach Referenzstatus filtern">
+        <option value="">Alle</option><option value="verified">Bestätigt</option><option value="external">Extern dokumentiert</option><option value="unknown">Unbekannt</option>
+        <option value="ambiguous">Mehrdeutig</option><option value="reserved">Reserviert</option><option value="unverified">Ungeprüft</option>
+      </select>
+      <button type="button" id="serviceReferenceExport" class="secondary">Unbekannte Codes exportieren</button>
+    </div>
+    <form id="serviceReferenceForm" class="toolbar">
+      <label>Referenzdaten <input type="file" id="serviceReferenceFile" accept=".json,application/json" required></label>
+      <button type="submit">Referenz importieren</button>
+    </form>
+    <div id="serviceReferenceRows"></div>
+  </details>
+  <p class="group-title">Protokolle</p>
+  <details class="panel" id="githubDiagnosticsPanel">
+    <summary>Diagnoseberichte auf GitHub</summary>
+    <p class="hint">Technischer Diagnosezustand (Status, Zeiten, Versionen) in ein privates Repository.</p>
+    <form id="githubDiagnosticsForm" class="form-grid" autocomplete="off">
+      <label class="wide">Privates Repository <input id="githubDiagnosticsRepo" type="text" maxlength="140" placeholder="Konto/Repository" autocapitalize="none" spellcheck="false"></label>
+      <label class="wide">Fine-grained GitHub-Token <input id="githubDiagnosticsToken" type="password" maxlength="259" autocomplete="new-password" autocapitalize="none" spellcheck="false"></label>
+      <label class="check wide"><input type="checkbox" id="githubDiagnosticsEnabled"> Automatische Übertragung freigeben</label>
+      <button id="githubDiagnosticsSave" type="submit" disabled>Speichern</button>
+    </form>
+    <p class="hint" id="githubDiagnosticsStatus" role="status"></p>
+  </details>
+  <details class="panel">
+    <summary>Serverprotokoll</summary>
     <div class="actions">
       <button id="refreshLogs" class="secondary">Aktualisieren</button>
       <button id="downloadLogs" class="secondary">Herunterladen</button>
     </div>
-  </div>
-  <pre id="logsResult"></pre>
+    <pre id="logsResult"></pre>
+  </details>
 </section>
 
 </main>
-<footer>Privates Projekt · MGU-Schreibzugriffe gesperrt</footer>
 </div>
 
 <p id="notice" role="status"></p>
