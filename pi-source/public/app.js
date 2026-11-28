@@ -1373,6 +1373,9 @@ async function refreshUpdates(){
     label.textContent=d.auto===true
       ?'Automatische Updates sind auf dem Pi gespeichert und aktiviert.'
       :'Automatische Updates sind auf dem Pi gespeichert und deaktiviert.';
+    const a=d.autoCheck;
+    if(d.auto===true&&a&&a.lastAt)label.textContent+=' Letzte Prüfung '+stamp(a.lastAt)+': '+(a.message||a.result)+(a.nextAt?' Nächste '+stamp(a.nextAt)+'.':'');
+    else if(d.auto===true)label.textContent+=' Erste Prüfung etwa 2 Minuten nach dem Start des Pi-Servers.';
   }catch(e){
     label.textContent='Automatische Updates: Zustand konnte nicht geladen werden ('+e.message+').';
     $('updateStatus').textContent='Updater: '+e.message;

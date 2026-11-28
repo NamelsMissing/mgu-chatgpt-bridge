@@ -15,7 +15,7 @@ const githubDiagnostics=require('./github-diagnostics');
 const serviceReference=require('./service-reference');
 const telemetry=require('./telemetry');
 const {URL}=require('node:url');
-const SERVER_VERSION='0.14.0'; // Also embedded in server-rendered HTML for safe browser refresh.
+const SERVER_VERSION='0.14.1'; // Also embedded in server-rendered HTML for safe browser refresh.
 const loadEnv=(file)=>{if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const m=/^([A-Z_]+)=(.*)$/.exec(line.trim());if(m&&!process.env[m[1]])process.env[m[1]]=m[2];}};
 loadEnv(path.join(__dirname,'.env'));
 const PORT=Number(process.env.PORT||8790), HOST=process.env.HOST||'127.0.0.1';
@@ -1831,6 +1831,7 @@ async function mcpCall(name,args,client){
   for(const [k,v] of Object.entries(args)){const t=tool.properties[k].type;if(t==='string'&&typeof v!=='string'||t==='array'&&!Array.isArray(v)||t==='integer'&&!Number.isInteger(v))throw Error('Invalid argument: '+k);}
   const mine=Object.values(st.jobs).filter(j=>j.source==='claude');
   if(name==='get_bridge_status')return {server:{version:SERVER_VERSION,time:now()},diagnostic_mode_until:new Date(diag.until).toISOString(),
+    updates:updatesView(),
     mgu_paired:!!st.mguConnection||(!!MGU&&!!DEVICE_TOKEN),jobs_waiting_for_approval:mine.filter(j=>j.status==='pending'&&!expireJob(j)).length,
     how_it_works:'Propose a job with a request_* tool, ask the owner to approve it on the BMW AI website, then call get_job_result.'};
   if(name==='get_vehicle_overview'){
@@ -2485,35 +2486,14 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
       // silently appear as an intentionally disabled auto-update checkbox.
       if(e.code!=='ENOENT')autoSettingsError=true;
     }
-    return send(res,200,{installedVersion:SERVER_VERSION,status,auto:prefs.auto===true,autoSettingsError,
+    return send(res,200,{installedVersion:SERVER_VERSION,status,auto:prefs.auto===true,autoSettingsError,autoCheck:autoUpdateCheck,
       channel:'NamelsMissing/mgu-chatgpt-bridge / pi-updates/stable.json',signedOnly:true});
   }
   if(req.method==='POST'&&p==='/api/v1/updates/check'){
     if(Date.now()-lastManualUpdateCheck<12000)return fail(res,429,'Bitte kurz warten, bevor du erneut nach Updates suchst.');
     lastManualUpdateCheck=Date.now();
-    const latest=await fetch(GITHUB_UPDATE_BASE+'stable.json',{redirect:'error',signal:AbortSignal.timeout(12000),headers:{'cache-control':'no-cache'}});
-    if(!latest.ok)return fail(res,502,'GitHub-Status HTTP '+latest.status);
-    const channelText=await latest.text();
-    if(channelText.length>4096)throw Error('GitHub-Kanal zu groß');
-    const channel=JSON.parse(channelText),version=channel.version,file=channel.file,digest=channel.sha256;
-    if(typeof version!=='string'||!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version)||file!=='BMW_AI_Pi_Update_v'+version+'.zip'||!(/^[a-f0-9]{64}$/).test(digest||''))throw Error('GitHub Updatekanal ungültig');
-    const parts=v=>v.split('.').map(Number),compare=(a,b)=>{const x=parts(a),y=parts(b);for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]-y[i];return 0;};
-    let installedVersion=SERVER_VERSION;
-    try{const marker=JSON.parse(fs.readFileSync(path.join(__dirname,'update-version.json'),'utf8'));if(/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(marker.version))installedVersion=marker.version;}catch(e){}
-    if(compare(version,installedVersion)<=0)return send(res,200,{state:'current',version:installedVersion,message:'Keine neue Version. Installiert: '+installedVersion});
-    let prefs={auto:false};try{prefs=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8'));}catch(e){}
-    if(prefs.auto!==true)return send(res,200,{state:'available',version,installedVersion,message:'Neue Version '+version+' verfügbar. Automatische Installation ist deaktiviert.'});
-    if(!fs.existsSync(UPDATE_QUEUE)||!fs.existsSync(UPDATE_INBOX))return fail(res,503,'Signierter Update-Dienst nicht eingerichtet');
-    const response=await fetch(GITHUB_UPDATE_BASE+file,{redirect:'error',signal:AbortSignal.timeout(18000)});
-    if(!response.ok)return fail(res,502,'Update Download HTTP '+response.status);
-    const raw=Buffer.from(await response.arrayBuffer());
-    if(raw.length<200||raw.length>3*1024*1024||hash(raw)!==digest)throw Error('GitHub ZIP Prüfsumme oder Größe ungültig');
-    // The separate root updater re-verifies publisher signature and file hashes.
-    const id=uid();
-    fs.writeFileSync(path.join(UPDATE_INBOX,id+'.zip'),raw,{flag:'wx',mode:0o600});
-    fs.writeFileSync(path.join(UPDATE_QUEUE,id+'.json'),JSON.stringify({id,sha256:digest,requestedAt:now(),kind:'manual-github'}),{flag:'wx',mode:0o600});
-    audit('manual_github_update_queued',version);
-    return send(res,202,{state:'queued',version,installedVersion,message:'Signierte Version '+version+' zur Prüfung und Installation vorgemerkt.'});
+    const r=await githubUpdate('manual-github');
+    return send(res,r.state==='queued'?202:200,r);
   }
   if(req.method==='POST'&&p==='/api/v1/updates/upload'){
     if(!fs.existsSync(UPDATE_INBOX))return fail(res,503,'Update-Dienst nicht installiert. Installationsskript zuerst ausführen.');
@@ -2561,11 +2541,71 @@ function route(req,res){const url=new URL(req.url,'http://localhost');const p=ur
  })().catch(e=>{if(!res.headersSent)fail(res,e.status||400,e.message||'Internal error');else res.destroy();});}
 serviceCatalog.start();
 migrateVehicleBook();
+
+// ----- GitHub-Updates: Prüfen und signiertes ZIP für den Root-Updater vormerken -----
+// Der Root-Updater prüft Signatur und Hashes erneut und installiert mit Backup und Rollback.
+// Die automatische Prüfung läuft im Pi-Server selbst (alle 30 min), damit sie nicht
+// davon abhängt, ob der Root-Updater selbst GitHub abfragt.
+const AUTO_UPDATE_EVERY=30*60000,AUTO_UPDATE_RETRY=6*3600000;
+let autoUpdateCheck={lastAt:null,result:null,version:null,message:null,nextAt:null};
+const versionParts=v=>v.split('.').map(Number);
+function compareVersions(a,b){const x=versionParts(a),y=versionParts(b);for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]-y[i];return 0;}
+function installedPiVersion(){
+  try{const marker=JSON.parse(fs.readFileSync(path.join(__dirname,'update-version.json'),'utf8'));if(/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(marker.version))return marker.version;}catch(e){}
+  return SERVER_VERSION;
+}
+function queuedUpdates(){try{return fs.readdirSync(UPDATE_QUEUE).filter(f=>f.endsWith('.json')).length;}catch(e){return 0;}}
+async function githubUpdate(kind){
+  const latest=await fetch(GITHUB_UPDATE_BASE+'stable.json',{redirect:'error',signal:AbortSignal.timeout(12000),headers:{'cache-control':'no-cache'}});
+  if(!latest.ok)throw Object.assign(Error('GitHub-Status HTTP '+latest.status),{status:502});
+  const channelText=await latest.text();
+  if(channelText.length>4096)throw Error('GitHub-Kanal zu groß');
+  const channel=JSON.parse(channelText),version=channel.version,file=channel.file,digest=channel.sha256;
+  if(typeof version!=='string'||!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version)||file!=='BMW_AI_Pi_Update_v'+version+'.zip'||!(/^[a-f0-9]{64}$/).test(digest||''))throw Error('GitHub Updatekanal ungültig');
+  const installedVersion=installedPiVersion();
+  if(compareVersions(version,installedVersion)<=0)return {state:'current',version:installedVersion,message:'Keine neue Version. Installiert: '+installedVersion};
+  let prefs={auto:false};try{prefs=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8'));}catch(e){}
+  if(prefs.auto!==true)return {state:'available',version,installedVersion,message:'Neue Version '+version+' verfügbar. Automatische Installation ist deaktiviert.'};
+  if(!fs.existsSync(UPDATE_QUEUE)||!fs.existsSync(UPDATE_INBOX))throw Object.assign(Error('Signierter Update-Dienst nicht eingerichtet'),{status:503});
+  if(kind==='auto-github'){
+    if(queuedUpdates())return {state:'waiting',version,installedVersion,message:'Ein Update wartet bereits auf den Root-Updater.'};
+    const tried=st.autoUpdate||{};
+    if(tried.version===version&&Date.now()-Date.parse(tried.at)<AUTO_UPDATE_RETRY)
+      return {state:'pending',version,installedVersion,message:'Version '+version+' wurde am '+tried.at.slice(0,16).replace('T',' ')+' UTC vorgemerkt, ist aber noch nicht installiert. Neuer Versuch nach 6 h; Updater-Status prüfen.'};
+  }
+  const response=await fetch(GITHUB_UPDATE_BASE+file,{redirect:'error',signal:AbortSignal.timeout(18000)});
+  if(!response.ok)throw Object.assign(Error('Update Download HTTP '+response.status),{status:502});
+  const raw=Buffer.from(await response.arrayBuffer());
+  if(raw.length<200||raw.length>3*1024*1024||hash(raw)!==digest)throw Error('GitHub ZIP Prüfsumme oder Größe ungültig');
+  // Der Root-Updater kennt nur die bewährte Auftragsart manual-github; die Herkunft steht im Auditprotokoll.
+  const id=uid();
+  fs.writeFileSync(path.join(UPDATE_INBOX,id+'.zip'),raw,{flag:'wx',mode:0o600});
+  fs.writeFileSync(path.join(UPDATE_QUEUE,id+'.json'),JSON.stringify({id,sha256:digest,requestedAt:now(),kind:'manual-github'}),{flag:'wx',mode:0o600});
+  if(kind==='auto-github')st.autoUpdate={version,at:now()};
+  audit(kind==='auto-github'?'auto_github_update_queued':'manual_github_update_queued',version);
+  return {state:'queued',version,installedVersion,message:'Signierte Version '+version+' zur Prüfung und Installation vorgemerkt.'};
+}
+async function autoUpdateOnce(){
+  const at=now();
+  try{const r=await githubUpdate('auto-github');autoUpdateCheck={lastAt:at,result:r.state,version:r.version,message:r.message};}
+  catch(e){autoUpdateCheck={lastAt:at,result:'error',version:null,message:String(e.message).slice(0,200)};}
+  autoUpdateCheck.nextAt=new Date(Date.now()+AUTO_UPDATE_EVERY).toISOString();
+  return autoUpdateCheck;
+}
+function updatesView(){
+  let status=null,auto=null;
+  try{status=JSON.parse(fs.readFileSync(UPDATE_STATUS,'utf8'));}catch(e){}
+  try{auto=JSON.parse(fs.readFileSync(UPDATE_PREFS,'utf8')).auto===true;}catch(e){}
+  return {installed:installedPiVersion(),auto,auto_check:autoUpdateCheck,updater_status:status,queued:queuedUpdates()};
+}
+function scheduleAutoUpdate(first){setTimeout(()=>{autoUpdateOnce().finally(()=>scheduleAutoUpdate(AUTO_UPDATE_EVERY));},first).unref();}
 if(require.main===module){localFaultTexts();http.createServer(route).listen(PORT,HOST,()=>console.log('BMW AI Pi server: http://'+HOST+':'+PORT));setTimeout(scheduleLocalChatExport,6500);
  // Nach einem Neustart ist der Diagnosemodus aus: einen eventuell noch offenen Funnel schließen.
  if(st.mcp.autoFunnel===true)syncFunnel();
  // Fahrzeug im Hintergrund abfragen (Verläufe, Meldungen, Benachrichtigungen).
  setTimeout(()=>{pollOnce().finally(schedulePoll);},20000).unref();
+ // Automatische Updates: erste Prüfung 2 min nach dem Start, dann alle 30 min.
+ scheduleAutoUpdate(2*60000);
  // Gefundene Logs, die beim letzten Versuch nicht geholt werden konnten (MGU offline), erneut anstoßen.
  setInterval(()=>{for(const r of Object.values(st.logLibrary.found))if(st.logLibrary.auto===true&&r.status==='failed'&&/MGU|fetch|timeout|aborted/i.test(r.error||''))r.status='queued';pumpLogQueue();},10*60000).unref();}
-module.exports={nextBmwService,faultDetails,route,pollOnce,noteFaultMemory,faultsView,runJob,jobFor,exportChatDocument,setDiagMode,diagView};
+module.exports={autoUpdateOnce,nextBmwService,faultDetails,route,pollOnce,noteFaultMemory,faultsView,runJob,jobFor,exportChatDocument,setDiagMode,diagView};
