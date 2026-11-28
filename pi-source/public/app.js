@@ -403,7 +403,7 @@ function jobCard(j){
  }
  return panel;
 }
-async function refreshJobs(){
+async function refreshJobs(){refreshAutoApprove();
  if(!token)return;
  try{
   const d=await api('/jobs');
@@ -544,7 +544,7 @@ $('refreshReports').onclick=refreshReports;
 function refreshDiag(){refreshDiagMode();refreshStatus();refreshReports();}
 
 // ----- MGU mobile terminal: read-only, individually approved commands -----
-let pendingConsoleId=null,consoleHistory=[],consoleHistoryIndex=0;
+let consoleHistory=[],consoleHistoryIndex=0;
 const CONSOLE_TRANSCRIPT_KEY='bmw-ai-mgu-terminal-session-v1';
 let consoleTranscript=[];
 function consoleAddLine(content,kind){
@@ -565,62 +565,22 @@ function consoleRestore(){
   if(Array.isArray(saved))consoleTranscript=saved.filter(x=>x&&typeof x.text==='string'&&typeof x.kind==='string').slice(-90);
  }catch(e){consoleTranscript=[];}
  $('consoleOutput').replaceChildren();
- if(!consoleTranscript.length)consolePrint('BMW AI MGU · Lesemodus\nTippe „help“ ein oder wähle unten einen Schnellbefehl.','info');
+ if(!consoleTranscript.length)consolePrint('BMW AI MGU · root-Shell\nBefehl eingeben oder unten einen Schnellbefehl wählen.','info');
  else for(const entry of consoleTranscript)consoleAddLine(entry.text,entry.kind);
 }
 function consoleSetResult(message,error=false){
  const el=$('consoleResult');el.textContent=message;el.classList.toggle('is-error',error);
 }
 function consoleCommandSafetyProblem(command){
- if(command.length>450)return 'Der Befehl ist zu lang (maximal 450 Zeichen).';
- if(/[\r\n]/.test(command))return 'Der Lesemodus nimmt jeweils einen Befehl entgegen.';
+ if(command.length>16000)return 'Der Befehl ist zu lang (maximal 16000 Zeichen).';
  return '';
 }
-let expertUntil=null,expertRunning=false;
-function setExpert(state){
- expertUntil=state.until;
- $('consoleMode').textContent=expertUntil?'Expertenmodus · Schreibzugriff möglich':'Lesemodus';
- $('expertToggle').textContent=expertUntil?'Expertenmodus beenden':'Expertenmodus freigeben';
- $('expertToggle').disabled=!state.configured;
- $('expertPassword').hidden=!!expertUntil||!state.configured;
-}
-$('expertToggle').onclick=async()=>{
- const password=$('expertPassword').value;
- $('expertPassword').value='';
- try{setExpert(await api('/console/expert','POST',expertUntil?{enabled:false}:{enabled:true,password}));}
- catch(e){consoleSetResult(e.message,true);}
-};
-$('expertAbort').onclick=async()=>{
- try{await api('/console/expert/abort','POST');}catch(e){consoleSetResult(e.message,true);}
-};
 $('copyCommand').onclick=async()=>{
  try{await navigator.clipboard.writeText($('consoleInput').value||consoleHistory[consoleHistory.length-1]||'');}
  catch(e){consoleSetResult(e.message,true);}
 };
-async function runExpert(command){
- if(expertRunning)return;
- if(!confirm('Diesen SSH-Befehl mit möglichen Schreibzugriffen ausführen?\n\n'+command))return;
- expertRunning=true;
- $('expertAbort').disabled=false;
- consoleLock(true);
- consoleHistory.push(command);consoleHistory=consoleHistory.slice(-40);consoleHistoryIndex=consoleHistory.length;
- consolePrint('ssh $ '+command,'cmd');
- consoleSetResult('SSH-Befehl läuft …');
- try{
-  const r=await api('/console/expert/run','POST',{command,confirmed:true});
-  if(r.stdout)consolePrint(r.stdout,'output');
-  if(r.stderr)consolePrint(r.stderr,'error');
-  const result=r.cancelled?'SSH-Verbindung abgebrochen':r.timedOut?'Zeitlimit erreicht':r.outputLimit?'Ausgabelimit erreicht':'Exit-Code '+r.exitCode;
-  consoleSetResult(result,r.exitCode!==0);
-  consolePrint(result,r.exitCode===0?'success':'error');
- }catch(e){consoleSetResult(e.message,true);}
- finally{expertRunning=false;$('expertAbort').disabled=true;consoleLock(false);}
-}
 function consoleHumanError(err){
  const raw=String(err&&err.message||err||'Unbekannter Fehler');
- if(raw.includes('Shell operators not allowed'))return 'Shell-Operatoren sind hier gesperrt. Bitte keine Schleifen, Pipes oder Umleitungen verwenden.';
- if(raw.includes('Command not permitted'))return 'Befehl nicht freigegeben. Nutze „help“.';
- if(raw.includes('Path outside read-only allowlist'))return 'Pfad außerhalb der erlaubten Lesebereiche (/etc/cinemo, /etc/oap, /usr/lib, /var/log).';
  if(raw.includes('MGU HTTP 400')){
   const at=raw.indexOf('{');
   if(at>=0){try{const parsed=JSON.parse(raw.slice(at));if(parsed.error)return String(parsed.error);}catch(e){}}
@@ -633,7 +593,6 @@ function consoleLock(locked){$('consoleSend').disabled=locked;$('consoleInput').
 async function refreshConsoleConnection(){
  const label=$('consoleConnectionText'),dot=$('consoleDot');
  label.textContent='Prüfen …';dot.className='console-dot';
- api('/console/expert').then(setExpert).catch(e=>consoleSetResult(e.message,true));
  try{
   const d=await api('/status');
   if(d.mgu&&d.mgu.online===true){label.textContent='MGU verbunden';dot.className='console-dot is-online';}
@@ -641,61 +600,39 @@ async function refreshConsoleConnection(){
  }catch(err){label.textContent='Verbindung unklar';dot.className='console-dot is-offline';consoleSetResult(consoleHumanError(err),true);}
 }
 $('consoleRefreshConnection').onclick=refreshConsoleConnection;
+let consoleRunning=false;
 $('consoleCommandForm').onsubmit=async event=>{
  event.preventDefault();
- if(pendingConsoleId)return consoleSetResult('Zuerst die offene Freigabe bestätigen oder abbrechen.',true);
+ if(consoleRunning)return;
  const command=$('consoleInput').value;
  if(!command.trim())return consoleSetResult('Gib zuerst einen Befehl ein.',true);
- if(expertUntil){
-  if(Date.parse(expertUntil)<=Date.now()){setExpert({configured:true,until:null});return consoleSetResult('SSH-Freigabe abgelaufen.',true);}
-  return runExpert(command);
- }
  const problem=consoleCommandSafetyProblem(command);
- consolePrint('mgu $ '+command,'cmd');
+ consolePrint('mgu # '+command,'cmd');
  if(problem){consolePrint('Nicht ausgeführt: '+problem,'error');consoleSetResult(problem,true);return;}
- consoleLock(true);consoleSetResult('Befehl wird zur Freigabe vorbereitet ...');
+ consoleRunning=true;consoleLock(true);consoleSetResult('Läuft …');
+ consoleHistory.push(command);consoleHistory=consoleHistory.slice(-40);consoleHistoryIndex=consoleHistory.length;
+ $('consoleInput').value='';
  try{
-  const r=await api('/jobs','POST',{type:'console',payload:{command},reason:'MGU-Terminal (lesend): '+command});
-  pendingConsoleId=r.job.id;
-  $('consoleExact').textContent=command;$('consoleApproval').hidden=false;
-  $('consoleInput').value='';
-  consoleHistory.push(command);consoleHistory=consoleHistory.slice(-40);consoleHistoryIndex=consoleHistory.length;
-  consolePrint('Wartet auf deine einmalige Freigabe.','info');
-  consoleSetResult('Freigabe erforderlich – bitte Befehl prüfen.');
-  $('consoleApprove').focus();
- }catch(err){const msg=consoleHumanError(err);consolePrint('FEHLER: '+msg,'error');consoleSetResult(msg,true);consoleLock(false);}
+  const r=await api('/console/run','POST',{command,timeoutSec:Number($('consoleTimeout').value)||120});
+  if(r.stdout)consolePrint(r.stdout,'output');
+  if(r.stderr)consolePrint(r.stderr,'error');
+  if(!r.stdout&&!r.stderr)consolePrint('(keine Ausgabe)','info');
+  const end=r.timedOut?'Zeitlimit erreicht':r.signal?'Beendet durch '+r.signal:'Exit-Code '+r.exitCode;
+  consolePrint(end+(r.truncated?' · Ausgabe gekürzt':'')+' · '+(r.durationMs/1000).toFixed(1)+' s',r.exitCode===0?'success':'error');
+  consoleSetResult(end);
+ }catch(err){const msg=consoleHumanError(err);consolePrint('FEHLER: '+msg,'error');consoleSetResult(msg,true);}
+ finally{consoleRunning=false;consoleLock(false);$('consoleInput').focus();}
 };
 $('consoleInput').onkeydown=event=>{
  if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();$('consoleCommandForm').requestSubmit();}
  if(event.altKey&&event.key==='ArrowUp'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.max(0,consoleHistoryIndex-1);$('consoleInput').value=consoleHistory[consoleHistoryIndex];}
  else if(event.altKey&&event.key==='ArrowDown'&&consoleHistory.length){event.preventDefault();consoleHistoryIndex=Math.min(consoleHistory.length,consoleHistoryIndex+1);$('consoleInput').value=consoleHistoryIndex===consoleHistory.length?'':consoleHistory[consoleHistoryIndex];}
 };
-$('consoleApprove').onclick=async()=>{
- if(!pendingConsoleId)return;
- const id=pendingConsoleId,button=$('consoleApprove');button.disabled=true;
- consoleSetResult('MGU führt den freigegebenen Lesebefehl aus ...');
- try{
-  const d=await api('/jobs/'+id+'/approve','POST'),out=d.job.result||{};
-  const content=typeof out.stdout==='string'?out.stdout:JSON.stringify(out,null,2);
-  if(out.stderr)consolePrint(out.stderr,'error');
-  consolePrint(content||'(keine Ausgabe)',content.startsWith('[unavailable]')?'error':'output');
-  consolePrint('Beendet · Exit-Code '+(out.exitCode===undefined?'unbekannt':out.exitCode),out.exitCode===0?'success':'error');
-  consoleSetResult('Befehl abgeschlossen.');refreshJobs();
- }catch(err){const msg=consoleHumanError(err);consolePrint('FEHLER: '+msg,'error');consoleSetResult(msg,true);}
- finally{pendingConsoleId=null;$('consoleApproval').hidden=true;consoleLock(false);button.disabled=false;$('consoleInput').focus();}
-};
-$('consoleReject').onclick=async()=>{
- if(!pendingConsoleId)return;
- const id=pendingConsoleId;$('consoleReject').disabled=true;
- try{await api('/jobs/'+id+'/reject','POST');consolePrint('Abgebrochen – nichts ausgeführt.','info');consoleSetResult('Befehl nicht ausgeführt.');}
- catch(err){const msg=consoleHumanError(err);consolePrint('Freigabe: '+msg,'error');consoleSetResult(msg,true);}
- finally{pendingConsoleId=null;$('consoleApproval').hidden=true;$('consoleReject').disabled=false;consoleLock(false);$('consoleInput').focus();}
-};
 document.querySelectorAll('[data-console-command]').forEach(button=>{
  button.onclick=()=>{
   const input=$('consoleInput');if(input.disabled)return;
   input.value=button.dataset.consoleCommand||'';input.focus();
-  consoleSetResult('Befehl eingetragen. Mit „Ausführen“ anfragen.');
+  consoleSetResult('Befehl eingetragen.');
  };
 });
 $('consoleClear').onclick=()=>{
@@ -1653,9 +1590,8 @@ function bmaiHasUnsavedWork(){
     const e=$(id);if(e&&e.files&&e.files.length)return true;
   }
   if($('sendChat')?.disabled||$('loginButton')?.disabled||$('uploadUpdate')?.disabled)return true;
-  if(typeof pendingConsoleId!=='undefined'&&pendingConsoleId)return true;
+  if(typeof consoleRunning!=='undefined'&&consoleRunning)return true;
   if(typeof pendingUpdate!=='undefined'&&pendingUpdate)return true;
-  if($('consoleApproval')&&!$('consoleApproval').hidden)return true;
   if($('updateConfirm')&&!$('updateConfirm').hidden)return true;
   if($('chatImportPanel')&&!$('chatImportPanel').hidden)return true;
   if($('chatExportPanel')&&!$('chatExportPanel').hidden)return true;
@@ -2056,3 +1992,19 @@ $('statsSaveSettings').onclick=async()=>{
 };
 $('statsReset').onclick=async()=>{if(!confirm('Alle Fahrten und Messwerte dieses Fahrzeugs löschen? Wartung und Fehlerspeicher bleiben erhalten.'))return;
   try{renderStatsHeader(await api('/telemetry/reset','POST',{confirm:$('statsResetConfirm').value.trim()}));$('statsResetConfirm').value='';statsTrips=[];renderTrips();await loadOverview();notice('Statistik zurückgesetzt.');}catch(e){notice(e.message);}};
+
+// ----- Freigaben: alles automatisch freigeben -----
+function renderAutoApprove(a){
+  $('autoApproveEnabled').checked=a.enabled;
+  $('autoApproveInfo').textContent=a.enabled
+    ?'An'+(a.until?' bis '+new Date(a.until).toLocaleString('de-DE',{weekday:'short',hour:'2-digit',minute:'2-digit'}):'')+': Jeder neue Auftrag von Claude oder aus dem Chat läuft sofort, auch Schreibbefehle als root.'
+    :'Aus: Aufträge von Claude und aus dem Chat warten auf deine Freigabe.';
+  $('autoApproveInfo').classList.toggle('error',a.enabled);
+}
+async function refreshAutoApprove(){try{renderAutoApprove(await api('/jobs/auto-approve'));}catch(e){}}
+$('autoApproveEnabled').onchange=async()=>{
+  const enabled=$('autoApproveEnabled').checked;
+  try{renderAutoApprove(await api('/jobs/auto-approve','POST',{enabled,hours:Number($('autoApproveHours').value)||0}));refreshJobs();}
+  catch(e){$('autoApproveEnabled').checked=!enabled;notice(e.message);}
+};
+refreshAutoApprove();

@@ -57,6 +57,14 @@ async function stop(child){
   pi=start('pi-source/server.js',piEnv);
   await waitFor(mgu,'/v1/status',{authorization:'Bearer '+deviceToken});
   await waitFor(origin,'/health');
+  // Companion agent 0.2.15: full shell and whole filesystem.
+  const agentPost=async(endpoint,body)=>{const r=await fetch(mgu+endpoint,{method:'POST',headers:{authorization:'Bearer '+deviceToken,'content-type':'application/json'},body:JSON.stringify(body)});return {status:r.status,data:await r.json()};};
+  let sh=await agentPost('/v1/shell',{command:'echo $((40+2)) | tr 4 Y; ls /proc >/dev/null && echo proc'});
+  assert.equal(sh.status,200);assert.equal(sh.data.stdout,'Y2\nproc\n');assert.equal(sh.data.exitCode,0);
+  sh=await agentPost('/v1/console',{command:'printf "%s" alt'});assert.equal(sh.data.stdout,'alt','old endpoint name runs the same shell');
+  assert.equal((await agentPost('/v1/shell',{command:''})).status,400);
+  const listing=await agentPost('/v1/files/list',{path:'/proc/self'});
+  assert.equal(listing.status,200);assert.ok(listing.data.entries.some(e=>e.name==='status'),'any directory can be listed');
   token=(await api('/login','POST',{password})).body.token;
   assert.equal((await api('/faults/read','POST')).status,503);
 
@@ -84,7 +92,7 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
-  assert.equal(diag.poll.versions.agent,'0.2.14');
+  assert.equal(diag.poll.versions.agent,'0.2.15');
   assert.equal(diag.checkControl.active[0].color,'YELLOW');
   assert.equal(diag.checkControl.receipts['CheckControlMaster.basicList'].authoritative,true);
   assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');

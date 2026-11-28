@@ -28,9 +28,9 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
    return json(400,{error:'Not a directory'});
   }
   if(req.url==='/v1/files/read'){if(!files[b.path])return json(400,{error:'missing'});res.writeHead(200,{'content-type':'application/octet-stream'});return res.end(files[b.path]);}
-  if(req.url==='/v1/console'){
-   const m=/^find (\S+) "(.+)"$/.exec(b.command||'');if(!m)return json(400,{error:'bad'});
-   return json(200,{stdout:Object.keys(files).filter(f=>f.startsWith(m[1])&&f.toLowerCase().includes(m[2].toLowerCase())).join('\n')+'\n[read-only search; max depth 4, 180 matches]'});
+  if(req.url==='/v1/shell'){
+   const m=/^find '?([^' ]+)'? (?:-xdev )?(?:-maxdepth \d+ )?-iname '\*([^']+)\*'/.exec(b.command||'');if(!m)return json(400,{error:'bad'});
+   return json(200,{stdout:Object.keys(files).filter(f=>f.startsWith(m[1])&&f.toLowerCase().includes(m[2].toLowerCase())).join('\n')+'\n',exitCode:0});
   }
   json(404,{});
  });});
@@ -114,7 +114,7 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
   // ----- Dateibrowser -----
   let r=await api('POST','/mgu/browse',{path:'/var/log/oap'});
   assert.equal(r.status,200);assert.equal(r.data.entries.length,3);
-  assert.equal((await api('POST','/mgu/browse',{path:'/etc/shadow'})).status,400);
+  assert.equal((await api('POST','/mgu/browse',{path:'/etc/shadow'})).status,400,'any path goes to the MGU; the agent decides (here: not a directory)');
   assert.equal((await api('POST','/mgu/browse',{path:'/var/log/../../etc'})).status,400);
   r=await api('POST','/mgu/search',{root:'/var/log',term:'app'});
   assert.deepEqual(r.data.results,['/var/log/oap/app.log','/var/log/oap/app.log.1']);
@@ -149,7 +149,7 @@ const plusMonths=(iso,m)=>{const [y,mo,d]=iso.split('-').map(Number);const t=new
   await api('POST','/found-logs/settings',{auto:true});
   files['/var/log/oap/new.log']='fresh\n';files['/var/log/oap/crash.txt']='trace\n';
   await server.runJob(server.jobFor('list',{path:'/var/log/oap'},null,'nochmal','claude'));
-  await server.runJob(server.jobFor('console',{command:'find /var/log "crash"'},null,'suchen','claude'));
+  await server.runJob(server.jobFor('console',{command:"find /var/log -iname '*crash*'"},null,'suchen','claude'));
   for(let i=0;i<50&&(await api('GET','/found-logs')).data.found.some(f=>['queued','saving'].includes(f.status));i++)await new Promise(r=>setTimeout(r,40));
   found=(await api('GET','/found-logs')).data;
   assert.equal(found.found.find(f=>f.path==='/var/log/oap/new.log').status,'saved');

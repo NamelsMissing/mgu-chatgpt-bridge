@@ -30,7 +30,7 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
  const mgu=http.createServer((req,res)=>{
   let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
    mguCalls.push(req.method+' '+req.url+' '+raw);
-   if(req.url==='/v1/console'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({stdout:'cinemo_options.xml\n',exitCode:0}));}
+   if(req.url==='/v1/shell'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({stdout:'cinemo_options.xml\n',exitCode:0,shell:true}));}
    if(req.url==='/v1/files/read'){res.writeHead(200,{'content-type':'application/octet-stream'});return res.end('audio.route=carplay\n');}
    res.writeHead(404);res.end('{}');
   });
@@ -182,7 +182,7 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   assert.equal((await site('POST','/api/v1/jobs/'+job.job_id+'/approve')).status,200);
   const done=(await waiting).data;
   assert.equal(done.status,'done');assert.equal(done.result.stdout,'cinemo_options.xml\n');
-  assert.equal(mguCalls.length,1);assert.match(mguCalls[0],/POST \/v1\/console .*ls \/etc\/cinemo/);
+  assert.equal(mguCalls.length,1);assert.match(mguCalls[0],/POST \/v1\/shell .*ls \/etc\/cinemo/);
 
   // 9. Abgelehnt bleibt abgelehnt; fremde Aufträge sind für Claude unsichtbar.
   job=(await tool(tokens.access_token,'request_file_download',{path:'/etc/cinemo/cinemo_options.conf',reason:'Audio-Routing lesen'})).data;

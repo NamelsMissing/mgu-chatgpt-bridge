@@ -10,6 +10,7 @@ const FILES = [
     'apps/vehicle_data/telemetry_catalog.js',
     'native/mgu-ai-agent/agent.js',
     'native/mgu-ai-agent/telemetry-outbox.js',
+    'native/mgu-ai-agent/shell.js',
 ];
 const RULES = [
     [/\?\.(?!\d)/, 'optional chaining (Node 14)'],

@@ -1,17 +1,16 @@
 'use strict';
 // BMW MGU ID7 Companion Agent. Compatible with Node 8.7 syntax.
-// Strictly read-only diagnostics/files; actual vehicle control requires verified adapter and is disabled.
+// Full shell and file access for the paired Pi (token over Tailscale); vehicle control actions need a verified adapter and are disabled.
 var http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto'),cp=require('child_process');
-var readOnlyConsole=require('./console-readonly');
+var shell=require('./shell');
 var outbox=require('./telemetry-outbox');
 var ROOT='/var/opt/mgu-ai-agent',CONFIG=process.env.MGU_AI_CONFIG||ROOT+'/config.json';
 var DATA=process.env.MGU_AI_DATA||ROOT+'/data';
 var PORT=Number(process.env.MGU_AI_PORT||18766);
-var ALLOWED=['/etc/cinemo','/etc/oap','/usr/lib/oap-mainapp','/var/log'];
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.14';
+var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.15';
 function installedVehicleApps(){
  var result=[];
  try{fs.readdirSync(OAP_APPS).forEach(function(dir){
@@ -119,20 +118,18 @@ function bridgeInfo(){var p='/var/opt/mgu-chatgpt-bridge/config.json';return {ex
 function diag(preset){if(PRESETS.indexOf(preset)<0)throw Error('Unknown preset');var x={preset:preset,at:new Date().toISOString(),source:'MGU system command (not necessarily ECU value)',values:{}};switch(preset){
 case 'system':x.values.uname=run('/bin/uname',['-a']);x.values.uptime=run(first(['/usr/bin/uptime','/bin/uptime']),[]);break;
 case 'network':x.values.ipv4=run(first(['/sbin/ip','/usr/sbin/ip','/bin/ip']),['-4','addr']);x.values.routes=run(first(['/sbin/ip','/usr/sbin/ip','/bin/ip']),['-4','route']);break;
-case 'audio':x.values.devices=run(first(['/usr/bin/aplay','/bin/aplay']),['-l']);x.values.pcm=run(first(['/usr/bin/aplay','/bin/aplay']),['-L']);break;
+case 'audio':x.values.cards=run('/bin/cat',['/proc/asound/cards']);x.values.snd=run('/bin/ls',['-la','/dev/snd']);x.values.shm=run('/bin/ls',['-la','/dev/shm']);break;
 case 'services':x.values.failed=run('/bin/systemctl',['--failed','--no-pager','--plain']);break;
 case 'storage':x.values.df=run('/bin/df',['-h']);break;
 case 'bridge':x.values=bridgeInfo();break;
 case 'recent_logs':x.values.log=run(first(['/bin/journalctl','/usr/bin/journalctl']),['--no-pager','-n','70','-u','mgu-ai-agent.service']);break;
 case 'vehicle':x.values=vehicleData();break;
 }return x;}
-function pathAllowed(input){if(typeof input!=='string'||input.length>300||input[0]!=='/'||input.indexOf('\0')!==-1)throw Error('Invalid absolute path');
-var full=path.resolve(input),real=fs.realpathSync(full);if(!ALLOWED.some(function(base){return real===base||real.indexOf(base+'/')===0;}))throw Error('Path outside read-only allowlist');
-// Deny symlink in any interior path segment as defense in depth.
-var parts=full.split('/').filter(Boolean),p='';parts.forEach(function(seg){p+='/'+seg;if(fs.lstatSync(p).isSymbolicLink())throw Error('Symlink traversal denied');});
-return real;}
+function pathAllowed(input){if(typeof input!=='string'||input.length>1024||input[0]!=='/'||input.indexOf('\0')!==-1)throw Error('Invalid absolute path');
+// Full filesystem like an SSH session: any absolute path; symlinks are resolved.
+return fs.realpathSync(path.resolve(input));}
 function listFiles(p){var real=pathAllowed(p),s=fs.statSync(real);if(!s.isDirectory())throw Error('Not a directory');return {path:real,entries:fs.readdirSync(real).slice(0,200).map(function(name){try{var stat=fs.lstatSync(path.join(real,name));return {name:name,kind:stat.isSymbolicLink()?'symlink':stat.isDirectory()?'directory':'file',bytes:stat.size};}catch(e){return {name:name,kind:'unavailable'};}})};}
-function fileContents(p){var real=pathAllowed(p),fd=fs.openSync(real,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{var s=fs.fstatSync(fd);if(!s.isFile()||s.size>8*1024*1024)throw Error('Only regular files up to 8 MiB');var b=Buffer.alloc(s.size),got=0;while(got<b.length){var n=fs.readSync(fd,b,got,b.length-got,got);if(!n)throw Error('File changed during read');got+=n;}return b.slice(0,got);}finally{fs.closeSync(fd);}}
+function fileContents(p){var real=pathAllowed(p),fd=fs.openSync(real,fs.constants.O_RDONLY);try{var s=fs.fstatSync(fd);if(!s.isFile()||s.size>64*1024*1024)throw Error('Only regular files up to 64 MiB');var b=Buffer.alloc(s.size),got=0;while(got<b.length){var n=fs.readSync(fd,b,got,b.length-got,got);if(!n)throw Error('File changed during read');got+=n;}return b.slice(0,got);}finally{fs.closeSync(fd);}}
 var latest={at:null,message:'Bereit zur sicheren Kopplung',lastDiagnostic:null,paired:false};
 var pair=null;
 var tsLogin={url:'',started:0,child:null,error:''};
@@ -258,7 +255,8 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
   return json(res,404,{error:'Not found'});
  }
  if(req.method==='POST'&&url==='/v1/vehicle/fault-memory')return readFaultMemory(function(r){json(res,r.status,r.body);});
- if(req.method==='POST'&&url==='/v1/console')return json(res,200,readOnlyConsole.run(b.command));
+ // Full shell (/bin/sh -c, root). /v1/console is the old name and does the same.
+ if(req.method==='POST'&&(url==='/v1/shell'||url==='/v1/console'))return shell.run(b,function(e,r){if(e)return json(res,e.status||500,{error:String(e.message).slice(0,300)});json(res,200,r);});
  if(req.method==='POST'&&url==='/v1/diagnostics'){var d=diag(b.preset);latest.lastDiagnostic={preset:d.preset,at:d.at,preview:JSON.stringify(d.values).slice(0,350)};emitUI();return json(res,200,d);}
  if(req.method==='POST'&&url==='/v1/files/list')return json(res,200,listFiles(b.path));
  if(req.method==='POST'&&url==='/v1/files/read'){var data=fileContents(b.path);res.writeHead(200,{'content-length':data.length,'content-type':'application/octet-stream','cache-control':'no-store','x-content-type-options':'nosniff'});return res.end(data);}

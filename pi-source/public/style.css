@@ -348,3 +348,8 @@ details[open]>.maintenance-row strong::before{transform:rotate(90deg)}
 .stats-card>.section-head .stats-title{margin:0}
 .stats-card>.section-head{flex-wrap:nowrap}
 @media(max-width:760px){.stats-card>.section-head .stats-title{font-size:1.3rem}.stats-card>.section-head button{padding:8px 11px;font-size:.85rem}}
+.auto-approve{padding:14px 18px}
+.auto-approve .section-head{margin-bottom:0}
+.auto-approve .check{margin:0;font-weight:600}
+.auto-approve .hint{margin:8px 0 0}
+.console-timeout{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.9rem}

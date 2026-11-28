@@ -1,5 +1,5 @@
 [Unit]
-Description=BMW AI MGU read-only companion service
+Description=BMW AI MGU companion service
 After=oapcontroller.service iteriodev-tailscale.service
 Wants=iteriodev-tailscale.service
 
