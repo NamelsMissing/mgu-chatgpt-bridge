@@ -353,3 +353,7 @@ details[open]>.maintenance-row strong::before{transform:rotate(90deg)}
 .auto-approve .check{margin:0;font-weight:600}
 .auto-approve .hint{margin:8px 0 0}
 .console-timeout{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.9rem}
+.app-log{max-height:60vh;overflow:auto;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e3e6ea}
+#mguAppsList .list-row{cursor:pointer}
+#mguAppsList .app-last{flex-basis:100%;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#ffb8bd;overflow-wrap:anywhere}
+.pill-bad{background:#3a1d21;color:#ffb8bd}

@@ -5,7 +5,7 @@
   "license": "GPL-3.0-only",
   "description": "User-approved MGU diagnostics bridge and private MCP server",
   "scripts": {
-    "test": "node tests/integration.js && node tests/failure-paths.js && node tests/app-smoke.js && node tests/telemetry-mgu.js && node tests/node87-syntax.js",
+    "test": "node tests/integration.js && node tests/failure-paths.js && node tests/app-smoke.js && node tests/telemetry-mgu.js && node tests/node87-syntax.js && node tests/agent-apps.js",
     "test:pi": "node pi-source/tests/test-github-diagnostics.js && node pi-source/tests/test-chat-export.js && node pi-source/tests/test-auto-update-prefs.js && node pi-source/tests/test-auto-web-refresh.js && node pi-source/tests/test-mobile-console.js && node pi-source/tests/test-claude-mcp.js && node pi-source/tests/test-vehicle-files.js && node pi-source/tests/test-monitor.js && node pi-source/tests/test-service-reference.js && node pi-source/tests/test-maintenance-migration.js && node tests/agent-vehicle-data.js && node tests/vehicle-data-app.js && node tests/vehicle-pipeline.js && node tests/vehicle-diagnostics-scheduling.js && node pi-source/tests/test-telemetry-db.js && node tests/telemetry-pipeline.js && node tests/vehicle-data-telemetry-wiring.js",
     "start": "node broker/server.js"
   },

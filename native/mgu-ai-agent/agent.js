@@ -3,6 +3,7 @@
 // Full shell and file access for the paired Pi (token over Tailscale); vehicle control actions need a verified adapter and are disabled.
 var http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto'),cp=require('child_process');
 var shell=require('./shell');
+var oapApps=require('./apps');
 var outbox=require('./telemetry-outbox');
 var ROOT='/var/opt/mgu-ai-agent',CONFIG=process.env.MGU_AI_CONFIG||ROOT+'/config.json';
 var DATA=process.env.MGU_AI_DATA||ROOT+'/data';
@@ -10,7 +11,7 @@ var PORT=Number(process.env.MGU_AI_PORT||18766);
 // Vehicle values come only from the read-only "Vehicle Data" app (mgu-apps), which writes this
 // file into its own data directory. Nothing is simulated; without the file, vehicle data is unavailable.
 var OAP_APPS=process.env.MGU_AI_OAP_APPS||'/var/opt/public/oap',VEHICLE_FILE='bmw-vehicle-data.json';
-var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.15';
+var VEHICLE_STALE_MS=90000,AGENT_VERSION='0.2.16';
 function installedVehicleApps(){
  var result=[];
  try{fs.readdirSync(OAP_APPS).forEach(function(dir){
@@ -255,6 +256,14 @@ function app(req,res){(async function(){var c=cfg(),raw=(req.headers.authorizati
   return json(res,404,{error:'Not found'});
  }
  if(req.method==='POST'&&url==='/v1/vehicle/fault-memory')return readFaultMemory(function(r){json(res,r.status,r.body);});
+ // Installed OAP apps: overview with error counts, logs and error records per app.
+ if(url==='/v1/apps'||url==='/v1/apps/logs'){
+  try{
+   if(req.method==='GET'&&url==='/v1/apps')return json(res,200,oapApps.list(OAP_APPS));
+   if(req.method==='POST'&&url==='/v1/apps/logs')return json(res,200,oapApps.logs(OAP_APPS,b));
+  }catch(e){return json(res,e.status||500,{error:String(e.message).slice(0,300)});}
+  return json(res,405,{error:'Method not allowed'});
+ }
  // Full shell (/bin/sh -c, root). /v1/console is the old name and does the same.
  if(req.method==='POST'&&(url==='/v1/shell'||url==='/v1/console'))return shell.run(b,function(e,r){if(e)return json(res,e.status||500,{error:String(e.message).slice(0,300)});json(res,200,r);});
  if(req.method==='POST'&&url==='/v1/diagnostics'){var d=diag(b.preset);latest.lastDiagnostic={preset:d.preset,at:d.at,preview:JSON.stringify(d.values).slice(0,350)};emitUI();return json(res,200,d);}

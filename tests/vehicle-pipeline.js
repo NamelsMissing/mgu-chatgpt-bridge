@@ -67,6 +67,13 @@ async function stop(child){
   assert.equal(listing.status,200);assert.ok(listing.data.entries.some(e=>e.name==='status'),'any directory can be listed');
   token=(await api('/login','POST',{password})).body.token;
   assert.equal((await api('/faults/read','POST')).status,503);
+  // Agent 0.2.16: app overview and logs through the Pi owner routes.
+  fs.writeFileSync(path.join(data,'bmw-vehicle-data.log'),'2026-11-27T09:00:00.000Z INFO start\n2026-11-27T09:01:00.000Z ERROR bus lost\n');
+  const appList=await api('/mgu/apps');
+  assert.equal(appList.status,200);const own=appList.body.apps.find(a=>a.dir==='oap_12211');assert.ok(own,'fixture app listed');
+  const appLogs=await api('/mgu/apps/logs','POST',{app:'oap_12211',lines:50});
+  assert.equal(appLogs.status,200);assert.ok(appLogs.body.errors.some(l=>l.includes('bus lost')),'error lines from the app log');
+  assert.equal((await api('/mgu/apps/logs','POST',{app:'../x'})).status,400);
 
   const snapshot=new VehicleSnapshot({dir:data,version:'fixture'});
   snapshot.range({mileageKilometre:123456});
@@ -92,7 +99,7 @@ async function stop(child){
   assert.ok(diag.poll.transfer.snapshotAt);
   assert.ok(diag.poll.transfer.agentForwardedAt);
   assert.ok(diag.poll.transfer.piPersistedAt);
-  assert.equal(diag.poll.versions.agent,'0.2.15');
+  assert.equal(diag.poll.versions.agent,'0.2.16');
   assert.equal(diag.checkControl.active[0].color,'YELLOW');
   assert.equal(diag.checkControl.receipts['CheckControlMaster.basicList'].authoritative,true);
   assert.equal(diag.poll.versions.vehicleDataInstalled.length,0,'fixture package has no version metadata');

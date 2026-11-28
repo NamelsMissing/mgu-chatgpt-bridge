@@ -31,6 +31,7 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
    mguCalls.push(req.method+' '+req.url+' '+raw);
    if(req.url==='/v1/shell'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({stdout:'cinemo_options.xml\n',exitCode:0,shell:true}));}
+   if(req.url==='/v1/apps/logs'){res.writeHead(200,{'content-type':'application/json'});return res.end(JSON.stringify({app:{dir:'oap_3',id:'active-sound'},errors:['2026-11-27T09:00:00Z ERROR sink missing'],logs:[],reports:[],skipped:[]}));}
    if(req.url==='/v1/files/read'){res.writeHead(200,{'content-type':'application/octet-stream'});return res.end('audio.route=carplay\n');}
    res.writeHead(404);res.end('{}');
   });
@@ -152,7 +153,7 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   assert.equal(r.status,202);
   assert.equal((await pub('/mcp',{headers:{authorization:'Bearer '+tokens.access_token}})).status,405);
   const tools=(await rpc(tokens.access_token,'tools/list')).data.result.tools;
-  assert.equal(tools.length,11);
+  assert.equal(tools.length,13);
   const fjob=(await tool(tokens.access_token,'request_fault_memory_read',{reason:'Fehlerspeicher prüfen'})).data;
   assert.equal(fjob.type,'faults');assert.equal(fjob.status,'pending');
   assert.equal((await site('POST','/api/v1/jobs/'+fjob.job_id+'/reject')).status,200);
@@ -183,6 +184,18 @@ const PUBLIC='bmw-ai-pi.example-tailnet.ts.net',CALLBACK='https://claude.ai/api/
   const done=(await waiting).data;
   assert.equal(done.status,'done');assert.equal(done.result.stdout,'cinemo_options.xml\n');
   assert.equal(mguCalls.length,1);assert.match(mguCalls[0],/POST \/v1\/shell .*ls \/etc\/cinemo/);
+
+  // 8b. App-Logs: Vorschlag mit geprüften Parametern, Ergebnis nach Freigabe; altes Agent-Paket gibt klare Meldung.
+  assert.equal((await tool(tokens.access_token,'request_app_logs',{app:'../etc',reason:'x'})).isError,true);
+  job=(await tool(tokens.access_token,'request_app_logs',{app:'active-sound',lines:99999,reason:'Warum stürzt die App ab?'})).data;
+  assert.equal(job.type,'app_logs');
+  assert.equal((await site('POST','/api/v1/jobs/'+job.job_id+'/approve')).status,200);
+  const appLogs=(await tool(tokens.access_token,'get_job_result',{job_id:job.job_id,wait_seconds:5})).data;
+  assert.equal(appLogs.status,'done');assert.match(appLogs.result.errors[0],/sink missing/);
+  assert.match(mguCalls[mguCalls.length-1],/POST \/v1\/apps\/logs .*"app":"active-sound","lines":5000/);
+  const old=await site('GET','/api/v1/mgu/apps');
+  assert.equal(old.status,502);assert.match(old.data.error,/0\.2\.16/);
+  assert.ok(tools.some(t=>t.name==='request_app_list'));
 
   // 9. Abgelehnt bleibt abgelehnt; fremde Aufträge sind für Claude unsichtbar.
   job=(await tool(tokens.access_token,'request_file_download',{path:'/etc/cinemo/cinemo_options.conf',reason:'Audio-Routing lesen'})).data;

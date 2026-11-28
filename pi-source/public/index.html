@@ -387,6 +387,23 @@
 <section id="diag" class="tab" hidden>
   <h2>Diagnose</h2>
 
+  <div class="panel" id="mguAppsPanel">
+    <div class="section-head"><h3>MGU-Apps</h3><button id="mguAppsRefresh" class="secondary">Laden</button></div>
+    <p class="hint" id="mguAppsInfo">Logs und Fehler der installierten Apps.</p>
+    <div id="mguAppsList"></div>
+    <div id="mguAppLog" hidden>
+      <div class="section-head"><h3 id="mguAppLogTitle">App</h3><div class="actions"><button id="mguAppLogDownload" class="secondary">Speichern</button><button id="mguAppLogClose" class="secondary">Schließen</button></div></div>
+      <p class="hint" id="mguAppLogInfo"></p>
+      <div class="segmented" id="mguAppLogView">
+        <button type="button" data-view="errors" class="active">Fehler</button>
+        <button type="button" data-view="log">Log</button>
+        <button type="button" data-view="reports">Berichte</button>
+        <button type="button" data-view="journal">System</button>
+      </div>
+      <pre id="mguAppLogText" class="app-log"></pre>
+    </div>
+  </div>
+
   <div class="panel" id="diagModePanel">
     <div class="section-head">
       <h3>Diagnosemodus für Claude</h3>

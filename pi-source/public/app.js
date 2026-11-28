@@ -366,11 +366,11 @@ $('chatInput').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault()
 window.bmwAIInjectTranscript=function(text){$('chatInput').value=String(text||'').slice(0,8000);$('chatInput').focus();};
 
 // ----- Freigaben -----
-const JOB_TYPES={status:'MGU-Status abfragen',diagnostic:'Systemdiagnose',list:'Verzeichnis auflisten',download:'Datei abrufen',console:'Lesebefehl ausführen',action:'Fahrzeugfunktion'};
+const JOB_TYPES={status:'MGU-Status abfragen',diagnostic:'Systemdiagnose',list:'Verzeichnis auflisten',download:'Datei abrufen',console:'Shell-Befehl (root)',action:'Fahrzeugfunktion',faults:'Fehlerspeicher auslesen',apps:'MGU-Apps auflisten',app_logs:'App-Logs und Fehler lesen'};
 const JOB_STATES={pending:'Wartet auf Freigabe',running:'Läuft',done:'Erledigt',failed:'Fehlgeschlagen',rejected:'Abgelehnt',expired:'Abgelaufen'};
 function setJobBadge(count){const b=$('jobBadge');b.textContent=String(count);b.hidden=!count;}
 function jobCard(j){
- const fromClaude=j.source==='claude',payload=j.payload||{},detail=payload.command||payload.path||payload.preset||payload.action||'';
+ const fromClaude=j.source==='claude',payload=j.payload||{},detail=payload.command||payload.path||payload.preset||payload.action||(payload.app?'App: '+payload.app+' · '+payload.lines+' Zeilen':'');
  const panel=txt('div','','panel job job-'+j.status),head=txt('div','','job-head');
  head.appendChild(txt('strong',JOB_TYPES[j.type]||j.type));
  head.appendChild(txt('span',fromClaude?'Claude':j.conversationId?'Chat':'Website','pill '+(fromClaude?'pill-claude':'pill-off')));
@@ -2008,3 +2008,66 @@ $('autoApproveEnabled').onchange=async()=>{
   catch(e){$('autoApproveEnabled').checked=!enabled;notice(e.message);}
 };
 refreshAutoApprove();
+
+// ----- Diagnose: Logs und Fehler der MGU-Apps -----
+let mguAppLogData=null,mguAppLogView='errors';
+function appLabel(a){return (a.name||a.id||a.dir)+(a.version?' '+a.version:'');}
+async function refreshMguApps(){
+  const list=$('mguAppsList'),info=$('mguAppsInfo');
+  info.textContent='Lade …';
+  try{
+    const d=await api('/mgu/apps');
+    list.replaceChildren();
+    const failing=d.apps.filter(a=>a.log.errors);
+    info.textContent=d.apps.length+' Apps · '+(failing.length?failing.length+' mit Fehlern im Log':'keine Fehler in den Logs')+' · '+stamp(d.at);
+    for(const a of d.apps){
+      const row=txt('div','','list-row'),l=a.log;
+      const head=txt('div','','request-info');
+      head.appendChild(txt('strong',appLabel(a)));
+      head.appendChild(txt('span',[a.id&&a.name?a.id:null,a.dir,l.file?'Log '+(l.lastAt?stamp(l.lastAt):'ohne Zeit'):'kein Log'].filter(Boolean).join(' · '),'hint'));
+      row.appendChild(head);
+      row.appendChild(txt('span',a.running.length?'läuft':'aus','pill '+(a.running.length?'pill-live':'pill-off')));
+      if(l.errors||l.fatal)row.appendChild(txt('span',(l.fatal?l.fatal+' Abstürze · ':'')+l.errors+' Fehler','pill pill-bad'));
+      if(l.warnings)row.appendChild(txt('span',l.warnings+' Warnungen','pill pill-off'));
+      if(l.lastError)row.appendChild(txt('span',l.lastError,'app-last'));
+      row.onclick=()=>openMguAppLog(a.dir,appLabel(a));
+      list.appendChild(row);
+    }
+  }catch(e){info.textContent=consoleHumanError(e);}
+}
+function renderMguAppLog(){
+  const d=mguAppLogData;if(!d)return;
+  let text='';
+  if(mguAppLogView==='errors')text=d.errors.length?d.errors.join('\n'):'Keine ERROR-, FATAL- oder WARN-Zeilen in den Logs.';
+  if(mguAppLogView==='log')text=d.logs.length?d.logs.map(l=>'===== '+l.name+' ('+l.bytes+' Byte, '+stamp(l.modified)+')'+(l.cut?' · Ende':'')+'\n'+l.lines.join('\n')).join('\n\n'):'Keine Logdatei.';
+  if(mguAppLogView==='reports')text=d.reports.length?d.reports.map(r=>'===== '+r.name+' ('+stamp(r.modified)+')\n'+r.text).join('\n\n'):'Keine Diagnose- oder Berichtsdateien.';
+  if(mguAppLogView==='journal')text=d.journal.available?(d.journal.lines.join('\n')||'Keine Einträge zu dieser App im Systemjournal.'):'Systemjournal nicht verfügbar'+(d.journal.error?': '+d.journal.error:'.');
+  if(d.skipped.length&&mguAppLogView!=='errors')text+='\n\nNicht ausgegeben: '+d.skipped.map(x=>x.name+' ('+x.reason+')').join(', ');
+  $('mguAppLogText').textContent=text;
+  $('mguAppLogView').querySelectorAll('button').forEach(b=>b.classList.toggle('active',b.dataset.view===mguAppLogView));
+}
+async function openMguAppLog(app,label){
+  $('mguAppLog').hidden=false;$('mguAppLogTitle').textContent=label;$('mguAppLogInfo').textContent='Lade …';$('mguAppLogText').textContent='';
+  try{
+    mguAppLogData=await api('/mgu/apps/logs','POST',{app,lines:1000});
+    const s=mguAppLogData.summary;
+    $('mguAppLogInfo').textContent=[mguAppLogData.running.length?'läuft (PID '+mguAppLogData.running.map(r=>r.pid).join(', ')+')':'läuft nicht',
+      s.errors+' Fehler',s.fatal+' Abstürze',s.warnings+' Warnungen',mguAppLogData.reports.length+' Berichte'].join(' · ');
+    mguAppLogView=s.errors||s.warnings?'errors':'log';
+    renderMguAppLog();
+    $('mguAppLog').scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){$('mguAppLogInfo').textContent=consoleHumanError(e);}
+}
+$('mguAppsRefresh').onclick=refreshMguApps;
+$('mguAppLogClose').onclick=()=>{$('mguAppLog').hidden=true;mguAppLogData=null;};
+$('mguAppLogView').querySelectorAll('button').forEach(b=>b.onclick=()=>{mguAppLogView=b.dataset.view;renderMguAppLog();});
+$('mguAppLogDownload').onclick=()=>{
+  const d=mguAppLogData;if(!d)return;
+  const parts=['App: '+(d.app.id||d.app.dir)+' '+(d.app.version||'')+' ('+d.app.dir+') · gelesen '+d.at,'',
+    '##### Fehler und Warnungen',d.errors.join('\n')||'(keine)','',
+    ...d.logs.map(l=>'##### '+l.name+'\n'+l.lines.join('\n')),'',
+    ...d.reports.map(r=>'##### '+r.name+'\n'+r.text),'',
+    '##### Systemjournal',d.journal.lines.join('\n')||'(keine)'];
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([parts.join('\n')],{type:'text/plain'}));
+  a.download=(d.app.id||d.app.dir)+'-logs-'+d.at.slice(0,19).replace(/[:T]/g,'-')+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+};
